@@ -2,7 +2,7 @@
 // Cloudflare Worker untuk VMS SAPAM MEDED
 // KV Namespace: VMS_STORAGE
 
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxe5nyQc-tL2Hi2rZ3Qs8n4ApNkAzCSr14gMxnZy9SX8ehrqKaBAPHrdLO4WPUFEIRD9w/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzQQr4hZKbSEeiW4h0q6H_HPOqODBuZbQfZm_hjIl0F551eK2WrXnpDO9_Qk31sp8-Y9w/exec';
 
 // ==================== MAIN HANDLER ====================
 export default {

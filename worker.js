@@ -1249,10 +1249,11 @@ async function pushLogsToGoogleScript(logs) {
             body: JSON.stringify(payload),
             signal: controller.signal
         });
-        if (!res.ok) {
+        const result = await res.json().catch(() => null);
+        if (!res.ok || result?.ok === false) {
             globalThis.__vms_metrics.gasFail++;
             globalThis.__vms_metrics.lastGasFailAt = Date.now();
-            console.error('[GAS] Append failed with status:', res.status);
+            console.error('[GAS] Append logical failure:', { status: res.status, result });
             return false;
         }
         return true;

@@ -978,14 +978,33 @@ export default {
             }
 
             if (path === '/retry-gas-sync' && request.method === 'POST') {
-                const pendingQueue = await getData(env, 'pending_gas_queue');
+                const now = Date.now();
+                const orphanThresholdMs = 60000;
+                const rawProcessingQueue = await getData(env, 'processing_gas_queue');
+                const normalizedProcessing = normalizeGasQueueEntries(rawProcessingQueue);
+                const orphanEntries = [];
+                const activeProcessingEntries = [];
+                for (const entry of normalizedProcessing) {
+                    if (Number.isFinite(entry.processingStartedAt) && (now - entry.processingStartedAt) > orphanThresholdMs) {
+                        orphanEntries.push(entry);
+                        continue;
+                    }
+                    activeProcessingEntries.push(entry);
+                }
+
+                let pendingQueue = await getData(env, 'pending_gas_queue');
+                const normalizedPendingBase = normalizeGasQueueEntries(pendingQueue);
+                pendingQueue = orphanEntries.length ? mergeGasQueueUnique(normalizedPendingBase, orphanEntries) : normalizedPendingBase;
+                await saveData(env, 'pending_gas_queue', pendingQueue.slice(-20000));
+                await saveData(env, 'processing_gas_queue', activeProcessingEntries.slice(-20000));
+
                 if (!Array.isArray(pendingQueue) || pendingQueue.length === 0) {
-                    return new Response(JSON.stringify({ ok: true, replayed: 0, remaining: 0 }), { headers: corsHeaders });
+                    return new Response(JSON.stringify({ ok: true, replayed: 0, remaining: 0, recoveredOrphans: orphanEntries.length }), { headers: corsHeaders });
                 }
                 const body = await request.json().catch(() => ({}));
                 const batchSize = Math.max(1, Math.min(1000, Number(body?.batchSize || 250)));
                 const normalizedPending = normalizeGasQueueEntries(pendingQueue);
-                const batch = normalizedPending.slice(0, batchSize);
+                const batch = normalizedPending.slice(0, batchSize).map(log => ({ ...log, processingStartedAt: Date.now() }));
                 const remainingPending = normalizedPending.slice(batch.length);
                 let processingQueue = await getData(env, 'processing_gas_queue');
                 processingQueue = mergeGasQueueUnique(processingQueue, batch);
@@ -1230,7 +1249,6 @@ async function pushLogsToGoogleScript(logs) {
             body: JSON.stringify(payload),
             signal: controller.signal
         });
-        clearTimeout(timeoutId);
         if (!res.ok) {
             globalThis.__vms_metrics.gasFail++;
             globalThis.__vms_metrics.lastGasFailAt = Date.now();
@@ -1239,7 +1257,6 @@ async function pushLogsToGoogleScript(logs) {
         }
         return true;
     } catch (error) {
-        clearTimeout(timeoutId);
         globalThis.__vms_metrics.gasFail++;
         globalThis.__vms_metrics.lastGasFailAt = Date.now();
         if (error?.name === 'AbortError') {
@@ -1248,6 +1265,8 @@ async function pushLogsToGoogleScript(logs) {
         }
         console.error('[GAS] Append request error:', error);
         return false;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 

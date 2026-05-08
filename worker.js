@@ -22,6 +22,10 @@ export default {
         }
         
         try {
+            if (!globalThis.__vms_metrics) {
+                globalThis.__vms_metrics = { saveOk: 0, saveFail: 0, dedupReplay: 0, malformedLogs: 0, authFail: 0, lastSaveAt: 0 };
+                globalThis.__vms_started_at = Date.now();
+            }
             // ==================== AUTO INIT (ANTI LOOP) ====================
             if (!globalThis.__vms_init_done) {
                 let adminsCheck = await getData(env, 'admins');
@@ -42,7 +46,11 @@ export default {
                 return new Response(JSON.stringify({ 
                     status: 'online', 
                     version: 'v3.0 Enterprise',
-                    timestamp: Date.now()
+                    apiCompat: 1,
+                    timestamp: Date.now(),
+                    uptimeMs: Date.now() - (globalThis.__vms_started_at || Date.now()),
+                    degraded: (globalThis.__vms_metrics.saveFail > (globalThis.__vms_metrics.saveOk * 2 + 10)),
+                    metrics: globalThis.__vms_metrics
                 }), { headers: corsHeaders });
             }
             
@@ -71,6 +79,7 @@ export default {
                 const admin = admins.find(a => a.username === username);
                 
                 if (!admin) {
+                    globalThis.__vms_metrics.authFail++;
                     console.log(`[LOGIN] User not found: ${username}`);
                     return new Response(JSON.stringify({ ok: false, error: 'User not found' }), { 
                         headers: corsHeaders, 
@@ -99,6 +108,7 @@ export default {
                 }
                 
                 if (!isValid) {
+                    globalThis.__vms_metrics.authFail++;
                     console.log(`[LOGIN] Password invalid for: ${username}`);
                     return new Response(JSON.stringify({ ok: false, error: 'Invalid password' }), { 
                         headers: corsHeaders, 
@@ -204,6 +214,7 @@ export default {
                 company.currentDevices = devices.filter(d => d.licenseKey === licenseKey && d.status === 'ACTIVE').length;
                 await saveData(env, 'companies', companies);
                 
+                const featurePolicy = buildFeaturePolicy(company.package, company.maxDevices);
                 return new Response(JSON.stringify({
                     ok: true,
                     status: status,
@@ -215,7 +226,28 @@ export default {
                         currentDevices: company.currentDevices,
                         expiredAt: company.expiredAt
                     },
-                    device: device
+                    device: device,
+                    features: featurePolicy
+                }), { headers: corsHeaders });
+            }
+
+            if (path === '/license-context' && request.method === 'POST') {
+                const body = await request.json();
+                const { licenseKey } = body || {};
+                if (!licenseKey) {
+                    return new Response(JSON.stringify({ ok: false, message: 'License key required' }), { headers: corsHeaders });
+                }
+                const companies = await getData(env, 'companies');
+                const company = companies.find(c => c.licenseKey === licenseKey);
+                if (!company) {
+                    return new Response(JSON.stringify({ ok: false, message: 'Invalid license key' }), { headers: corsHeaders });
+                }
+                const features = buildFeaturePolicy(company.package, company.maxDevices);
+                return new Response(JSON.stringify({
+                    ok: true,
+                    licenseKey,
+                    package: company.package,
+                    features
                 }), { headers: corsHeaders });
             }
             
@@ -819,18 +851,51 @@ export default {
             // ==================== SYNC MODULE (FIELD DEVICE) ====================
             if (path === '/save' && request.method === 'POST') {
                 const body = await request.json();
+                const licenseKey = body.licenseKey;
+                if (!licenseKey) {
+                    globalThis.__vms_metrics.saveFail++;
+                    return new Response(JSON.stringify({ ok: false, message: 'licenseKey required' }), { headers: corsHeaders, status: 400 });
+                }
+                const companies = await getData(env, 'companies');
+                const company = companies.find(c => c.licenseKey === licenseKey);
+                if (!company || company.expiredAt < Date.now()) {
+                    globalThis.__vms_metrics.saveFail++;
+                    return new Response(JSON.stringify({ ok: false, message: 'Invalid or expired licenseKey' }), { headers: corsHeaders, status: 403 });
+                }
+                const replayId = body.replayId || null;
+                if (replayId) {
+                    const replayKeys = await getData(env, 'processed_replays');
+                    if (replayKeys.includes(replayId)) {
+                        globalThis.__vms_metrics.dedupReplay++;
+                        return new Response(JSON.stringify({ ok: true, dedup: true }), { headers: corsHeaders });
+                    }
+                    replayKeys.push(replayId);
+                    await saveData(env, 'processed_replays', replayKeys.slice(-5000));
+                }
                 
                 if (body.visitors && Object.keys(body.visitors).length > 0) {
                     let allVisitors = await getData(env, 'visitors');
                     for (const [key, value] of Object.entries(body.visitors)) {
-                        allVisitors[key] = { ...allVisitors[key], ...value, lastSync: Date.now() };
+                        allVisitors[key] = { ...allVisitors[key], ...value, licenseKey, lastSync: Date.now() };
                     }
                     await saveData(env, 'visitors', allVisitors);
                 }
                 
                 if (body.logs && body.logs.length > 0) {
                     let allLogs = await getData(env, 'logs');
-                    allLogs = [...body.logs, ...allLogs];
+                    const normalizedLogs = body.logs
+                        .filter(l => l && l.reg && l.action && l.time)
+                        .map(l => ({ ...l, licenseKey, companyId: company.id, companyName: company.companyName }));
+                    globalThis.__vms_metrics.malformedLogs += Math.max(0, body.logs.length - normalizedLogs.length);
+                    const seen = new Set(allLogs.slice(0, 4000).map(l => `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}`));
+                    const appendOnly = [];
+                    for (const log of normalizedLogs) {
+                        const k = `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}`;
+                        if (seen.has(k)) continue;
+                        seen.add(k);
+                        appendOnly.push(log);
+                    }
+                    allLogs = [...appendOnly, ...allLogs];
                     await saveData(env, 'logs', allLogs.slice(0, 10000));
                 }
                 
@@ -838,12 +903,15 @@ export default {
                     let reports = await getData(env, 'anti_nakal_reports');
                     reports.unshift({
                         ...body.anti,
+                        licenseKey,
                         deviceId: body.deviceId,
                         site: body.site,
                         timestamp: Date.now()
                     });
                     await saveData(env, 'anti_nakal_reports', reports.slice(0, 5000));
                 }
+                globalThis.__vms_metrics.saveOk++;
+                globalThis.__vms_metrics.lastSaveAt = Date.now();
                 
                 return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
             }
@@ -1069,6 +1137,7 @@ function getDefaultData(key) {
         logs: [],
         anti_nakal_reports: [],
         users_from_clients: [],
+        processed_replays: [],
         settings: {
             pricing: {
                 BASIC: { price: 500000, maxDevices: 10, extraDeviceFee: 50000 },
@@ -1107,6 +1176,25 @@ async function checkAuth(headers, env) {
     }
     
     return null;
+}
+
+function buildFeaturePolicy(pkg, maxDevices) {
+    const packageName = String(pkg || 'DEMO').toUpperCase();
+    const isPro = packageName === 'PRO' || packageName === 'FULL';
+    const isBasic = packageName === 'BASIC';
+    return {
+        package: packageName,
+        licenseScopedSync: true,
+        realtimeSync: isPro,
+        spreadsheetAutoSync: isPro,
+        unlimitedSites: isPro,
+        allowSiteRename: isPro,
+        staticSitesOnly: !isPro,
+        staticSites: ['SITE_A', 'SITE_B', 'SITE_C'],
+        maxDevices: isPro ? -1 : (Number(maxDevices) || (isBasic ? 5 : 5)),
+        unlimitedScannerLogs: true,
+        appendOnlyScannerLogs: true
+    };
 }
 
 // ==================== UTILITY FUNCTIONS ====================

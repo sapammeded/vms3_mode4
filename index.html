@@ -252,6 +252,7 @@ localStorage.setItem("vms_device_id",
 // HARDENED LICENSE SYSTEM - HASH BASED (NO HARDCODE)
 // ============================================================
 let LICENSE_MODE = localStorage.getItem("vms_license") || "DEMO";
+let WORKER_FEATURES = JSON.parse(localStorage.getItem("vms_worker_features") || "null");
 let currentUser = null;
 let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
 let lastScanTime = {};
@@ -418,8 +419,10 @@ async function applyLicenseKey(key) {
         if (data && data.ok) {
             // License valid dari Worker
             LICENSE_MODE = data.company?.package || "PRO";
+            WORKER_FEATURES = data.features || WORKER_FEATURES;
             localStorage.setItem("vms_license", LICENSE_MODE);
             localStorage.setItem("vms_license_key", key);
+            if (WORKER_FEATURES) localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
             
             // Simpan info company
             if (data.company) {
@@ -608,8 +611,9 @@ function applyLicenseUI(){
     const appLayout = document.getElementById("appLayout");
     const adminOnly = document.querySelectorAll(".admin-only");
     if(isPro()){
-        if(loginOverlay) loginOverlay.style.display = "flex";
-        if(appLayout) appLayout.style.display = "none";
+        const hasSession = !!localStorage.getItem("vms_user");
+        if(loginOverlay) loginOverlay.style.display = hasSession ? "none" : "flex";
+        if(appLayout) appLayout.style.display = hasSession ? "flex" : "none";
         adminOnly.forEach(el => el.style.display = "inline-flex");
     } else {
         if(loginOverlay) loginOverlay.style.display = "none";
@@ -1348,7 +1352,7 @@ window.onunhandledrejection = function(e) {
         if(!payload){ toast("QR tidak valid (bukan dari sistem ini)","error"); return; }
         let reg = payload.reg;
         
-        if(lastScanTime[reg] && Date.now() - lastScanTime[reg] < 1000){
+        if(lastScanTime[reg] && Date.now() - lastScanTime[reg] < 350){
             toast("Scan terlalu cepat","warning");
             return;
         }
@@ -1429,10 +1433,12 @@ window.onunhandledrejection = function(e) {
             let active = v.filter(x=>x.currentStatus==="IN").length;
             let today = new Date().toDateString();
             let todayCheck = logs.filter(l=> new Date(l.time).toDateString()===today && l.action==="CHECK_IN").length;
+            const qh = window.getSyncQueueHealth ? window.getSyncQueueHealth() : { backlog: 0 };
             document.getElementById('statsWidget').innerHTML = `
                 <div class="stat-card"><h4>Total Visitors</h4><div class="stat-number">${v.length}</div></div>
                 <div class="stat-card"><h4>Active Inside</h4><div class="stat-number">${active}</div></div>
                 <div class="stat-card"><h4>Check-ins Today</h4><div class="stat-number">${todayCheck}</div></div>
+                <div class="stat-card"><h4>Replay Queue</h4><div class="stat-number">${qh.backlog || 0}</div><div class="stat-change">${(qh.syncFailStreak || 0) > 0 ? `⚠️ Sync fail streak: ${qh.syncFailStreak}` : '✅ Sync healthy'}</div></div>
             `;
             let last7 = [...Array(7)].map((_,i)=>{let d=new Date(); d.setDate(d.getDate()-i); return d.toLocaleDateString('id',{weekday:'short'});}).reverse();
             let trend = last7.map((_,i)=>{let d=new Date(); d.setDate(d.getDate()-(6-i)); return logs.filter(l=>new Date(l.time).toDateString()===d.toDateString() && l.action==="CHECK_IN").length;});
@@ -1450,14 +1456,23 @@ window.onunhandledrejection = function(e) {
         } catch(e) { console.error("Render dashboard error:", e); }
     }
     
+    let __logRenderPending = false;
+    let __lastLogSignature = "";
     function renderLogTable(){
+        if (__logRenderPending) return;
+        __logRenderPending = true;
+        requestAnimationFrame(() => {
         try {
             let search = document.getElementById('searchLog')?.value.toLowerCase() || '';
             let filtered = logs.filter(l=> (l.name?.toLowerCase().includes(search) || l.reg?.toLowerCase().includes(search)) && (!l.site || l.site === SITE_ID));
+            const signature = `${SITE_ID}|${search}|${filtered.length}|${filtered[0]?.time || 0}`;
+            if (signature === __lastLogSignature && document.hidden) return;
+            __lastLogSignature = signature;
             let tbody = document.getElementById('logTableBody');
             if(!tbody) return;
             tbody.innerHTML = "";
-            filtered.forEach(l=>{
+            const windowed = filtered.slice(0, 300);
+            windowed.forEach(l=>{
                 let row = tbody.insertRow();
                 row.insertCell(0).innerHTML = `<input type="checkbox" class="logCheckItem" data-reg="${l.reg}">`;
                 row.insertCell(1).innerText = l.reg;
@@ -1470,7 +1485,15 @@ window.onunhandledrejection = function(e) {
                 let btn = document.createElement('button'); btn.innerText="PDF"; btn.classList.add('btn-outline'); btn.style.padding="4px 12px"; btn.onclick = () => { let siteKey = SITE_ID + "_" + l.reg; let v = visitors[siteKey]; if(v) showPreview(l.reg, v); };
                 row.insertCell(8).appendChild(btn);
             });
+            if (filtered.length > windowed.length) {
+                let row = tbody.insertRow();
+                const c = row.insertCell(0);
+                c.colSpan = 9;
+                c.innerText = `Menampilkan ${windowed.length} dari ${filtered.length} log terbaru. Gunakan search untuk filter lebih spesifik.`;
+            }
         } catch(e) { console.error("Render log table error:", e); }
+        finally { __logRenderPending = false; }
+        });
     }
 
     document.getElementById('refreshLogsBtn').onclick = renderLogTable;
@@ -1812,9 +1835,40 @@ let syncTimer = null;
 let lastSyncTime = 0;
 let lastPayloadHash = "";
 let isBeaconSending = false;
+let syncFailStreak = 0;
 
 const MAX_QUEUE = 20;
 const CLOUD_URL = "https://vms3mode.sapammeded.workers.dev";
+const QUEUE_KEY_PREFIX = "vms_retry_queue_";
+
+function getQueueKey() {
+    const lk = localStorage.getItem("vms_license_key") || "NO_LICENSE";
+    return QUEUE_KEY_PREFIX + lk;
+}
+
+function loadRetryQueueSafe() {
+    try {
+        const raw = localStorage.getItem(getQueueKey());
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter(i => i && i.payload && i.payload.licenseKey && i.payload.ts)
+            .sort((a, b) => (a.payload.ts || 0) - (b.payload.ts || 0))
+            .slice(-MAX_QUEUE);
+    } catch {
+        return [];
+    }
+}
+
+function persistRetryQueueSafe() {
+    try {
+        localStorage.setItem(getQueueKey(), JSON.stringify(retryQueue.slice(-MAX_QUEUE)));
+    } catch (e) {
+        retryQueue = retryQueue.slice(-Math.max(5, Math.floor(MAX_QUEUE / 2)));
+        try { localStorage.setItem(getQueueKey(), JSON.stringify(retryQueue)); } catch {}
+    }
+}
 
 // ================== HASH ==================
 function hashPayload(p){
@@ -1868,11 +1922,16 @@ function buildPayload(){
     // ======================
     // FINAL PAYLOAD
     // ======================
+    const licenseKey = localStorage.getItem("vms_license_key") || "";
+    const replayCounter = Number(localStorage.getItem("vms_replay_counter") || "0") + 1;
+    localStorage.setItem("vms_replay_counter", String(replayCounter));
     return {
         visitors: deltaVisitors,
         logs: deltaLogs,
         deviceId: localStorage.getItem('vms_device_id') || 'unknown',
         site: localStorage.getItem('vms_site') || 'SITE_A',
+        licenseKey,
+        replayId: `${licenseKey}_${localStorage.getItem('vms_device_id') || 'unknown'}_${now}_${replayCounter}`,
         ts: now,
 
         // 🔥 ANTI NAKAL REPORT
@@ -1880,6 +1939,7 @@ function buildPayload(){
             flags: antiFlags.slice(-20),
             deviceId: localStorage.getItem("vms_device_id"),
             license: localStorage.getItem("vms_license"),
+            licenseKey,
             site: localStorage.getItem("vms_site"),
             ts: now
         }
@@ -1899,7 +1959,8 @@ async function saveToCloudSafe(payload){
     return;
 }
 
-    const hash = hashPayload(payload);
+    if (!payload.licenseKey) return;
+    const hash = hashPayload(payload) + "_" + payload.licenseKey;
 
     if(hash === lastPayloadHash && lastSyncTime > 0){
         return;
@@ -1921,15 +1982,18 @@ payload.meta = meta;
         if(res.ok){
             lastSyncTime = payload.ts || Date.now();
             lastPayloadHash = hash;
+            syncFailStreak = 0;
 
             if(retryQueue.length && retryQueue[0]?.payload?.ts === payload.ts){
                 retryQueue.shift();
+                persistRetryQueueSafe();
             }
         }else{
             throw new Error("Bad response");
         }
 
     }catch(e){
+        syncFailStreak++;
 
         const exists = retryQueue.find(i => i.payload?.ts === payload.ts);
 
@@ -1943,6 +2007,8 @@ payload.meta = meta;
                 time: Date.now(),
                 retry: 0
             });
+            retryQueue.sort((a, b) => (a.payload?.ts || 0) - (b.payload?.ts || 0));
+            persistRetryQueueSafe();
         }
 
     } finally {
@@ -1959,6 +2025,7 @@ setInterval(async ()=>{
 
     if(item.retry >= 5){
         retryQueue.shift();
+        persistRetryQueueSafe();
         return;
     }
 
@@ -1971,6 +2038,7 @@ setInterval(async ()=>{
     if(retryQueue.length && retryQueue[0] === item){
         item.retry++;
         item.time = Date.now();
+        persistRetryQueueSafe();
     }
 
 }, 3000);
@@ -1992,6 +2060,9 @@ window.saveToCloud = function(){
 };
 
 window.smartSync = smartSync;
+window.getSyncQueueHealth = function(){
+    return { backlog: retryQueue.length, lastSyncTime, isSyncing, syncFailStreak };
+};
 
 // ================== HOOK ==================
 if(window.addLog){
@@ -2036,6 +2107,7 @@ window.addEventListener("visibilitychange", ()=>{
 
 // ================== INIT ==================
 window.addEventListener("load", ()=>{
+    retryQueue = loadRetryQueueSafe();
     smartSync();
 });
 
@@ -2053,6 +2125,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     window.__HYBRID_ORCHESTRATION_LOADED__ = true;
 
     const CLOUD_URL = "https://vms3mode.sapammeded.workers.dev";
+    const EXPECTED_WORKER_COMPAT = 1;
     let currentMode = "DEMO";
     let onlineStatus = true;
     let lastValidSession = null;
@@ -2074,8 +2147,17 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 3000);
             const res = await fetch(CLOUD_URL + "/", { signal: controller.signal });
+            let health = null;
+            try { health = await res.clone().json(); } catch {}
             clearTimeout(timeout);
             onlineStatus = res.ok;
+            if (health?.apiCompat && health.apiCompat !== EXPECTED_WORKER_COMPAT) {
+                const key = "vms_compat_warned";
+                if (localStorage.getItem(key) !== String(health.apiCompat)) {
+                    localStorage.setItem(key, String(health.apiCompat));
+                    showToast("⚠️ Versi aplikasi/worker sedang transisi. Sinkronisasi akan retry otomatis.", "warning");
+                }
+            }
         } catch {
             onlineStatus = false;
         }
@@ -2206,7 +2288,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
                     return true;
                 }
             }
-            showToast("❌ OFFLINE MODE - Tidak ada session valid. Koneksikan internet untuk login PRO.", "error");
+            showToast("⚠️ OFFLINE MODE - Login online diperlukan untuk membuat session awal.", "warning");
             return false;
         }
 
@@ -2429,6 +2511,8 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 
     // ========== START ==========
     async function start() {
+        if (window.__VMS_HYBRID_START_LOCK__) return;
+        window.__VMS_HYBRID_START_LOCK__ = true;
         await ensureDefaultAdmin();
         await checkOnline();
         await safeForceInit();
@@ -2483,7 +2567,9 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 
     let body = JSON.parse(options.body);
 
-    body.license = askLicense();
+    const key = askLicense();
+    if (!body.licenseKey) body.licenseKey = key;
+    body.license = body.license || localStorage.getItem("vms_license");
 
     options.body = JSON.stringify(body);
    }

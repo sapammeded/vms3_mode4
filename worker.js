@@ -25,7 +25,7 @@ export default {
         
         try {
             if (!globalThis.__vms_metrics) {
-                globalThis.__vms_metrics = { saveOk: 0, saveFail: 0, dedupReplay: 0, malformedLogs: 0, authFail: 0, lastSaveAt: 0 };
+                globalThis.__vms_metrics = { saveOk: 0, saveFail: 0, gasFail: 0, dedupReplay: 0, malformedLogs: 0, authFail: 0, lastSaveAt: 0, lastGasFailAt: 0 };
                 globalThis.__vms_started_at = Date.now();
             }
             // ==================== AUTO INIT (ANTI LOOP) ====================
@@ -144,7 +144,7 @@ export default {
                 '/approve-device', '/delete-device', '/delete-company',
                 '/mark-invoice-paid', '/admin/users', '/admin/add-user', 
                 '/admin/delete-user', '/admin/settings', '/admin/company/',
-                '/approve-device-request'
+                '/approve-device-request', '/retry-gas-sync'
             ];
             
             if (protectedPaths.some(p => path === p || path.startsWith('/admin/company/')) && !auth) {
@@ -920,7 +920,9 @@ export default {
                         const k = `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}|${log.deviceId || body.deviceId || ''}`;
                         if (seen.has(k)) continue;
                         seen.add(k);
-                        appendOnly.push(log);
+                        const persistedAt = Date.now();
+                        const sequenceId = generateSequenceId(licenseKey, persistedAt);
+                        appendOnly.push({ ...log, persistedAt, sequenceId });
                     }
                     allLogs = [...allLogs, ...appendOnly];
                     await saveData(env, 'logs', allLogs.slice(-10000));
@@ -932,9 +934,15 @@ export default {
                             companyName: company.companyName,
                             site: log.site || body.site || 'SITE_A',
                             deviceId: log.deviceId || body.deviceId || null,
-                            persistedAt: Date.now()
+                            persistedAt: log.persistedAt,
+                            sequenceId: log.sequenceId
                         }));
-                        await pushLogsToGoogleScript(gasLogs);
+                        const gasOk = await pushLogsToGoogleScript(gasLogs);
+                        if (!gasOk) {
+                            const pendingQueue = await getData(env, 'pending_gas_queue');
+                            pendingQueue.push(...gasLogs);
+                            await saveData(env, 'pending_gas_queue', pendingQueue.slice(-20000));
+                        }
                     }
                     if (rejectedExpired.length) {
                         let reports = await getData(env, 'anti_nakal_reports');
@@ -966,6 +974,23 @@ export default {
                 globalThis.__vms_metrics.lastSaveAt = Date.now();
                 
                 return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+            }
+
+            if (path === '/retry-gas-sync' && request.method === 'POST') {
+                const pendingQueue = await getData(env, 'pending_gas_queue');
+                if (!Array.isArray(pendingQueue) || pendingQueue.length === 0) {
+                    return new Response(JSON.stringify({ ok: true, replayed: 0, remaining: 0 }), { headers: corsHeaders });
+                }
+                const body = await request.json().catch(() => ({}));
+                const batchSize = Math.max(1, Math.min(1000, Number(body?.batchSize || 250)));
+                const batch = pendingQueue.slice(0, batchSize);
+                const gasOk = await pushLogsToGoogleScript(batch);
+                if (!gasOk) {
+                    return new Response(JSON.stringify({ ok: false, replayed: 0, remaining: pendingQueue.length }), { headers: corsHeaders, status: 502 });
+                }
+                const remainingQueue = pendingQueue.slice(batch.length);
+                await saveData(env, 'pending_gas_queue', remainingQueue);
+                return new Response(JSON.stringify({ ok: true, replayed: batch.length, remaining: remainingQueue.length }), { headers: corsHeaders });
             }
             
             // ==================== SYNC USERS MODULE ====================
@@ -1189,13 +1214,27 @@ async function pushLogsToGoogleScript(logs) {
             body: JSON.stringify(payload)
         });
         if (!res.ok) {
-            globalThis.__vms_metrics.saveFail++;
+            globalThis.__vms_metrics.gasFail++;
+            globalThis.__vms_metrics.lastGasFailAt = Date.now();
             console.error('[GAS] Append failed with status:', res.status);
+            return false;
         }
+        return true;
     } catch (error) {
-        globalThis.__vms_metrics.saveFail++;
+        globalThis.__vms_metrics.gasFail++;
+        globalThis.__vms_metrics.lastGasFailAt = Date.now();
         console.error('[GAS] Append request error:', error);
+        return false;
     }
+}
+
+function generateSequenceId(licenseKey, timestampMs = Date.now()) {
+    if (!globalThis.__vms_sequence_counter) {
+        globalThis.__vms_sequence_counter = 0;
+    }
+    globalThis.__vms_sequence_counter = (globalThis.__vms_sequence_counter + 1) % 1000000;
+    const counter = String(globalThis.__vms_sequence_counter).padStart(6, '0');
+    return `${licenseKey}-${timestampMs}-${counter}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
 // ==================== DEFAULT DATA ====================
@@ -1212,6 +1251,7 @@ function getDefaultData(key) {
         anti_nakal_reports: [],
         users_from_clients: [],
         processed_replays: [],
+        pending_gas_queue: [],
         settings: {
             pricing: {
                 BASIC: { price: 500000, maxDevices: 10, extraDeviceFee: 50000 },

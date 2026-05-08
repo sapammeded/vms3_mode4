@@ -36,26 +36,34 @@ function doPost(e) {
   try {
     lock.waitLock(30000);
 
-    const payload = parseAndValidatePayload_(e);
+    const parsed = parseAndValidatePayload_(e);
     const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
     const sheet = ensureTargetSheetAndHeader_(spreadsheet);
 
-    validateExpiredVisitor_(payload);
+    validateExpiredVisitor_(parsed.basePayload);
 
     const now = new Date();
-    const logTime = payload.logTime ? toDateOrNull_(payload.logTime) : now;
+    const rows = parsed.logs.map(function (log) {
+      const logTime = log.logTime ? toDateOrNull_(log.logTime) : now;
+      if (!logTime) {
+        throw createHttpError_(400, 'Field logTime/time tidak dapat diparsing sebagai tanggal.');
+      }
+      return buildAppendRow_(log, logTime);
+    });
 
-    const row = buildAppendRow_(payload, logTime);
-    const appendedRow = appendRowSafely_(sheet, row);
+    const appendResult = appendRowsSafely_(sheet, rows);
+    const firstLog = parsed.logs[0] || {};
+    const firstLogTime = firstLog.logTime ? toDateOrNull_(firstLog.logTime) : now;
 
     return jsonResponse_(200, {
       ok: true,
       message: 'APPEND_OK',
       sheet: sheet.getName(),
-      rowNumber: appendedRow,
-      reg: payload.reg,
-      action: payload.action,
-      logTime: logTime.toISOString()
+      rowNumber: appendResult.firstRow,
+      reg: firstLog.reg || parsed.basePayload.reg,
+      action: firstLog.action || parsed.basePayload.action,
+      logTime: firstLogTime ? firstLogTime.toISOString() : now.toISOString(),
+      rowsAppended: appendResult.count
     });
   } catch (err) {
     return handleError_(err);
@@ -80,21 +88,95 @@ function parseAndValidatePayload_(e) {
     throw createHttpError_(400, 'Body harus JSON valid.');
   }
 
-  const required = ['nama', 'perusahaan', 'tujuan', 'pic', 'start', 'exp', 'reg', 'action', 'site'];
+  const hasLogsArray = payload && Object.prototype.hasOwnProperty.call(payload, 'logs');
+
+  if (hasLogsArray) {
+    if (!Array.isArray(payload.logs) || payload.logs.length === 0) {
+      throw createHttpError_(400, 'Field logs harus array dan tidak boleh kosong.');
+    }
+
+    const normalizedLogs = payload.logs.map(function (item) {
+      const log = normalizeWorkerLog_(item, payload);
+      validateRequiredFields_(log, ['nama', 'perusahaan', 'tujuan', 'pic', 'start', 'exp', 'reg', 'action', 'site']);
+      log.action = normalizeAction_(log.action);
+      log.status = log.status ? String(log.status) : log.action;
+      return log;
+    });
+
+    return {
+      basePayload: normalizedLogs[0],
+      logs: normalizedLogs
+    };
+  }
+
+  const legacyPayload = payload || {};
+  validateRequiredFields_(legacyPayload, ['nama', 'perusahaan', 'tujuan', 'pic', 'start', 'exp', 'reg', 'action', 'site']);
+
+  legacyPayload.action = normalizeAction_(legacyPayload.action);
+  legacyPayload.status = legacyPayload.status ? String(legacyPayload.status) : legacyPayload.action;
+
+  return {
+    basePayload: legacyPayload,
+    logs: [legacyPayload]
+  };
+}
+
+function normalizeWorkerLog_(logItem, envelope) {
+  const log = logItem || {};
+  const root = envelope || {};
+
+  return {
+    nama: firstNonEmpty_(log.nama, root.nama, log.visitorName, root.visitorName, ''),
+    perusahaan: firstNonEmpty_(log.perusahaan, root.perusahaan, log.companyName, root.companyName, ''),
+    tujuan: firstNonEmpty_(log.tujuan, root.tujuan, ''),
+    pic: firstNonEmpty_(log.pic, root.pic, ''),
+    start: firstNonEmpty_(log.start, root.start, ''),
+    exp: firstNonEmpty_(log.exp, root.exp, ''),
+    reg: firstNonEmpty_(log.reg, root.reg, ''),
+    action: firstNonEmpty_(log.action, root.action, ''),
+    site: firstNonEmpty_(log.site, root.site, ''),
+    logTime: firstNonEmpty_(log.logTime, log.time, root.logTime, root.time, ''),
+    status: firstNonEmpty_(log.status, root.status, ''),
+    duration: firstNonEmpty_(log.duration, root.duration, ''),
+    kategori: firstNonEmpty_(log.kategori, root.kategori, ''),
+    dept: firstNonEmpty_(log.dept, root.dept, ''),
+    keterangan: firstNonEmpty_(log.keterangan, root.keterangan, ''),
+    companyId: firstNonEmpty_(log.companyId, root.companyId, ''),
+    licenseKey: firstNonEmpty_(log.licenseKey, root.licenseKey, ''),
+    sequenceId: firstNonEmpty_(log.sequenceId, root.sequenceId, ''),
+    deviceId: firstNonEmpty_(log.deviceId, root.deviceId, ''),
+    persistedAt: firstNonEmpty_(log.persistedAt, root.persistedAt, '')
+  };
+}
+
+function firstNonEmpty_() {
+  for (var i = 0; i < arguments.length; i++) {
+    var value = arguments[i];
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === 'string' && value.trim() === '') {
+      continue;
+    }
+    return value;
+  }
+  return '';
+}
+
+function validateRequiredFields_(payload, required) {
   required.forEach(function (key) {
     if (payload[key] === undefined || payload[key] === null || String(payload[key]).trim() === '') {
       throw createHttpError_(400, 'Field wajib kosong: ' + key);
     }
   });
+}
 
-  const action = String(payload.action).trim().toUpperCase();
-  if (action !== 'CHECK-IN' && action !== 'CHECK-OUT') {
+function normalizeAction_(action) {
+  const normalized = String(action || '').trim().toUpperCase();
+  if (normalized !== 'CHECK-IN' && normalized !== 'CHECK-OUT') {
     throw createHttpError_(400, 'action harus CHECK-IN atau CHECK-OUT.');
   }
-
-  payload.action = action;
-  payload.status = payload.status ? String(payload.status) : action;
-  return payload;
+  return normalized;
 }
 
 function ensureTargetSheetAndHeader_(spreadsheet) {
@@ -182,6 +264,23 @@ function buildAppendRow_(payload, logTime) {
     String(payload.dept || ''),
     String(payload.keterangan || '')
   ];
+}
+
+function appendRowsSafely_(sheet, rowsValues) {
+  if (!rowsValues || rowsValues.length === 0) {
+    throw createHttpError_(400, 'Tidak ada data log untuk di-append.');
+  }
+
+  if (rowsValues.length === 1) {
+    const onlyRow = appendRowSafely_(sheet, rowsValues[0]);
+    return { firstRow: onlyRow, count: 1 };
+  }
+
+  const nextRow = Math.max(sheet.getLastRow() + 1, 2);
+  sheet.getRange(nextRow, 1, rowsValues.length, HEADERS.length).setValues(rowsValues);
+  SpreadsheetApp.flush();
+
+  return { firstRow: nextRow, count: rowsValues.length };
 }
 
 function appendRowSafely_(sheet, rowValues) {

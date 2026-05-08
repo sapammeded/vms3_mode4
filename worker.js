@@ -268,6 +268,29 @@ export default {
                 return new Response(JSON.stringify({ ok: true, devices: companyDevices }), { headers: corsHeaders });
             }
             
+            if (path === '/device-heartbeat' && request.method === 'POST') {
+                let body = {};
+                try { body = await request.json(); } catch {}
+                const { licenseKey, deviceId, deviceName, meta } = body || {};
+                if (!licenseKey || !deviceId) {
+                    return new Response(JSON.stringify({ ok: false, message: 'licenseKey/deviceId required' }), { headers: corsHeaders, status: 400 });
+                }
+                await reconcileDeviceState(env);
+                const devices = await getData(env, 'devices');
+                let device = devices.find(d => d.deviceId === deviceId && d.licenseKey === licenseKey);
+                if (device && device.status !== 'DELETED') {
+                    device.lastSeen = Date.now();
+                    device.deviceName = deviceName || device.deviceName;
+                    device.meta = meta || device.meta;
+                    if (device.status === 'PENDING_APPROVAL' && (Date.now() - Number(device.firstSeen || Date.now())) > 7 * 86400000) {
+                        device.status = 'REJECTED';
+                    }
+                    await saveData(env, 'devices', devices);
+                }
+                console.log('DEVICE HEARTBEAT', { deviceId, licenseKey, status: device?.status || 'UNKNOWN' });
+                return new Response(JSON.stringify({ ok: true, device }), { headers: corsHeaders });
+            }
+            
             // ==================== CHECK-IN / CHECK-OUT MODULE ====================
             if (path === '/checkin' && request.method === 'POST') {
                 const body = await request.json();
@@ -411,6 +434,7 @@ export default {
             
             // ==================== ADMIN STATS MODULE ====================
             if (path === '/admin/stats' && request.method === 'GET') {
+                await reconcileDeviceState(env);
                 const companies = await getData(env, 'companies');
                 const devices = await getData(env, 'devices');
                 const activities = await getData(env, 'activities');
@@ -482,6 +506,7 @@ export default {
             
             // ==================== ADMIN DEVICE MODULE ====================
             if (path === '/admin/devices' && request.method === 'GET') {
+                await reconcileDeviceState(env);
                 const devices = await getData(env, 'devices');
                 return new Response(JSON.stringify(devices), { headers: corsHeaders });
             }
@@ -681,10 +706,16 @@ export default {
                     return new Response(JSON.stringify({ ok: false, error: 'Device not found' }), { headers: corsHeaders });
                 }
                 
+                const oldStatus = device.status;
                 device.status = approve ? 'ACTIVE' : 'REJECTED';
+                if (approve) {
+                    device.approvedAt = Date.now();
+                    device.lastSeen = Date.now();
+                }
                 if (!approve) {
                     device.deletedAt = Date.now();
                 }
+                console.log("DEVICE STATE FIX", { deviceId, oldStatus, newStatus: device.status });
                 
                 await saveData(env, 'devices', devices);
                 
@@ -711,8 +742,11 @@ export default {
                 
                 devices[index].status = 'DELETED';
                 devices[index].deletedAt = Date.now();
+                devices[index].version = Number(devices[index].version || 0) + 1;
+                devices[index].tombstone = true;
                 devices[index].deleteReason = reason;
                 await saveData(env, 'devices', devices);
+                await reconcileDeviceState(env);
                 
                 return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
             }
@@ -728,12 +762,34 @@ export default {
                     return new Response(JSON.stringify({ ok: false, error: 'Company not found' }), { headers: corsHeaders });
                 }
                 
+                const targetCompany = companies[index];
+                const targetLicenseKey = targetCompany?.licenseKey;
                 companies.splice(index, 1);
                 await saveData(env, 'companies', companies);
                 
                 const devices = await getData(env, 'devices');
                 const remainingDevices = devices.filter(d => d.companyId !== companyId);
                 await saveData(env, 'devices', remainingDevices);
+                const requests = (await getData(env, 'device_requests')).filter(r => r.companyId !== companyId && r.licenseKey !== targetLicenseKey);
+                const invoices = (await getData(env, 'invoices')).filter(i => i.companyId !== companyId && i.licenseKey !== targetLicenseKey);
+                const activities = (await getData(env, 'activities')).filter(a => a.companyId !== companyId && a.licenseKey !== targetLicenseKey);
+                const logs = (await getData(env, 'logs')).filter(l => l.companyId !== companyId && l.licenseKey !== targetLicenseKey);
+                const reports = (await getData(env, 'anti_nakal_reports')).filter(r => r.companyId !== companyId && r.licenseKey !== targetLicenseKey);
+                const visitorsRaw = await getData(env, 'visitors');
+                const visitors = {};
+                let deletedVisitors = 0;
+                for (const [k,v] of Object.entries(visitorsRaw || {})) {
+                    if (v?.companyId === companyId || v?.licenseKey === targetLicenseKey) { deletedVisitors++; continue; }
+                    visitors[k] = v;
+                }
+                await saveData(env, 'device_requests', requests);
+                await saveData(env, 'invoices', invoices);
+                await saveData(env, 'activities', activities);
+                await saveData(env, 'logs', logs);
+                await saveData(env, 'anti_nakal_reports', reports);
+                await saveData(env, 'visitors', visitors);
+                console.log("CASCADE CLEANUP", { companyId, deletedDevices: devices.length - remainingDevices.length, deletedLogs: (await getData(env, 'logs')).length - logs.length, deletedVisitors });
+                await reconcileDeviceState(env);
                 
                 return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
             }
@@ -852,7 +908,8 @@ export default {
             
             // ==================== SYNC MODULE (FIELD DEVICE) ====================
             if (path === '/save' && request.method === 'POST') {
-                const body = await request.json();
+                let body = {};
+                try { body = await request.json(); } catch { body = {}; }
                 const licenseKey = body.licenseKey;
                 if (!licenseKey) {
                     globalThis.__vms_metrics.saveFail++;
@@ -867,12 +924,14 @@ export default {
                 const replayId = body.replayId || null;
                 if (replayId) {
                     const replayKeys = await getData(env, 'processed_replays');
-                    if (replayKeys.includes(replayId)) {
+                    const nowTs = Date.now();
+                    const normalizedReplay = (replayKeys || []).map(x => typeof x === "string" ? { id:x, ts:nowTs } : x).filter(x => (nowTs - Number(x.ts || nowTs)) < 3 * 86400000);
+                    if (normalizedReplay.some(x => x.id === replayId)) {
                         globalThis.__vms_metrics.dedupReplay++;
                         return new Response(JSON.stringify({ ok: true, dedup: true }), { headers: corsHeaders });
                     }
-                    replayKeys.push(replayId);
-                    await saveData(env, 'processed_replays', replayKeys.slice(-5000));
+                    normalizedReplay.push({ id: replayId, ts: nowTs });
+                    await saveData(env, 'processed_replays', normalizedReplay.slice(-1500));
                 }
                 if (company.expiredAt < Date.now()) {
                     globalThis.__vms_metrics.saveFail++;
@@ -882,11 +941,28 @@ export default {
                 if (body.visitors && Object.keys(body.visitors).length > 0) {
                     let allVisitors = await getData(env, 'visitors');
                     for (const [key, value] of Object.entries(body.visitors)) {
+                        if (!value || typeof value !== 'object') continue;
+                        const normalizedVisitor = {
+                            ...value,
+                            nama: value.nama || value.name || "",
+                            perusahaan: value.perusahaan || value.company || "",
+                            kategori: value.kategori || value.category || "UMUM",
+                            tujuan: value.tujuan || value.purpose || "",
+                            start: value.start || value.startDate || "",
+                            exp: value.exp || value.expDate || "",
+                            pic: value.pic || "",
+                            dept: value.dept || "",
+                            keterangan: value.keterangan || value.note || ""
+                        };
                         const prev = allVisitors[key] || {};
                         const prevUpdated = Number(prev.updatedAt || 0);
-                        const incomingUpdated = Number(value?.updatedAt || 0);
-                        if (incomingUpdated < prevUpdated) continue;
-                        allVisitors[key] = { ...prev, ...value, licenseKey, lastSync: Date.now() };
+                        const incomingUpdated = Number(normalizedVisitor?.updatedAt || 0);
+                        const prevVersion = Number(prev.version || 0);
+                        const incomingVersion = Number(normalizedVisitor?.version || 0);
+                        const accepted = !(incomingUpdated < prevUpdated || incomingVersion < prevVersion);
+                        console.log("VISITOR CONFLICT", { key, prevUpdated, incomingUpdated, prevVersion, incomingVersion, accepted });
+                        if (!accepted) continue;
+                        allVisitors[key] = { ...prev, ...normalizedVisitor, licenseKey, lastSync: Date.now() };
                     }
                     await saveData(env, 'visitors', allVisitors);
                 }
@@ -895,10 +971,23 @@ export default {
                     let allLogs = await getData(env, 'logs');
                     const allVisitors = await getData(env, 'visitors');
                     const normalizedLogs = body.logs
-                        .filter(l => l && l.reg && l.action && l.time)
-                        .map(l => ({ ...l, licenseKey, companyId: company.id, companyName: company.companyName }));
+                        .filter(l => l && l.reg && l.action && (l.time || l.logTime))
+                        .map(l => {
+                            const logTime = l.time || l.logTime;
+                            const normalizedTime = typeof logTime === "string" ? logTime : new Date(logTime).toISOString();
+                            return {
+                                ...l,
+                                time: normalizedTime,
+                                logTime: normalizedTime,
+                                sequenceId: l.sequenceId || null,
+                                licenseKey,
+                                companyId: company.id,
+                                companyName: company.companyName
+                            };
+                        });
                     globalThis.__vms_metrics.malformedLogs += Math.max(0, body.logs.length - normalizedLogs.length);
-                    const seen = new Set(allLogs.slice(0, 4000).map(l => `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}|${l.deviceId || ''}`));
+                    const seen = new Set(allLogs.slice(0, 7000).map(l => l.sequenceId || `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}|${l.deviceId || ''}`));
+                    const logicalSeen = new Set(allLogs.slice(0, 7000).map(l => `${l.reg}|${l.action}|${String(l.time||'').slice(0,16)}|${l.site||''}`));
                     const appendOnly = [];
                     const rejectedExpired = [];
                     for (const log of normalizedLogs) {
@@ -917,11 +1006,14 @@ export default {
                                 continue;
                             }
                         }
-                        const k = `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}|${log.deviceId || body.deviceId || ''}`;
+                        const k = log.sequenceId || `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}|${log.deviceId || body.deviceId || ''}`;
+                        const lk = `${log.reg}|${log.action}|${String(log.time||'').slice(0,16)}|${log.site||''}`;
                         if (seen.has(k)) continue;
+                        if (logicalSeen.has(lk)) continue;
                         seen.add(k);
+                        logicalSeen.add(lk);
                         const persistedAt = Date.now();
-                        const sequenceId = generateSequenceId(licenseKey, persistedAt);
+                        const sequenceId = log.sequenceId || generateSequenceId(licenseKey, persistedAt);
                         appendOnly.push({ ...log, persistedAt, sequenceId });
                     }
                     allLogs = [...allLogs, ...appendOnly];
@@ -975,6 +1067,47 @@ export default {
                 globalThis.__vms_metrics.lastSaveAt = Date.now();
                 
                 return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+            }
+
+            if (path === '/pull' && request.method === 'GET') {
+                const licenseKey = url.searchParams.get('licenseKey') || "";
+                const sinceRaw = url.searchParams.get('since') || "0";
+                const siteFilter = url.searchParams.get('site') || "";
+                const since = Number(sinceRaw) || 0;
+                if (!licenseKey) {
+                    return new Response(JSON.stringify({ ok: false, message: 'licenseKey required' }), { headers: corsHeaders, status: 400 });
+                }
+                const companies = await getData(env, 'companies');
+                const company = companies.find(c => c.licenseKey === licenseKey);
+                if (!company) {
+                    return new Response(JSON.stringify({ ok: false, message: 'Invalid licenseKey' }), { headers: corsHeaders, status: 403 });
+                }
+                const allVisitors = await getData(env, 'visitors');
+                const visitors = {};
+                const MAX_PULL_VISITORS = 2000;
+                let visitorCount = 0;
+                for (const [key, v] of Object.entries(allVisitors || {})) {
+                    if (v?.licenseKey !== licenseKey) continue;
+                    if (Number(v?.updatedAt || 0) >= since || Number(v?.lastSync || 0) >= since){
+                        visitors[key] = v;
+                        visitorCount++;
+                        if(visitorCount >= MAX_PULL_VISITORS) break;
+                    }
+                }
+                const MAX_PULL_LOGS = 1000;
+                const allLogs = await getData(env, 'logs');
+                const logs = (allLogs || [])
+                    .filter(l => l?.licenseKey === licenseKey)
+                    .filter(l => !siteFilter || l?.site === siteFilter)
+                    .filter(l => Number(l?.persistedAt || 0) >= since || Number(l?.time ? Date.parse(l.time) : 0) >= since)
+                    .sort((a,b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
+                    .map(l => ({ ...l, sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) }));
+                const dedupeMap = new Map();
+                logs.forEach(l => dedupeMap.set(l.sequenceId || `${l.reg}|${l.action}|${String(l.time||'').slice(0,16)}|${l.site||''}`, l));
+                const dedupedLogs = Array.from(dedupeMap.values()).slice(-MAX_PULL_LOGS);
+                console.log("AUTHORITATIVE LOG SORT", { total: dedupedLogs.length });
+                console.log('PULL DEDUPE', { before: logs.length, after: dedupedLogs.length });
+                return new Response(JSON.stringify({ ok: true, visitors, logs: dedupedLogs, serverTs: Date.now() }), { headers: corsHeaders });
             }
 
             if (path === '/retry-gas-sync' && request.method === 'POST') {
@@ -1283,6 +1416,60 @@ function generateSequenceId(licenseKey, timestampMs = Date.now()) {
 function generateGasReplayId(log) {
     if (log && log.sequenceId) return `gas-${log.sequenceId}`;
     return `gas-${crypto.randomUUID()}`;
+}
+
+async function reconcileDeviceState(env) {
+    const nowTs = Date.now();
+    if(globalThis.__lastReconcile && (nowTs - globalThis.__lastReconcile) < 300000){
+        return;
+    }
+    globalThis.__lastReconcile = nowTs;
+    const now = Date.now();
+    const stalePendingMs = 24 * 60 * 60 * 1000;
+    const staleDeletedMs = 30 * 86400000;
+    let devices = await getData(env, 'devices');
+    let companies = await getData(env, 'companies');
+    let requests = await getData(env, 'device_requests');
+    let invoices = await getData(env, 'invoices');
+    const companyIds = new Set((companies || []).map(c => c.id));
+
+    const bestByDeviceId = new Map();
+    for (const d of (devices || [])) {
+        if(!d || !d.deviceId) continue;
+        const cur = bestByDeviceId.get(d.deviceId);
+        if(!cur){ bestByDeviceId.set(d.deviceId, d); continue; }
+        if(cur.status !== 'ACTIVE' && d.status === 'ACTIVE') bestByDeviceId.set(d.deviceId, d);
+    }
+    devices = Array.from(bestByDeviceId.values()).filter(d => {
+        if (!d) return false;
+        if (!companyIds.has(d.companyId)) return false;
+        if (d.status === 'DELETED' && Number(d.deletedAt || 0) > 0 && (now - Number(d.deletedAt)) > staleDeletedMs) return false;
+        if (d.status === 'PENDING_APPROVAL' && Number(d.firstSeen || now) > 0 && (now - Number(d.firstSeen || now)) > stalePendingMs) return false;
+        return true;
+    });
+
+    requests = (requests || []).filter(r => r && companyIds.has(r.companyId) && !((r.status === 'PENDING' || r.status === 'WAITING_PAYMENT') && (now - Number(r.requestedAt || now)) > stalePendingMs));
+    invoices = (invoices || []).filter(i => i && companyIds.has(i.companyId));
+    const deletedDeviceIds = new Set(devices.filter(d => d.status === 'DELETED').map(d => d.deviceId));
+    requests = requests.filter(r => !deletedDeviceIds.has(r.deviceId));
+    console.log("ZOMBIE CLEANUP", { requests: requests.length, invoices: invoices.length });
+
+    for (const company of companies) {
+        const companyDevices = devices.filter(d => d.companyId === company.id);
+        company.approvedDevices = companyDevices.filter(d => d.status === 'ACTIVE' || d.status === 'SUSPENDED' || d.status === 'BANNED').length;
+        company.activeDevices = companyDevices.filter(d => d.status === 'ACTIVE' && (now - Number(d.lastSeen || 0)) < 5 * 60000).length;
+        company.activeOnlineDevices = company.activeDevices;
+        company.pendingDevices = companyDevices.filter(d => d.status === 'PENDING_APPROVAL').length;
+        company.suspendedDevices = companyDevices.filter(d => d.status === 'SUSPENDED').length;
+        company.deletedDevices = companyDevices.filter(d => d.status === 'DELETED').length;
+        company.currentDevices = company.activeDevices;
+    }
+
+    await saveData(env, 'devices', devices);
+    await saveData(env, 'companies', companies);
+    await saveData(env, 'device_requests', requests);
+    await saveData(env, 'invoices', invoices);
+    console.log('DEVICE RECONCILE', { devices: devices.length, companies: companies.length, requests: requests.length, invoices: invoices.length });
 }
 
 function normalizeGasQueueEntries(queue) {

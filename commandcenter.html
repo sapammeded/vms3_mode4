@@ -1394,7 +1394,7 @@
     async function loadDevices() {
         const data = await apiCall("/admin/devices");
         if (data && Array.isArray(data)) {
-            devicesData = data;
+            devicesData = data.filter(d => d && d.status !== "DELETED");
             renderDevicesTable();
             renderPendingRequests();
         }
@@ -1407,7 +1407,7 @@
         const search = document.getElementById("deviceSearch")?.value.toLowerCase() || "";
         const statusFilter = document.getElementById("deviceStatusFilter")?.value || "";
         
-        const filtered = devicesData.filter(d => 
+        const filtered = devicesData.filter(d => d.status !== "DELETED" &&
             (d.deviceId.toLowerCase().includes(search) || 
              (d.companyName || "").toLowerCase().includes(search) ||
              (d.deviceName || "").toLowerCase().includes(search)) &&

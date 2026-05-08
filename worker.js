@@ -2,6 +2,8 @@
 // Cloudflare Worker untuk VMS SAPAM MEDED
 // KV Namespace: VMS_STORAGE
 
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxe5nyQc-tL2Hi2rZ3Qs8n4ApNkAzCSr14gMxnZy9SX8ehrqKaBAPHrdLO4WPUFEIRD9w/exec';
+
 // ==================== MAIN HANDLER ====================
 export default {
     async fetch(request, env, ctx) {
@@ -918,6 +920,14 @@ export default {
                     }
                     allLogs = [...allLogs, ...appendOnly];
                     await saveData(env, 'logs', allLogs.slice(-10000));
+                    if (appendOnly.length) {
+                        await pushLogsToGoogleScript({
+                            licenseKey,
+                            company,
+                            body,
+                            logs: appendOnly
+                        });
+                    }
                     if (rejectedExpired.length) {
                         let reports = await getData(env, 'anti_nakal_reports');
                         for (const rejected of rejectedExpired) {
@@ -1155,6 +1165,38 @@ async function saveData(env, key, data) {
     } catch (e) {
         console.error(`[SAVE_DATA] Error for key "${key}":`, e);
         return false;
+    }
+}
+
+async function pushLogsToGoogleScript({ licenseKey, company, body, logs }) {
+    try {
+        const payload = {
+            source: 'vms-worker',
+            mode: 'append-only',
+            licenseKey,
+            companyId: company.id,
+            companyName: company.companyName,
+            site: body.site || 'SITE_A',
+            deviceId: body.deviceId || null,
+            logs: logs.map(log => ({
+                ...log,
+                site: log.site || body.site || 'SITE_A',
+                deviceId: log.deviceId || body.deviceId || null,
+                persistedAt: Date.now()
+            }))
+        };
+        const res = await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            globalThis.__vms_metrics.saveFail++;
+            console.error('[GAS] Append failed with status:', res.status);
+        }
+    } catch (error) {
+        globalThis.__vms_metrics.saveFail++;
+        console.error('[GAS] Append request error:', error);
     }
 }
 

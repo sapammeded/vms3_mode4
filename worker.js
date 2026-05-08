@@ -860,9 +860,9 @@ export default {
                 }
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.licenseKey === licenseKey);
-                if (!company || company.expiredAt < Date.now()) {
+                if (!company) {
                     globalThis.__vms_metrics.saveFail++;
-                    return new Response(JSON.stringify({ ok: false, message: 'Invalid or expired licenseKey' }), { headers: corsHeaders, status: 403 });
+                    return new Response(JSON.stringify({ ok: false, message: 'Invalid licenseKey' }), { headers: corsHeaders, status: 403 });
                 }
                 const replayId = body.replayId || null;
                 if (replayId) {
@@ -873,6 +873,10 @@ export default {
                     }
                     replayKeys.push(replayId);
                     await saveData(env, 'processed_replays', replayKeys.slice(-5000));
+                }
+                if (company.expiredAt < Date.now()) {
+                    globalThis.__vms_metrics.saveFail++;
+                    return new Response(JSON.stringify({ ok: false, message: 'License expired' }), { headers: corsHeaders, status: 403 });
                 }
                 
                 if (body.visitors && Object.keys(body.visitors).length > 0) {
@@ -894,7 +898,7 @@ export default {
                         .filter(l => l && l.reg && l.action && l.time)
                         .map(l => ({ ...l, licenseKey, companyId: company.id, companyName: company.companyName }));
                     globalThis.__vms_metrics.malformedLogs += Math.max(0, body.logs.length - normalizedLogs.length);
-                    const seen = new Set(allLogs.slice(0, 4000).map(l => `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}`));
+                    const seen = new Set(allLogs.slice(0, 4000).map(l => `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}|${l.deviceId || ''}`));
                     const appendOnly = [];
                     const rejectedExpired = [];
                     for (const log of normalizedLogs) {
@@ -921,12 +925,16 @@ export default {
                     allLogs = [...allLogs, ...appendOnly];
                     await saveData(env, 'logs', allLogs.slice(-10000));
                     if (appendOnly.length) {
-                        await pushLogsToGoogleScript({
+                        const gasLogs = appendOnly.map(log => ({
+                            ...log,
                             licenseKey,
-                            company,
-                            body,
-                            logs: appendOnly
-                        });
+                            companyId: company.id,
+                            companyName: company.companyName,
+                            site: log.site || body.site || 'SITE_A',
+                            deviceId: log.deviceId || body.deviceId || null,
+                            persistedAt: Date.now()
+                        }));
+                        await pushLogsToGoogleScript(gasLogs);
                     }
                     if (rejectedExpired.length) {
                         let reports = await getData(env, 'anti_nakal_reports');
@@ -1168,22 +1176,12 @@ async function saveData(env, key, data) {
     }
 }
 
-async function pushLogsToGoogleScript({ licenseKey, company, body, logs }) {
+async function pushLogsToGoogleScript(logs) {
     try {
         const payload = {
             source: 'vms-worker',
             mode: 'append-only',
-            licenseKey,
-            companyId: company.id,
-            companyName: company.companyName,
-            site: body.site || 'SITE_A',
-            deviceId: body.deviceId || null,
-            logs: logs.map(log => ({
-                ...log,
-                site: log.site || body.site || 'SITE_A',
-                deviceId: log.deviceId || body.deviceId || null,
-                persistedAt: Date.now()
-            }))
+            logs
         };
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
@@ -1267,7 +1265,9 @@ function buildFeaturePolicy(pkg, maxDevices) {
         allowSiteRename: isPro || isBasic,
         staticSitesOnly: !isPro,
         staticSites: ['SITE_A', 'SITE_B', 'SITE_C'],
-        maxDevices: isPro ? -1 : (Number(maxDevices) || (isBasic ? 5 : 5)),
+        maxDevices: Number(maxDevices) || (isBasic ? 5 : 5),
+        unlimitedDevices: isPro,
+        basicRenameSlots: isBasic ? 2 : 0,
         unlimitedScannerLogs: true,
         appendOnlyScannerLogs: true
     };

@@ -205,6 +205,11 @@
             <div class="form-card">
                 <div style="display:flex; gap: 12px; flex-wrap:wrap; margin-bottom:20px;">
                     <select id="scanMode"><option value="CHECK_IN">CHECK-IN</option><option value="CHECK_OUT">CHECK-OUT</option></select>
+                    <select id="cameraSelector">
+                        <option value="auto_back">Back Camera</option>
+                        <option value="auto_front">Front Camera</option>
+                        <option value="auto_external">External Camera</option>
+                    </select>
                     <button id="startCamBtn">📷 Start Camera</button>
                     <button id="stopCamBtn" class="btn-outline">Stop</button>
                     <button id="uploadQrBtn">🖼️ Upload QR</button>
@@ -256,6 +261,29 @@ let WORKER_FEATURES = JSON.parse(localStorage.getItem("vms_worker_features") || 
 let currentUser = null;
 let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
 let lastScanTime = {};
+
+function restoreLicenseSession(){
+    const savedLicenseKey = localStorage.getItem("vms_license_key") || sessionStorage.getItem("vms_license_key");
+    const savedPackage = localStorage.getItem("vms_license") || sessionStorage.getItem("vms_license");
+    const savedFeatures = localStorage.getItem("vms_worker_features") || sessionStorage.getItem("vms_worker_features");
+    if(savedLicenseKey){
+        localStorage.setItem("vms_license_key", savedLicenseKey);
+        sessionStorage.setItem("vms_license_key", savedLicenseKey);
+    }
+    if(savedPackage){
+        LICENSE_MODE = savedPackage;
+        localStorage.setItem("vms_license", savedPackage);
+        sessionStorage.setItem("vms_license", savedPackage);
+    }
+    if(savedFeatures){
+        try{
+            WORKER_FEATURES = JSON.parse(savedFeatures);
+            localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+            sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+        }catch(e){}
+    }
+}
+restoreLicenseSession();
 
 // =============================
 // 🔥 ANTI NAKAL ENGINE
@@ -422,7 +450,10 @@ async function applyLicenseKey(key) {
             WORKER_FEATURES = data.features || WORKER_FEATURES;
             localStorage.setItem("vms_license", LICENSE_MODE);
             localStorage.setItem("vms_license_key", key);
+            sessionStorage.setItem("vms_license", LICENSE_MODE);
+            sessionStorage.setItem("vms_license_key", key);
             if (WORKER_FEATURES) localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+            if (WORKER_FEATURES) sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
             
             // Simpan info company
             if (data.company) {
@@ -436,6 +467,7 @@ async function applyLicenseKey(key) {
             // Reload dashboard biar limit berubah
             if (window.renderDashboard) window.renderDashboard();
             if (window.updateMonetizationUI) window.updateMonetizationUI();
+            refreshLicenseFeaturesFromWorker();
         } else {
             toast(data?.message || "License tidak valid", "error");
         }
@@ -575,6 +607,22 @@ function setSite(site){
 
     localStorage.setItem("vms_site", SITE_ID);
 
+    const defaultSites = ["SITE_A", "SITE_B", "SITE_C"];
+    const isExistingDefault = defaultSites.includes(clean);
+    let dynamicSites = JSON.parse(localStorage.getItem("vms_dynamic_sites") || "[]");
+    const workerMaxDynamicSites = Number(WORKER_FEATURES?.maxDynamicSites || 0);
+    if(!isExistingDefault){
+        if(!dynamicSites.includes(clean)){
+            if(isBasic()){
+                if(dynamicSites.length >= 2){ toast("BASIC hanya max 2 dynamic site rename slot", "error"); return; }
+            } else if(!isPro()){
+                if(workerMaxDynamicSites > 0 && dynamicSites.length >= workerMaxDynamicSites){ toast("Limit dynamic site tercapai", "error"); return; }
+            }
+            dynamicSites.push(clean);
+            localStorage.setItem("vms_dynamic_sites", JSON.stringify(dynamicSites));
+        }
+    }
+
     document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel=>{
         if(![...sel.options].find(o=>o.value===clean)){
             let opt = document.createElement("option");
@@ -590,6 +638,24 @@ function setSite(site){
     if(window.renderDashboard) window.renderDashboard();
     if(window.renderLogTable) window.renderLogTable();
     if(window.updateMonetizationUI) window.updateMonetizationUI();
+}
+
+async function refreshLicenseFeaturesFromWorker(){
+    const licenseKey = localStorage.getItem("vms_license_key");
+    if(!licenseKey) return;
+    try{
+        const res = await fetch(WORKER_BASE_URL + "/license-context", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ licenseKey })
+        });
+        if(!res.ok) return;
+        const data = await res.json();
+        if(data?.ok && data?.features){
+            WORKER_FEATURES = data.features;
+            localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+        }
+    }catch(e){}
 }
 
 function lockLicense(){
@@ -1251,14 +1317,28 @@ window.onunhandledrejection = function(e) {
     let scannerInstance = null;
     let isScanning = false;
     let currentCameraId = null;
+    let lastQrErrorToastAt = 0;
+    const CAMERA_PREF_KEY = "vms_camera_pref";
+
+    function resolveCameraPreference(cameras){
+        const preferred = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
+        const rememberedCameraId = localStorage.getItem("vms_last_camera_id");
+        const remembered = cameras.find(c => c.id === rememberedCameraId);
+        if (remembered) return remembered.id;
+        const byType = {
+            auto_back: cameras.find(cam => /back|rear|belakang/i.test(cam.label || "")),
+            auto_front: cameras.find(cam => /front|user|depan/i.test(cam.label || "")),
+            auto_external: cameras.find(cam => /external|usb|virtual|obs/i.test(cam.label || ""))
+        };
+        return (byType[preferred] || byType.auto_back || cameras[0] || {}).id || null;
+    }
 
     async function initScanner() {
         if (scannerInstance) { await stopScanner(); }
         try {
             const cameras = await Html5Qrcode.getCameras();
             if (!cameras || cameras.length === 0) { toast("Tidak ada kamera terdeteksi", "error"); return false; }
-            const backCamera = cameras.find(cam => cam.label.toLowerCase().includes('back') || cam.label.toLowerCase().includes('rear') || cam.label.toLowerCase().includes('belakang'));
-            currentCameraId = backCamera ? backCamera.id : cameras[0].id;
+            currentCameraId = resolveCameraPreference(cameras);
             scannerInstance = new Html5Qrcode("cameraPreview");
             return true;
         } catch (err) { console.error("Init scanner error:", err); toast("Gagal inisialisasi kamera", "error"); return false; }
@@ -1274,9 +1354,18 @@ window.onunhandledrejection = function(e) {
                     if (processingRegs.has(decodedText)) { return; }
                     try { await processScan(decodedText); } catch (err) {}
                 },
-                (error) => { if (error && !error.includes("No MultiFormat Readers")) { console.log("Scan error:", error); } }
+                (error) => {
+                    if (error && !error.includes("No MultiFormat Readers")) {
+                        const now = Date.now();
+                        if(now - lastQrErrorToastAt > 5000){
+                            lastQrErrorToastAt = now;
+                            console.log("Scan error:", error);
+                        }
+                    }
+                }
             );
             isScanning = true;
+            if(currentCameraId) localStorage.setItem("vms_last_camera_id", currentCameraId);
             toast("Scanner siap - unlimited scan mode", "success");
         } catch (err) { console.error("Start scanner error:", err); toast("Gagal start kamera: " + err.message, "error"); isScanning = false; }
     }
@@ -1447,7 +1536,9 @@ window.onunhandledrejection = function(e) {
         requestAnimationFrame(() => {
         try {
             let search = document.getElementById('searchLog')?.value.toLowerCase() || '';
-            let filtered = logs.filter(l=> (l.name?.toLowerCase().includes(search) || l.reg?.toLowerCase().includes(search)) && (!l.site || l.site === SITE_ID));
+            let filtered = logs
+                .filter(l=> (l.name?.toLowerCase().includes(search) || l.reg?.toLowerCase().includes(search)) && (!l.site || l.site === SITE_ID))
+                .sort((a,b)=> (Number(b.persistedAt || 0) || Date.parse(b.time || b.logTime || 0)) - (Number(a.persistedAt || 0) || Date.parse(a.time || a.logTime || 0)));
             const signature = `${SITE_ID}|${search}|${filtered.length}|${filtered[0]?.time || 0}`;
             if (signature === __lastLogSignature && document.hidden) return;
             __lastLogSignature = signature;
@@ -1692,8 +1783,24 @@ window.onunhandledrejection = function(e) {
     };
     document.getElementById('siteSelector').onchange = (e) => setSite(e.target.value);
 document.getElementById('siteSelectorTop').onchange = (e) => setSite(e.target.value);
+document.getElementById('cameraSelector').onchange = (e) => localStorage.setItem(CAMERA_PREF_KEY, e.target.value);
+document.getElementById('cameraSelector').value = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
 
 setSite(SITE_ID);
+refreshLicenseFeaturesFromWorker();
+try{
+    const dynamicSites = JSON.parse(localStorage.getItem("vms_dynamic_sites") || "[]");
+    dynamicSites.forEach(s => {
+        document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel=>{
+            if(![...sel.options].find(o=>o.value===s)){
+                let opt = document.createElement("option");
+                opt.value = s;
+                opt.text = s;
+                sel.appendChild(opt);
+            }
+        });
+    });
+}catch(e){}
 
 renderDashboard(); 
 renderLogTable();
@@ -1811,9 +1918,17 @@ let lastSyncTime = 0;
 let lastPayloadHash = "";
 let isBeaconSending = false;
 let syncFailStreak = 0;
+let lastPullTs = 0;
+let isPulling = false;
+let lastSaveTs = 0;
+let syncDebounceTimer = null;
+const MIN_SYNC_INTERVAL = 3000;
+let pendingSyncPayload = null;
+let syncLock = false;
+let logsSortedDirty = true;
+const CLIENT_EPOCH = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
 
-const MAX_QUEUE = 20;
-const WORKER_BASE_URL = "https://vms3modev4.sapammeded.workers.dev";
+const MAX_QUEUE = 50;
 const QUEUE_KEY_PREFIX = "vms_retry_queue_";
 
 function getQueueKey() {
@@ -1860,6 +1975,49 @@ function hashPayload(p){
             .sort()
             .join("|")
     );
+}
+function deterministicFingerprint(payload){
+    try{
+        const visitors = Object.entries(payload?.visitors || {}).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${k}:${v.updatedAt||0}:${v.version||0}`).join("|");
+        const logs = (payload?.logs || []).map(l => `${l.sequenceId || ""}:${l.reg||""}:${l.action||""}:${l.time||""}`).sort().join("|");
+        return `${payload?.licenseKey||""}::${visitors}::${logs}`;
+    }catch(e){ return String(Date.now()); }
+}
+function hardPruneMemory(){
+    try{
+        window.logs = (window.logs || []).sort((a,b)=>{
+            const diff = getLogSortTs(b)-getLogSortTs(a);
+            if(diff !== 0) return diff;
+            return String(b.sequenceId||"").localeCompare(String(a.sequenceId||""));
+        }).slice(0,2000);
+        logsSortedDirty = false;
+        retryQueue = (retryQueue || []).slice(-MAX_QUEUE);
+        const THIRTY_DAYS = 30 * 86400000;
+        const now = Date.now();
+        Object.entries(window.visitors || {}).forEach(([k,v])=>{
+            if(v?.deletedAt && (now - Number(v.deletedAt||0)) > THIRTY_DAYS) delete window.visitors[k];
+            if(v?.foto && typeof v.foto === "string" && v.foto.length > 2000){
+                v.photoBlobKey = v.photoBlobKey || `${k}_photo`;
+                delete v.foto;
+            }
+        });
+        console.log("MEMORY PRUNE", { logs: (window.logs||[]).length, retryQueue: retryQueue.length, visitors: Object.keys(window.visitors||{}).length });
+    }catch(e){}
+}
+function getLogSortTs(l){ return Number(l?.sortTs || 0) || Number(l?.persistedAt || 0) || Date.parse(l?.time || l?.logTime || 0) || 0; }
+function shouldAcceptIncoming(local, incoming){
+    if(!local) return true;
+    const lu = Number(local?.updatedAt || 0);
+    const iu = Number(incoming?.updatedAt || 0);
+    const lv = Number(local?.version || 0);
+    const iv = Number(incoming?.version || 0);
+    const lp = getLogSortTs(local);
+    const ip = getLogSortTs(incoming);
+    if(local?.mutationSource === CLIENT_EPOCH && iu <= lu) return false;
+    if(iu < lu) return false;
+    if(iv < lv) return false;
+    if(ip && lp && ip < lp) return false;
+    return true;
 }
 
 // ================== BUILD PAYLOAD (ANTI NAKAL + SAFE) ==================
@@ -1921,6 +2079,124 @@ function buildPayload(){
     };
 }
 
+function normalizeSavePayload(input){
+    const p = (input && typeof input === "object") ? input : {};
+    const normalizedVisitors = {};
+    Object.entries(p.visitors || {}).forEach(([key, value]) => {
+        if (!value || typeof value !== "object") return;
+        normalizedVisitors[key] = {
+            ...value,
+            reg: value.reg || key.split("_").slice(1).join("_"),
+            site: value.site || key.split("_")[0] || (localStorage.getItem("vms_site") || "SITE_A"),
+            nama: value.nama || value.name || "",
+            perusahaan: value.perusahaan || value.company || "",
+            tujuan: value.tujuan || value.purpose || "",
+            pic: value.pic || "",
+            start: value.start || value.startDate || "",
+            exp: value.exp || value.expDate || "",
+            kategori: value.kategori || value.category || "UMUM",
+            dept: value.dept || "",
+            keterangan: value.keterangan || value.note || "",
+            mutationSource: value.mutationSource || CLIENT_EPOCH,
+            updatedAt: Number(value.updatedAt || Date.now()),
+            version: Number(value.version || 1)
+        };
+        if(normalizedVisitors[key].foto && typeof normalizedVisitors[key].foto === "string" && normalizedVisitors[key].foto.length > 2000){
+            normalizedVisitors[key].photoBlobKey = normalizedVisitors[key].photoBlobKey || `${key}_photo`;
+            delete normalizedVisitors[key].foto;
+        }
+    });
+    const normalizedLogs = (Array.isArray(p.logs) ? p.logs : []).map(l => ({
+        reg: l?.reg || "",
+        nama: l?.nama || l?.name || "",
+        name: l?.name || l?.nama || "",
+        perusahaan: l?.perusahaan || l?.company || "",
+        company: l?.company || l?.perusahaan || "",
+        kategori: l?.kategori || l?.category || "UMUM",
+        category: l?.category || l?.kategori || "UMUM",
+        action: l?.action || "UNKNOWN",
+        time: typeof (l?.time || l?.logTime) === "string" ? (l?.time || l?.logTime) : new Date(l?.time || Date.now()).toISOString(),
+        logTime: typeof (l?.time || l?.logTime) === "string" ? (l?.time || l?.logTime) : new Date(l?.time || Date.now()).toISOString(),
+        sortTs: Number(l?.sortTs || 0) || Date.parse(l?.time || l?.logTime || 0) || Date.now(),
+        sequenceId: l?.sequenceId || null,
+        site: l?.site || localStorage.getItem("vms_site") || "SITE_A",
+        deviceId: l?.deviceId || localStorage.getItem("vms_device_id") || "unknown"
+    })).filter(l => l.reg && l.action);
+    console.log("PAYLOAD NORMALIZED", { visitors: Object.keys(normalizedVisitors).length, logs: normalizedLogs.length });
+    return {
+        ...p,
+        visitors: normalizedVisitors,
+        logs: normalizedLogs,
+        licenseKey: p.licenseKey || localStorage.getItem("vms_license_key") || "",
+        license: p.license || localStorage.getItem("vms_license") || "DEMO",
+        site: p.site || localStorage.getItem("vms_site") || "SITE_A",
+        deviceId: p.deviceId || localStorage.getItem("vms_device_id") || "unknown",
+        ts: Number(p.ts || Date.now())
+    };
+}
+window.normalizeSavePayload = normalizeSavePayload;
+
+async function pullFromCloud(){
+    const licenseKey = localStorage.getItem("vms_license_key");
+    if(!licenseKey || !navigator.onLine) return;
+    if(isPulling || syncLock) return;
+    try{
+        syncLock = true;
+        isPulling = true;
+        const res = await fetch(WORKER_BASE_URL + `/pull?licenseKey=${encodeURIComponent(licenseKey)}&since=${lastPullTs}&site=${encodeURIComponent(SITE_ID)}`);
+        if(!res.ok) return;
+        const data = await res.json();
+        const serverTs = Number(data?.serverTs || 0);
+        if(serverTs > lastPullTs) lastPullTs = serverTs;
+        console.log("SYNC PULL", { since: lastPullTs, inLogs: (data?.logs || []).length });
+        const incomingVisitors = data?.visitors || {};
+        const incomingLogs = Array.isArray(data?.logs) ? data.logs : [];
+        Object.entries(incomingVisitors).forEach(([k,v]) => {
+            if(!k || !v || typeof v !== "object") return;
+            if(!(v.reg || k.includes("_"))) return;
+            const local = (window.visitors || {})[k];
+            if(shouldAcceptIncoming(local, v)){
+                window.visitors[k] = v;
+            }
+        });
+        if(incomingLogs.length){
+            const map = new Map((window.logs || []).map(l => [l.sequenceId || `${l.reg}|${l.action}|${l.time}|${l.site}`, l]));
+            incomingLogs.forEach(l => {
+                const key = l.sequenceId || `${l.reg}|${l.action}|${l.time}|${l.site}`;
+                const existing = map.get(key);
+                if(!existing){
+                    window.logs.push(l);
+                    map.set(key, l);
+                } else if(shouldAcceptIncoming(existing, l)) {
+                    const idx = window.logs.indexOf(existing);
+                    if(idx >= 0) window.logs[idx] = l;
+                    map.set(key, l);
+                }
+            });
+            logsSortedDirty = true;
+            if(logsSortedDirty){
+                window.logs = (window.logs || []).sort((a,b)=>{
+                    const diff = getLogSortTs(b)-getLogSortTs(a);
+                    if(diff !== 0) return diff;
+                    return String(b.sequenceId||"").localeCompare(String(a.sequenceId||""));
+                }).slice(0, 2000);
+                logsSortedDirty = false;
+            }
+            console.log("ISO SORT FIX", { sorted: window.logs.length });
+            console.log("AUTHORITATIVE LOG SORT", { total: window.logs.length });
+        }
+        console.log("PULL MERGED", { visitors: Object.keys(incomingVisitors).length, logs: incomingLogs.length, serverTs: lastPullTs });
+        hardPruneMemory();
+        if(window.renderDashboard) window.renderDashboard();
+        if(window.renderLogTable) window.renderLogTable();
+    }catch(e){
+        console.warn("pullFromCloud failed:", e.message);
+    } finally {
+        isPulling = false;
+        syncLock = false;
+    }
+}
+
 // ================== SAFE SYNC ==================
 async function saveToCloudSafe(payload){
 
@@ -1936,18 +2212,29 @@ async function saveToCloudSafe(payload){
 
     if (!payload.licenseKey) return;
     const hash = hashPayload(payload) + "_" + payload.licenseKey;
+    const fingerprint = deterministicFingerprint(payload);
 
     if(hash === lastPayloadHash && lastSyncTime > 0){
         return;
     }
 
-    if(isSyncing || !navigator.onLine) return;
+    if(isSyncing || !navigator.onLine || syncLock) return;
+    const nowTs = Date.now();
+    const delta = nowTs - lastSaveTs;
+    if(delta < MIN_SYNC_INTERVAL){
+        console.log("SYNC THROTTLED", { delta, skipped: true });
+        pendingSyncPayload = payload;
+        return;
+    }
 
     isSyncing = true;
+    syncLock = true;
 
     try{
 const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
 payload.meta = meta;
+payload = normalizeSavePayload(payload);
+console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.keys(payload.visitors || {}).length });
         const res = await fetch(WORKER_BASE_URL + "/save",{
             method:"POST",
             headers:{ "Content-Type":"application/json" },
@@ -1956,8 +2243,16 @@ payload.meta = meta;
 
         if(res.ok){
             lastSyncTime = payload.ts || Date.now();
-            lastPayloadHash = hash;
+            lastSaveTs = Date.now();
+            lastPayloadHash = hash + "::" + fingerprint;
             syncFailStreak = 0;
+            setTimeout(() => { pullFromCloud(); }, 250);
+            hardPruneMemory();
+            if(pendingSyncPayload){
+                const next = pendingSyncPayload;
+                pendingSyncPayload = null;
+                setTimeout(()=>saveToCloudSafe(next), MIN_SYNC_INTERVAL);
+            }
 
             if(retryQueue.length && retryQueue[0]?.payload?.ts === payload.ts){
                 retryQueue.shift();
@@ -1969,6 +2264,7 @@ payload.meta = meta;
 
     }catch(e){
         syncFailStreak++;
+        console.warn("QUEUE RETRY", { syncFailStreak, reason: e?.message || "unknown" });
 
         const exists = retryQueue.find(i => i.payload?.ts === payload.ts);
 
@@ -1983,11 +2279,14 @@ payload.meta = meta;
                 retry: 0
             });
             retryQueue.sort((a, b) => (a.payload?.ts || 0) - (b.payload?.ts || 0));
+            retryQueue = retryQueue.slice(-MAX_QUEUE);
             persistRetryQueueSafe();
         }
+        hardPruneMemory();
 
     } finally {
         isSyncing = false;
+        syncLock = false;
     }
 }
 
@@ -2021,12 +2320,13 @@ setInterval(async ()=>{
 // ================== SMART SYNC ==================
 function smartSync(type="normal"){
     clearTimeout(syncTimer);
+    clearTimeout(syncDebounceTimer);
 
     const delay = type === "scan" ? 300 : 1000;
 
-    syncTimer = setTimeout(()=>{
-        saveToCloudSafe(buildPayload());
-    }, delay);
+    syncDebounceTimer = setTimeout(()=>{
+        syncTimer = setTimeout(()=>{ saveToCloudSafe(buildPayload()); }, delay);
+    }, 150);
 }
 
 // ================== OVERRIDE ==================
@@ -2070,8 +2370,21 @@ window.addEventListener("visibilitychange", ()=>{
         isBeaconSending = true;
 
         try{
-            const payload = buildPayload();
-            navigator.sendBeacon(WORKER_BASE_URL + "/save", JSON.stringify(payload));
+            let payload = buildPayload();
+            payload = normalizeSavePayload(payload);
+            if(payload.licenseKey){
+                const raw = JSON.stringify(payload);
+                if(raw.length >= 30000){
+                    pendingSyncPayload = payload;
+                    localStorage.setItem("vms_pending_sync_payload", JSON.stringify(payload));
+                } else {
+                    const ok = navigator.sendBeacon(WORKER_BASE_URL + "/save", raw);
+                    if(!ok){
+                        pendingSyncPayload = payload;
+                        localStorage.setItem("vms_pending_sync_payload", JSON.stringify(payload));
+                    }
+                }
+            }
         }catch(e){
             console.warn("Beacon error:", e);
         } finally {
@@ -2082,9 +2395,42 @@ window.addEventListener("visibilitychange", ()=>{
 
 // ================== INIT ==================
 window.addEventListener("load", ()=>{
+    if (navigator.storage && navigator.storage.estimate) {
+        navigator.storage.estimate().then(est => {
+            const used = Number(est.usage || 0), quota = Number(est.quota || 1);
+            const ratio = used / quota;
+            if (ratio > 0.85) console.warn("STORAGE HIGH", { used, quota, ratio });
+        }).catch(()=>{});
+    }
+    try{
+        const rawPending = localStorage.getItem("vms_pending_sync_payload");
+        if(rawPending) pendingSyncPayload = JSON.parse(rawPending);
+    }catch(e){}
     retryQueue = loadRetryQueueSafe();
     smartSync();
+    pullFromCloud();
+    (function schedulePull(){
+        const delay = document.hidden ? 60000 : 7000;
+        setTimeout(async ()=>{ await pullFromCloud(); schedulePull(); }, delay);
+    })();
+    setInterval(async ()=>{
+        const licenseKey = localStorage.getItem("vms_license_key");
+        if(!licenseKey || !navigator.onLine) return;
+        try{
+            await fetch(WORKER_BASE_URL + "/device-heartbeat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    licenseKey,
+                    deviceId: localStorage.getItem("vms_device_id"),
+                    deviceName: "VMS Field Device",
+                    meta: window.getDeviceMeta ? window.getDeviceMeta() : {}
+                })
+            });
+        }catch(e){}
+    }, 20000);
 });
+window.addEventListener("visibilitychange", ()=>{ if(!document.hidden) pullFromCloud(); });
 
 console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 
@@ -2535,6 +2881,9 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     if (!body.licenseKey) body.licenseKey = key;
     body.license = body.license || localStorage.getItem("vms_license");
 
+    if(typeof window.normalizeSavePayload === "function"){
+      body = window.normalizeSavePayload(body);
+    }
     options.body = JSON.stringify(body);
    }
   }catch(e){

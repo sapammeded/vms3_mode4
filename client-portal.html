@@ -653,7 +653,16 @@
                     ...options.headers
                 }
             });
-            return await res.json();
+
+            const contentType = res.headers.get("content-type") || "";
+            const data = contentType.includes("application/json") ? await res.json() : { ok: false, message: "Invalid server response" };
+
+            if (!res.ok) {
+                if (res.status >= 500) showToast("Server unavailable. Please retry.", "warning");
+                return data || { ok: false, message: `HTTP ${res.status}` };
+            }
+
+            return data;
         } catch (e) {
             showToast("Network error: " + e.message, "error");
             return null;
@@ -740,29 +749,47 @@
     }
 
     async function loadDevices() {
-        const deviceId = localStorage.getItem("vms_client_device_id");
-        const deviceName = localStorage.getItem("vms_client_device_name");
-        
+        const localMainDeviceId = localStorage.getItem("vms_client_device_id");
+        const localMainDeviceName = localStorage.getItem("vms_client_device_name");
+
+        try {
+            if (currentLicense) {
+                const data = await apiCall("/client/devices", {
+                    method: "POST",
+                    body: JSON.stringify({ licenseKey: currentLicense })
+                });
+
+                if (data?.ok && Array.isArray(data.devices)) {
+                    devicesData = data.devices.slice(0, 500);
+                    localStorage.setItem("vms_additional_devices", JSON.stringify(devicesData.filter(d => d.deviceId !== localMainDeviceId)));
+                    renderDevicesList();
+                    updateDeviceSelects();
+                    updateStats();
+                    return;
+                }
+            }
+        } catch (e) {}
+
         let devices = [];
-        
-        if (deviceId) {
+
+        if (localMainDeviceId) {
             devices.push({
-                deviceId: deviceId,
-                deviceName: deviceName || deviceId,
+                deviceId: localMainDeviceId,
+                deviceName: localMainDeviceName || localMainDeviceId,
                 status: "ACTIVE",
                 lastSeen: localStorage.getItem("vms_last_seen") || Date.now()
             });
         }
-        
+
         const additionalDevices = localStorage.getItem("vms_additional_devices");
         if (additionalDevices) {
             try {
                 const parsed = JSON.parse(additionalDevices);
-                devices = [...devices, ...parsed];
+                if (Array.isArray(parsed)) devices = [...devices, ...parsed];
             } catch(e) {}
         }
-        
-        devicesData = devices;
+
+        devicesData = devices.slice(0, 500);
         renderDevicesList();
         updateDeviceSelects();
         updateStats();
@@ -913,7 +940,7 @@
         const deviceName = document.getElementById("approvalDeviceName").value;
         const reason = document.getElementById("approvalReason").value;
         
-        const data = await apiCall("/request-approval", {
+        const data = await apiCall("/request-device", {
             method: "POST",
             body: JSON.stringify({
                 licenseKey: currentLicense,
@@ -1155,6 +1182,7 @@
     function startAutoRefresh() {
         if (refreshInterval) clearInterval(refreshInterval);
         refreshInterval = setInterval(() => {
+            if (document.hidden || !navigator.onLine) return;
             validateLicense();
             loadDevices();
         }, 30000);
@@ -1171,140 +1199,19 @@
         }
     }
 
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+            validateLicense();
+            loadDevices();
+        }
+    });
+
+    window.addEventListener("beforeunload", () => {
+        if (refreshInterval) clearInterval(refreshInterval);
+    });
+
     init();
 </script>
-<script>
-// ============================================================
-// 🧠⚙️👑 VMS HARDENING INJECTION PACK v1.0 (SAFE MODE)
-// ============================================================
 
-(function(){
-
-console.log("[VMS HARDENING] INIT...");
-
-// ============================================================
-// 🔐 1. API CALL HARDEN (NO BREAK CORE)
-// ============================================================
-
-if (window.apiCall) {
-    const __old_apiCall = window.apiCall;
-
-    window.apiCall = async function(endpoint, options = {}) {
-        if (!navigator.onLine) {
-            console.warn("[API] Offline mode");
-            return null;
-        }
-
-        try {
-            return await __old_apiCall(endpoint, options);
-        } catch (e) {
-            console.error("[API ERROR]", endpoint, e);
-            return null;
-        }
-    };
-
-    console.log("[VMS] API HARDENED");
-}
-
-// ============================================================
-// 📱 2. DEVICE SYNC HARDEN (SERVER SOURCE OF TRUTH)
-// ============================================================
-
-if (window.loadDevices) {
-    const __old_loadDevices = window.loadDevices;
-
-    window.loadDevices = async function () {
-        try {
-            const licenseKey = localStorage.getItem("vms_license_key");
-            if (!licenseKey) return __old_loadDevices();
-
-            const res = await fetch(API_URL + "/client/devices", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ licenseKey })
-            });
-
-            if (!res.ok) throw new Error("Server error");
-
-            const data = await res.json();
-
-            if (data.devices && data.devices.length > 0) {
-                if (typeof devicesData !== "undefined") {
-                    devicesData = data.devices;
-                }
-
-                localStorage.setItem("vms_devices", JSON.stringify(data.devices));
-
-                if (typeof renderDevicesList === "function") renderDevicesList();
-                if (typeof updateDeviceSelects === "function") updateDeviceSelects();
-                if (typeof updateStats === "function") updateStats();
-
-                console.log("[VMS] DEVICE SYNC FROM SERVER");
-
-                return;
-            }
-
-        } catch (e) {
-            console.warn("[SYNC FALLBACK LOCAL]", e.message);
-        }
-
-        return __old_loadDevices();
-    };
-
-    console.log("[VMS] DEVICE SYNC HARDENED");
-}
-
-// ============================================================
-// 🔁 3. SYNC LOCK HARDEN (ANTI SPAM)
-// ============================================================
-
-if (window.syncToCloud) {
-    const __old_sync = window.syncToCloud;
-
-    window.syncToCloud = async function(payload){
-        if (window.__sync_lock) {
-            console.warn("[SYNC BLOCKED]");
-            return;
-        }
-
-        window.__sync_lock = true;
-
-        try {
-            return await __old_sync(payload);
-        } catch(e){
-            console.warn("[SYNC ERROR]", e);
-        } finally {
-            setTimeout(()=>{
-                window.__sync_lock = false;
-            }, 1000);
-        }
-    };
-
-    console.log("[VMS] SYNC LOCK ACTIVE");
-}
-
-// ============================================================
-// 🌐 4. SAFE FETCH (GLOBAL FALLBACK)
-// ============================================================
-
-window.safeFetch = async function(url, options = {}) {
-    try {
-        const res = await fetch(url, options);
-        if (!res.ok) throw new Error(res.status);
-        return await res.json();
-    } catch (e) {
-        console.warn("[SAFE FETCH ERROR]", url, e.message);
-        return null;
-    }
-};
-
-// ============================================================
-// 📡 5. AUTO HEALTH LOG
-// ============================================================
-
-console.log("[VMS HARDENING] READY ✅");
-
-})();
-</script>
 </body>
 </html>

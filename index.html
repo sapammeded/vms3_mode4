@@ -374,7 +374,7 @@ async function runAntiNakalCheck(){
 }
 
 // ========== CLOUD CONFIGURATION ==========
-const CLOUD_URL = "https://vms3modev4.sapammeded.workers.dev";
+const WORKER_BASE_URL = "https://vms3modev4.sapammeded.workers.dev";
 
 function isCloudAllowed(){
     return !isDemo();
@@ -404,7 +404,7 @@ async function applyLicenseKey(key) {
     toast("Memvalidasi license...", "info");
     
     try {
-        const response = await fetch(CLOUD_URL + "/validate-license", {
+        const response = await fetch(WORKER_BASE_URL + "/validate-license", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -607,17 +607,10 @@ function lockLicense(){
 }
 
 function applyLicenseUI(){
-    const loginOverlay = document.getElementById("loginOverlay");
-    const appLayout = document.getElementById("appLayout");
     const adminOnly = document.querySelectorAll(".admin-only");
     if(isPro()){
-        const hasSession = !!localStorage.getItem("vms_user");
-        if(loginOverlay) loginOverlay.style.display = hasSession ? "none" : "flex";
-        if(appLayout) appLayout.style.display = hasSession ? "flex" : "none";
         adminOnly.forEach(el => el.style.display = "inline-flex");
     } else {
-        if(loginOverlay) loginOverlay.style.display = "none";
-        if(appLayout) appLayout.style.display = "flex";
         adminOnly.forEach(el => el.style.display = "none");
     }
     const badge = document.getElementById("licenseStatusBadge");
@@ -1707,24 +1700,16 @@ window.onunhandledrejection = function(e) {
         if(input) applyLicenseKey(input.value);
         input.value = "";
     };
-    document.getElementById('doLoginBtn').onclick = () => {
-        let u = document.getElementById('loginUsername').value;
-        let p = document.getElementById('loginPassword').value;
-        login(u, p);
-    };
-    document.getElementById('logoutBtnTop').onclick = logout;
-    document.getElementById('logoutBtnSidebar').onclick = logout;
     document.getElementById('siteSelector').onchange = (e) => setSite(e.target.value);
 document.getElementById('siteSelectorTop').onchange = (e) => setSite(e.target.value);
 
-loadUserSession();
 setSite(SITE_ID);
 
 renderDashboard(); 
 renderLogTable();
 updateMonetizationUI();
 
-applyLicenseUI();
+applyRoleVisibility();
 lockLicense();
 
 // 🔥 ANTI NAKAL ENGINE
@@ -1734,7 +1719,7 @@ setInterval(async ()=>{
         async function(pos) {
             try{
                 const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
-                await fetch(CLOUD_URL + "/save",{
+                await fetch(WORKER_BASE_URL + "/save",{
                     method:"POST",
                     headers:{ "Content-Type":"application/json" },
                     body: JSON.stringify({
@@ -1838,7 +1823,7 @@ let isBeaconSending = false;
 let syncFailStreak = 0;
 
 const MAX_QUEUE = 20;
-const CLOUD_URL = "https://vms3modev4.sapammeded.workers.dev";
+const WORKER_BASE_URL = "https://vms3modev4.sapammeded.workers.dev";
 const QUEUE_KEY_PREFIX = "vms_retry_queue_";
 
 function getQueueKey() {
@@ -1973,7 +1958,7 @@ async function saveToCloudSafe(payload){
     try{
 const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
 payload.meta = meta;
-        const res = await fetch(CLOUD_URL + "/save",{
+        const res = await fetch(WORKER_BASE_URL + "/save",{
             method:"POST",
             headers:{ "Content-Type":"application/json" },
             body: JSON.stringify(payload)
@@ -2096,7 +2081,7 @@ window.addEventListener("visibilitychange", ()=>{
 
         try{
             const payload = buildPayload();
-            navigator.sendBeacon(CLOUD_URL + "/save", JSON.stringify(payload));
+            navigator.sendBeacon(WORKER_BASE_URL + "/save", JSON.stringify(payload));
         }catch(e){
             console.warn("Beacon error:", e);
         } finally {
@@ -2124,7 +2109,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     if (window.__HYBRID_ORCHESTRATION_LOADED__) return;
     window.__HYBRID_ORCHESTRATION_LOADED__ = true;
 
-    const CLOUD_URL = "https://vms3modev4.sapammeded.workers.dev";
+    const WORKER_BASE_URL = "https://vms3modev4.sapammeded.workers.dev";
     const EXPECTED_WORKER_COMPAT = 1;
     let currentMode = "DEMO";
     let onlineStatus = true;
@@ -2146,7 +2131,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
         try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 3000);
-            const res = await fetch(CLOUD_URL + "/", { signal: controller.signal });
+            const res = await fetch(WORKER_BASE_URL + "/", { signal: controller.signal });
             let health = null;
             try { health = await res.clone().json(); } catch {}
             clearTimeout(timeout);
@@ -2198,7 +2183,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
         if (!onlineStatus) return false;
         try {
             const localUsers = JSON.parse(localStorage.getItem("vms_users") || "[]");
-            const res = await fetch(CLOUD_URL + "/sync-users", {
+            const res = await fetch(WORKER_BASE_URL + "/sync-users", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ users: localUsers })
@@ -2217,7 +2202,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     // ========== LOGIN HANDLERS ==========
     async function serverLogin(username, password) {
         try {
-            const res = await fetch(CLOUD_URL + "/login", {
+            const res = await fetch(WORKER_BASE_URL + "/login", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ username, password })
@@ -2348,7 +2333,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             const token = localStorage.getItem("vms_token");
             if (token) {
                 try {
-                    const res = await fetch(CLOUD_URL + "/users", { headers: { "x-token": token } });
+                    const res = await fetch(WORKER_BASE_URL + "/users", { headers: { "x-token": token } });
                     if (res.ok) return true;
                     localStorage.removeItem("vms_token");
                     localStorage.removeItem("vms_user");
@@ -2484,7 +2469,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     async function safeForceInit() {
         if (!onlineStatus) return;
         try {
-            const res = await fetch(CLOUD_URL + "/force-init", { method: "POST" });
+            const res = await fetch(WORKER_BASE_URL + "/force-init", { method: "POST" });
             const data = await res.json();
             if (data.ok) console.log("Force init completed");
         } catch (e) {
@@ -2649,7 +2634,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 </script>
 
 <script>
-const SYNC_CLOUD_URL = "https://vms3modev4.sapammeded.workers.dev";
+const SYNC_WORKER_BASE_URL = "https://vms3modev4.sapammeded.workers.dev";
 
 async function syncToCloud(payload) {
     try {
@@ -2664,7 +2649,7 @@ async function syncToCloud(payload) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
 
-        const res = await fetch(SYNC_CLOUD_URL + "/save", {
+        const res = await fetch(SYNC_WORKER_BASE_URL + "/save", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"

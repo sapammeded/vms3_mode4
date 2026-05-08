@@ -876,7 +876,11 @@ export default {
                 if (body.visitors && Object.keys(body.visitors).length > 0) {
                     let allVisitors = await getData(env, 'visitors');
                     for (const [key, value] of Object.entries(body.visitors)) {
-                        allVisitors[key] = { ...allVisitors[key], ...value, licenseKey, lastSync: Date.now() };
+                        const prev = allVisitors[key] || {};
+                        const prevUpdated = Number(prev.updatedAt || 0);
+                        const incomingUpdated = Number(value?.updatedAt || 0);
+                        if (incomingUpdated < prevUpdated) continue;
+                        allVisitors[key] = { ...prev, ...value, licenseKey, lastSync: Date.now() };
                     }
                     await saveData(env, 'visitors', allVisitors);
                 }
@@ -907,13 +911,13 @@ export default {
                                 continue;
                             }
                         }
-                        const k = `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}`;
+                        const k = `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}|${log.deviceId || body.deviceId || ''}`;
                         if (seen.has(k)) continue;
                         seen.add(k);
                         appendOnly.push(log);
                     }
-                    allLogs = [...appendOnly, ...allLogs];
-                    await saveData(env, 'logs', allLogs.slice(0, 10000));
+                    allLogs = [...allLogs, ...appendOnly];
+                    await saveData(env, 'logs', allLogs.slice(-10000));
                     if (rejectedExpired.length) {
                         let reports = await getData(env, 'anti_nakal_reports');
                         for (const rejected of rejectedExpired) {

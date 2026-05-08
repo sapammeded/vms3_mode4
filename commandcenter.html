@@ -1083,29 +1083,27 @@
             
             console.log(`[API_CALL] Response status: ${res.status}`);
             
-            // FIX: handle error response properly
-            if (!res.ok) {
-                const text = await res.text();
-                console.error("[API ERROR]", res.status, text);
-                throw new Error("API ERROR " + res.status + " " + text.substring(0, 100));
-            }
-            
-            let data;
-            const contentType = res.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
+            const contentType = res.headers.get('content-type') || '';
+            let data = null;
+            if (contentType.includes('application/json')) {
                 data = await res.json();
             } else {
                 const text = await res.text();
                 console.error(`[API_CALL] Non-JSON response: ${text.substring(0, 200)}`);
-                throw new Error('Server returned non-JSON response');
+                data = { ok: false, error: 'Server returned non-JSON response' };
             }
-            
+
             if (res.status === 401) {
                 console.log('[API_CALL] Unauthorized, logging out...');
                 logout();
                 return null;
             }
-            
+
+            if (!res.ok) {
+                console.error('[API ERROR]', res.status, data);
+                return data || { ok: false, error: `API ERROR ${res.status}` };
+            }
+
             return data;
             
         } catch (e) {
@@ -1202,6 +1200,13 @@
         
         if (loginOverlay) loginOverlay.classList.remove("hidden");
         
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+        }
+        if (packageChart) { packageChart.destroy(); packageChart = null; }
+        if (violationChart) { violationChart.destroy(); violationChart = null; }
+
         showToast("Logged out", "info");
     }
 
@@ -2088,7 +2093,10 @@
 
     function startRefresh() {
         if (refreshInterval) clearInterval(refreshInterval);
-        refreshInterval = setInterval(loadAllData, 30000);
+        refreshInterval = setInterval(() => {
+            if (!token || document.hidden || !navigator.onLine) return;
+            loadAllData();
+        }, 30000);
     }
 
     async function init() {
@@ -2113,142 +2121,14 @@
         setInterval(() => {
             document.getElementById("serverTime").innerHTML = `Server Time: ${new Date().toLocaleString()}`;
         }, 1000);
+
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && token) loadAllData();
+        });
     }
 
     init();
 </script>
-<script>
-// ============================================================
-// 🧠⚙️👑 VMS HARDENING INJECTION PACK v1.0 (SAFE MODE)
-// ============================================================
 
-(function(){
-
-console.log("[VMS HARDENING] INIT...");
-
-// ============================================================
-// 🔐 1. API CALL HARDEN (NO BREAK CORE)
-// ============================================================
-
-if (window.apiCall) {
-    const __old_apiCall = window.apiCall;
-
-    window.apiCall = async function(endpoint, options = {}) {
-        if (!navigator.onLine) {
-            console.warn("[API] Offline mode");
-            return null;
-        }
-
-        try {
-            return await __old_apiCall(endpoint, options);
-        } catch (e) {
-            console.error("[API ERROR]", endpoint, e);
-            return null;
-        }
-    };
-
-    console.log("[VMS] API HARDENED");
-}
-
-// ============================================================
-// 📱 2. DEVICE SYNC HARDEN (SERVER SOURCE OF TRUTH)
-// ============================================================
-
-if (window.loadDevices) {
-    const __old_loadDevices = window.loadDevices;
-
-    window.loadDevices = async function () {
-        try {
-            const licenseKey = localStorage.getItem("vms_license_key");
-            if (!licenseKey) return __old_loadDevices();
-
-            const res = await fetch(API_URL + "/client/devices", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ licenseKey })
-            });
-
-            if (!res.ok) throw new Error("Server error");
-
-            const data = await res.json();
-
-            if (data.devices && data.devices.length > 0) {
-                if (typeof devicesData !== "undefined") {
-                    devicesData = data.devices;
-                }
-
-                localStorage.setItem("vms_devices", JSON.stringify(data.devices));
-
-                if (typeof renderDevicesList === "function") renderDevicesList();
-                if (typeof updateDeviceSelects === "function") updateDeviceSelects();
-                if (typeof updateStats === "function") updateStats();
-
-                console.log("[VMS] DEVICE SYNC FROM SERVER");
-
-                return;
-            }
-
-        } catch (e) {
-            console.warn("[SYNC FALLBACK LOCAL]", e.message);
-        }
-
-        return __old_loadDevices();
-    };
-
-    console.log("[VMS] DEVICE SYNC HARDENED");
-}
-
-// ============================================================
-// 🔁 3. SYNC LOCK HARDEN (ANTI SPAM)
-// ============================================================
-
-if (window.syncToCloud) {
-    const __old_sync = window.syncToCloud;
-
-    window.syncToCloud = async function(payload){
-        if (window.__sync_lock) {
-            console.warn("[SYNC BLOCKED]");
-            return;
-        }
-
-        window.__sync_lock = true;
-
-        try {
-            return await __old_sync(payload);
-        } catch(e){
-            console.warn("[SYNC ERROR]", e);
-        } finally {
-            setTimeout(()=>{
-                window.__sync_lock = false;
-            }, 1000);
-        }
-    };
-
-    console.log("[VMS] SYNC LOCK ACTIVE");
-}
-
-// ============================================================
-// 🌐 4. SAFE FETCH (GLOBAL FALLBACK)
-// ============================================================
-
-window.safeFetch = async function(url, options = {}) {
-    try {
-        const res = await fetch(url, options);
-        if (!res.ok) throw new Error(res.status);
-        return await res.json();
-    } catch (e) {
-        console.warn("[SAFE FETCH ERROR]", url, e.message);
-        return null;
-    }
-};
-
-// ============================================================
-// 📡 5. AUTO HEALTH LOG
-// ============================================================
-
-console.log("[VMS HARDENING] READY ✅");
-
-})();
-</script>
 </body>
 </html>

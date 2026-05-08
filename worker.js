@@ -238,6 +238,7 @@ export default {
             if (path === '/checkin' && request.method === 'POST') {
                 const body = await request.json();
                 const { licenseKey, deviceId, action, location } = body;
+                const normalizedAction = (action === 'OUT' ? 'OUT' : 'IN');
                 
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.licenseKey === licenseKey);
@@ -259,10 +260,10 @@ export default {
                     licenseKey: licenseKey,
                     companyId: company.id,
                     companyName: company.companyName,
-                    action: action,
+                    action: normalizedAction,
                     location: location || null,
                     timestamp: Date.now(),
-                    type: action === 'IN' ? 'CHECK_IN' : 'CHECK_OUT'
+                    type: normalizedAction === 'IN' ? 'CHECK_IN' : 'CHECK_OUT'
                 };
                 activities.unshift(activity);
                 await saveData(env, 'activities', activities.slice(0, 5000));

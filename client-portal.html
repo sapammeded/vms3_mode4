@@ -1,0 +1,1310 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>VMS Client Portal | Device Management</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #0a0f1a;
+            --primary-light: #111827;
+            --accent: #10b981;
+            --accent-dark: #059669;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --info: #3b82f6;
+            --text: #f9fafb;
+            --text-muted: #9ca3af;
+            --border: #1f2937;
+            --card-bg: #1f2937;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--primary);
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #0a0f1a 0%, #111827 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .logo h1 {
+            font-size: 1.4rem;
+            color: var(--accent);
+        }
+
+        .logo p {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+        }
+
+        .license-status {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            background: var(--card-bg);
+            padding: 8px 20px;
+            border-radius: 40px;
+            border: 1px solid var(--border);
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 20px;
+            padding: 24px;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .card-header h3 {
+            font-size: 1.1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .stat-card h4 {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .stat-number {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .badge-active { background: #10b98120; color: #10b981; border: 1px solid #10b981; }
+        .badge-expired { background: #ef444420; color: #ef4444; border: 1px solid #ef4444; }
+        .badge-pending { background: #f59e0b20; color: #f59e0b; border: 1px solid #f59e0b; }
+        .badge-suspended { background: #8b5cf620; color: #8b5cf6; border: 1px solid #8b5cf6; }
+        .badge-pro { background: #10b98120; color: #10b981; border: 1px solid #10b981; }
+        .badge-basic { background: #3b82f620; color: #3b82f6; border: 1px solid #3b82f6; }
+        .badge-demo { background: #f59e0b20; color: #f59e0b; border: 1px solid #f59e0b; }
+
+        .table-wrapper {
+            overflow-x: auto;
+            border-radius: 16px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px;
+            background: var(--primary);
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85rem;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        input, select, textarea {
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--primary);
+            color: var(--text);
+            font-size: 0.85rem;
+            width: 100%;
+            outline: none;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--accent);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.85rem;
+        }
+
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: var(--accent-dark); }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-warning { background: var(--warning); color: white; }
+        .btn-info { background: var(--info); color: white; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-sm { padding: 6px 12px; font-size: 0.75rem; }
+        .btn-block { width: 100%; }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+
+        .device-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .device-item {
+            background: var(--primary);
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .device-info {
+            flex: 1;
+        }
+
+        .device-info strong {
+            font-size: 1rem;
+        }
+
+        .device-info small {
+            color: var(--text-muted);
+            font-size: 0.7rem;
+        }
+
+        .device-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--primary-light);
+            border-radius: 24px;
+            padding: 28px;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid var(--border);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1100;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            background: var(--card-bg);
+            padding: 12px 20px;
+            border-radius: 12px;
+            border-left: 4px solid var(--accent);
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .license-banner {
+            background: linear-gradient(135deg, #10b98110 0%, #05966910 100%);
+            border: 1px solid var(--accent);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .license-banner h4 {
+            color: var(--accent);
+            margin-bottom: 12px;
+        }
+
+        .license-details {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+            margin-top: 12px;
+        }
+
+        .license-details div {
+            flex: 1;
+            min-width: 150px;
+        }
+
+        .license-details label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            display: block;
+        }
+
+        .license-details .value {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-top: 4px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 16px;
+            }
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+            }
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+            }
+            .device-item {
+                flex-direction: column;
+                text-align: center;
+            }
+            .device-actions {
+                justify-content: center;
+            }
+        }
+
+        .text-muted { color: var(--text-muted); }
+        .text-success { color: var(--accent); }
+        .text-danger { color: var(--danger); }
+        .text-warning { color: var(--warning); }
+        .mt-3 { margin-top: 12px; }
+        .mb-2 { margin-bottom: 8px; }
+        .code {
+            font-family: monospace;
+            font-size: 0.7rem;
+            background: var(--primary);
+            padding: 2px 6px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <div class="header-content">
+        <div class="logo">
+            <h1>🔐 VMS Client Portal</h1>
+            <p>Device Management & Access Control</p>
+        </div>
+        <div class="license-status">
+            <span>📋 <span id="licenseStatusText">Loading...</span></span>
+            <button class="btn btn-outline btn-sm" onclick="refreshStatus()">🔄 Refresh</button>
+        </div>
+    </div>
+</div>
+
+<div class="container">
+    <div class="license-banner" id="licenseBanner">
+        <h4>📜 License Information</h4>
+        <div class="license-details">
+            <div>
+                <label>Company Name</label>
+                <div class="value" id="companyName">-</div>
+            </div>
+            <div>
+                <label>License Key</label>
+                <div class="value"><code id="licenseKey">-</code></div>
+            </div>
+            <div>
+                <label>Package</label>
+                <div class="value"><span id="packageName">-</span></div>
+            </div>
+            <div>
+                <label>Expiry Date</label>
+                <div class="value" id="expiryDate">-</div>
+            </div>
+            <div>
+                <label>Device Usage</label>
+                <div class="value" id="deviceUsage">0 / 0</div>
+            </div>
+            <div>
+                <label>Status</label>
+                <div class="value"><span id="licenseStatus">-</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h4>Total Devices</h4>
+            <div class="stat-number" id="statTotalDevices">0</div>
+        </div>
+        <div class="stat-card">
+            <h4>Active Devices</h4>
+            <div class="stat-number" id="statActiveDevices">0</div>
+        </div>
+        <div class="stat-card">
+            <h4>Pending Approval</h4>
+            <div class="stat-number" id="statPendingDevices">0</div>
+        </div>
+        <div class="stat-card">
+            <h4>Total Check-ins</h4>
+            <div class="stat-number" id="statTotalCheckins">0</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3>📱 Register New Device</h3>
+        </div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Device Name *</label>
+                <input type="text" id="deviceName" placeholder="e.g., Laptop HRD - John">
+            </div>
+            <div class="form-group">
+                <label>Device ID (optional)</label>
+                <input type="text" id="deviceId" placeholder="Leave empty to auto-generate">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Additional Info (optional)</label>
+            <textarea id="deviceMeta" rows="2" placeholder="Device specifications, location, etc."></textarea>
+        </div>
+        <button class="btn btn-primary btn-block" onclick="registerDevice()">➕ Register Device</button>
+        <hr style="border-color: var(--border); margin: 20px 0;">
+        <div class="card-header">
+            <h3>💰 Request Additional Device (Fee Applied)</h3>
+        </div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Device Name *</label>
+                <input type="text" id="requestDeviceName" placeholder="e.g., New Security Tablet">
+            </div>
+            <div class="form-group">
+                <label>Reason (optional)</label>
+                <input type="text" id="requestReason" placeholder="Why need additional device?">
+            </div>
+        </div>
+        <button class="btn btn-warning btn-block" onclick="requestAdditionalDevice()">💰 Request Device (Fee)</button>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3>🖥️ My Registered Devices</h3>
+            <button class="btn btn-outline btn-sm" onclick="loadDevices()">🔄 Refresh</button>
+        </div>
+        <div id="devicesList" class="device-list">
+            <div class="text-muted" style="text-align: center; padding: 40px;">Loading devices...</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3>📍 Quick Access</h3>
+        </div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Select Device</label>
+                <select id="checkinDevice"></select>
+            </div>
+            <div class="form-group">
+                <label>Action</label>
+                <select id="checkinAction">
+                    <option value="IN">✅ CHECK-IN (Enter)</option>
+                    <option value="OUT">❌ CHECK-OUT (Exit)</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Location (optional)</label>
+            <input type="text" id="checkinLocation" placeholder="Gate A, Building 1, etc.">
+        </div>
+        <button class="btn btn-primary btn-block" onclick="performCheckin()">📝 Record Access</button>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3>⚠️ Report Suspicious Activity</h3>
+        </div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Select Device</label>
+                <select id="violationDevice"></select>
+            </div>
+            <div class="form-group">
+                <label>Violation Type</label>
+                <select id="violationType">
+                    <option value="GPS_SPOOFING">📍 GPS Spoofing / Fake Location</option>
+                    <option value="MULTIPLE_DEVICE">🖥️ Multiple Device Attempt</option>
+                    <option value="LICENSE_TAMPER">🔑 License Tampering</option>
+                    <option value="SUSPICIOUS_ACTIVITY">⚠️ Suspicious Activity</option>
+                    <option value="UNAUTHORIZED_ACCESS">🚫 Unauthorized Access</option>
+                    <option value="OTHER">❓ Other</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Details</label>
+            <textarea id="violationDetails" rows="2" placeholder="Describe what happened..."></textarea>
+        </div>
+        <button class="btn btn-warning btn-block" onclick="reportViolation()">🚨 Report Violation</button>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3>📜 Recent Activity Log</h3>
+            <button class="btn btn-outline btn-sm" onclick="loadActivityLog()">🔄 Refresh</button>
+        </div>
+        <div class="table-wrapper">
+            <table id="activityTable" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Device</th>
+                        <th>Action</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody id="activityTableBody">
+                    <tr><td colspan="4" class="text-muted" style="text-align: center;">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="approvalModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>📝 Request Device Approval</h3>
+            <button class="close-modal" onclick="closeModal('approvalModal')">&times;</button>
+        </div>
+        <div class="form-group">
+            <label>Device ID</label>
+            <input type="text" id="approvalDeviceId" readonly>
+        </div>
+        <div class="form-group">
+            <label>Device Name</label>
+            <input type="text" id="approvalDeviceName" readonly>
+        </div>
+        <div class="form-group">
+            <label>Reason for Request</label>
+            <textarea id="approvalReason" rows="3" placeholder="Explain why this device needs approval..."></textarea>
+        </div>
+        <div style="display: flex; gap: 12px; margin-top: 20px;">
+            <button class="btn btn-primary" onclick="submitApprovalRequest()">Send Request</button>
+            <button class="btn btn-outline" onclick="closeModal('approvalModal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+    const API_URL = "https://vms3mode.sapammeded.workers.dev";
+    let currentLicense = null;
+    let currentCompany = null;
+    let devicesData = [];
+    let activityData = [];
+    let refreshInterval = null;
+
+    function getLicenseKey() {
+        const urlParams = new URLSearchParams(window.location.search);
+        let license = urlParams.get('license');
+        if (!license) {
+            license = localStorage.getItem("vms_client_license");
+        }
+        if (!license) {
+            license = prompt("Please enter your license key:");
+            if (license) {
+                localStorage.setItem("vms_client_license", license);
+            }
+        }
+        return license;
+    }
+
+    function showToast(message, type = "info") {
+        const container = document.getElementById("toastContainer");
+        const toast = document.createElement("div");
+        toast.className = "toast";
+        const colors = {
+            success: "#10b981",
+            error: "#ef4444",
+            warning: "#f59e0b",
+            info: "#3b82f6"
+        };
+        toast.style.borderLeftColor = colors[type] || colors.info;
+        toast.innerHTML = message;
+        container.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+
+    async function apiCall(endpoint, options = {}) {
+        try {
+            const res = await fetch(API_URL + endpoint, {
+                ...options,
+                headers: {
+                    "Content-Type": "application/json",
+                    ...options.headers
+                }
+            });
+            return await res.json();
+        } catch (e) {
+            showToast("Network error: " + e.message, "error");
+            return null;
+        }
+    }
+
+    function formatDate(timestamp) {
+        if (!timestamp) return '-';
+        return new Date(timestamp).toLocaleDateString('id-ID', { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    function formatDateTime(timestamp) {
+        if (!timestamp) return '-';
+        return new Date(timestamp).toLocaleString('id-ID');
+    }
+
+    async function validateLicense() {
+        const licenseKey = getLicenseKey();
+        if (!licenseKey) {
+            showToast("No license key provided. Please enter your license key.", "error");
+            return false;
+        }
+
+        let deviceId = localStorage.getItem("vms_client_device_id");
+        if (!deviceId) {
+            deviceId = "dev_" + Date.now() + "_" + Math.random().toString(36).substring(2, 10);
+            localStorage.setItem("vms_client_device_id", deviceId);
+        }
+
+        let deviceName = localStorage.getItem("vms_client_device_name");
+        if (!deviceName) {
+            deviceName = "Main Device";
+        }
+
+        showToast("Validating license...", "info");
+
+        const data = await apiCall("/validate-license", {
+            method: "POST",
+            body: JSON.stringify({
+                licenseKey: licenseKey,
+                deviceId: deviceId,
+                deviceName: deviceName,
+                meta: {
+                    browser: navigator.userAgent,
+                    platform: navigator.platform,
+                    timestamp: Date.now()
+                }
+            })
+        });
+
+        if (data && data.ok) {
+            currentLicense = licenseKey;
+            currentCompany = data.company;
+            localStorage.setItem("vms_client_license", licenseKey);
+            
+            updateLicenseUI(data);
+            return true;
+        } else {
+            showToast(data?.message || "License validation failed", "error");
+            return false;
+        }
+    }
+
+    function updateLicenseUI(data) {
+        document.getElementById("companyName").innerHTML = escapeHtml(data.company?.name || '-');
+        document.getElementById("licenseKey").innerHTML = currentLicense;
+        
+        const packageName = data.company?.package || '-';
+        const packageClass = packageName === 'PRO' ? 'badge-pro' : (packageName === 'BASIC' ? 'badge-basic' : 'badge-demo');
+        document.getElementById("packageName").innerHTML = `<span class="badge ${packageClass}">${packageName}</span>`;
+        
+        document.getElementById("expiryDate").innerHTML = formatDate(data.company?.expiredAt);
+        document.getElementById("deviceUsage").innerHTML = `${data.company?.currentDevices || 0} / ${data.company?.maxDevices || 0}`;
+        
+        const isExpired = data.company?.expiredAt < Date.now();
+        const statusText = isExpired ? 'EXPIRED' : (data.status || 'ACTIVE');
+        const statusClass = isExpired ? 'badge-expired' : (data.status === 'PENDING_APPROVAL' ? 'badge-pending' : 'badge-active');
+        document.getElementById("licenseStatus").innerHTML = `<span class="badge ${statusClass}">${statusText}</span>`;
+        document.getElementById("licenseStatusText").innerHTML = statusText;
+        
+        if (isExpired) {
+            showToast("⚠️ Your license has expired. Please contact admin to renew.", "error");
+        }
+    }
+
+    async function loadDevices() {
+        const deviceId = localStorage.getItem("vms_client_device_id");
+        const deviceName = localStorage.getItem("vms_client_device_name");
+        
+        let devices = [];
+        
+        if (deviceId) {
+            devices.push({
+                deviceId: deviceId,
+                deviceName: deviceName || deviceId,
+                status: "ACTIVE",
+                lastSeen: localStorage.getItem("vms_last_seen") || Date.now()
+            });
+        }
+        
+        const additionalDevices = localStorage.getItem("vms_additional_devices");
+        if (additionalDevices) {
+            try {
+                const parsed = JSON.parse(additionalDevices);
+                devices = [...devices, ...parsed];
+            } catch(e) {}
+        }
+        
+        devicesData = devices;
+        renderDevicesList();
+        updateDeviceSelects();
+        updateStats();
+    }
+
+    function renderDevicesList() {
+        const container = document.getElementById("devicesList");
+        
+        if (!devicesData || devicesData.length === 0) {
+            container.innerHTML = '<div class="text-muted" style="text-align: center; padding: 40px;">No devices registered yet. Add your first device above.</div>';
+            return;
+        }
+        
+        container.innerHTML = "";
+        
+        for (const device of devicesData) {
+            let statusClass = "badge-active";
+            if (device.status === "PENDING_APPROVAL") statusClass = "badge-pending";
+            if (device.status === "SUSPENDED") statusClass = "badge-suspended";
+            if (device.status === "BANNED") statusClass = "badge-expired";
+            
+            const deviceDiv = document.createElement("div");
+            deviceDiv.className = "device-item";
+            deviceDiv.innerHTML = `
+                <div class="device-info">
+                    <strong>${escapeHtml(device.deviceName || device.deviceId)}</strong><br>
+                    <small>ID: ${device.deviceId.substring(0, 16)}...</small><br>
+                    <small>Last seen: ${formatDateTime(device.lastSeen)}</small>
+                </div>
+                <div class="device-actions">
+                    <span class="badge ${statusClass}">${device.status || 'ACTIVE'}</span>
+                    ${device.status === 'PENDING_APPROVAL' ? 
+                        `<button class="btn btn-warning btn-sm" onclick="requestApproval('${device.deviceId}', '${escapeHtml(device.deviceName)}')">Request Approval</button>` : 
+                        `<button class="btn btn-info btn-sm" onclick="viewDeviceActivity('${device.deviceId}')">History</button>`
+                    }
+                    <button class="btn btn-danger btn-sm" onclick="removeDevice('${device.deviceId}')">Remove</button>
+                </div>
+            `;
+            container.appendChild(deviceDiv);
+        }
+    }
+
+    function updateDeviceSelects() {
+        const checkinSelect = document.getElementById("checkinDevice");
+        const violationSelect = document.getElementById("violationDevice");
+        
+        const activeDevices = devicesData.filter(d => d.status === "ACTIVE");
+        
+        checkinSelect.innerHTML = '<option value="">Select device...</option>';
+        violationSelect.innerHTML = '<option value="">Select device...</option>';
+        
+        for (const device of activeDevices) {
+            checkinSelect.innerHTML += `<option value="${device.deviceId}">${escapeHtml(device.deviceName || device.deviceId)}</option>`;
+            violationSelect.innerHTML += `<option value="${device.deviceId}">${escapeHtml(device.deviceName || device.deviceId)}</option>`;
+        }
+        
+        if (activeDevices.length === 0) {
+            checkinSelect.innerHTML = '<option value="">No active devices</option>';
+            violationSelect.innerHTML = '<option value="">No active devices</option>';
+        }
+    }
+
+    function updateStats() {
+        const activeCount = devicesData.filter(d => d.status === "ACTIVE").length;
+        const pendingCount = devicesData.filter(d => d.status === "PENDING_APPROVAL").length;
+        const totalCheckins = activityData.filter(a => a.action === "CHECK_IN" || a.type === "CHECK_IN").length;
+        
+        document.getElementById("statTotalDevices").innerText = devicesData.length;
+        document.getElementById("statActiveDevices").innerText = activeCount;
+        document.getElementById("statPendingDevices").innerText = pendingCount;
+        document.getElementById("statTotalCheckins").innerText = totalCheckins;
+    }
+
+    async function registerDevice() {
+        const deviceName = document.getElementById("deviceName").value;
+        let deviceId = document.getElementById("deviceId").value;
+        const meta = document.getElementById("deviceMeta").value;
+        
+        if (!deviceName) {
+            showToast("Device name required", "error");
+            return;
+        }
+        
+        if (!deviceId) {
+            deviceId = "dev_" + Date.now() + "_" + Math.random().toString(36).substring(2, 10);
+        }
+        
+        if (devicesData.find(d => d.deviceId === deviceId)) {
+            showToast("Device ID already exists", "error");
+            return;
+        }
+        
+        showToast("Registering device...", "info");
+        
+        const data = await apiCall("/validate-license", {
+            method: "POST",
+            body: JSON.stringify({
+                licenseKey: currentLicense,
+                deviceId: deviceId,
+                deviceName: deviceName,
+                meta: { info: meta, registeredAt: Date.now() }
+            })
+        });
+        
+        if (data && data.ok) {
+            const newDevice = {
+                deviceId: deviceId,
+                deviceName: deviceName,
+                status: data.status || "PENDING_APPROVAL",
+                lastSeen: Date.now(),
+                meta: { info: meta }
+            };
+            
+            devicesData.push(newDevice);
+            
+            localStorage.setItem("vms_additional_devices", JSON.stringify(devicesData.filter(d => d.deviceId !== localStorage.getItem("vms_client_device_id"))));
+            
+            renderDevicesList();
+            updateDeviceSelects();
+            updateStats();
+            
+            document.getElementById("deviceName").value = "";
+            document.getElementById("deviceId").value = "";
+            document.getElementById("deviceMeta").value = "";
+            
+            if (data.status === "PENDING_APPROVAL") {
+                showToast(`Device "${deviceName}" registered! Waiting for admin approval.`, "warning");
+                requestApproval(deviceId, deviceName);
+            } else {
+                showToast(`Device "${deviceName}" registered successfully!`, "success");
+            }
+            
+            loadActivityLog();
+        } else {
+            showToast(data?.message || "Registration failed", "error");
+        }
+    }
+
+    async function requestApproval(deviceId, deviceName) {
+        document.getElementById("approvalDeviceId").value = deviceId;
+        document.getElementById("approvalDeviceName").value = deviceName;
+        document.getElementById("approvalReason").value = "";
+        document.getElementById("approvalModal").classList.add("active");
+    }
+
+    async function submitApprovalRequest() {
+        const deviceId = document.getElementById("approvalDeviceId").value;
+        const deviceName = document.getElementById("approvalDeviceName").value;
+        const reason = document.getElementById("approvalReason").value;
+        
+        const data = await apiCall("/request-approval", {
+            method: "POST",
+            body: JSON.stringify({
+                licenseKey: currentLicense,
+                deviceId: deviceId,
+                deviceName: deviceName,
+                reason: reason || "New device registration"
+            })
+        });
+        
+        if (data && data.ok) {
+            showToast("Approval request sent to admin", "success");
+            closeModal("approvalModal");
+            
+            const device = devicesData.find(d => d.deviceId === deviceId);
+            if (device) {
+                device.status = "PENDING_APPROVAL";
+                renderDevicesList();
+            }
+        } else {
+            showToast(data?.message || "Failed to send request", "error");
+        }
+    }
+
+    async function removeDevice(deviceId) {
+        if (!confirm("Remove this device? You can re-register it later.")) return;
+        
+        devicesData = devicesData.filter(d => d.deviceId !== deviceId);
+        localStorage.setItem("vms_additional_devices", JSON.stringify(devicesData));
+        
+        renderDevicesList();
+        updateDeviceSelects();
+        updateStats();
+        showToast("Device removed", "success");
+    }
+
+    async function performCheckin() {
+        const deviceId = document.getElementById("checkinDevice").value;
+        const action = document.getElementById("checkinAction").value;
+        const location = document.getElementById("checkinLocation").value;
+        
+        if (!deviceId) {
+            showToast("Select a device first", "error");
+            return;
+        }
+        
+        showToast(`Processing ${action}...`, "info");
+        
+        const data = await apiCall("/checkin", {
+            method: "POST",
+            body: JSON.stringify({
+                licenseKey: currentLicense,
+                deviceId: deviceId,
+                action: action,
+                location: location || null
+            })
+        });
+        
+        if (data && data.ok) {
+            showToast(`${action === 'IN' ? 'Check-in' : 'Check-out'} successful!`, "success");
+            document.getElementById("checkinLocation").value = "";
+            loadActivityLog();
+            
+            const device = devicesData.find(d => d.deviceId === deviceId);
+            if (device) {
+                device.lastSeen = Date.now();
+                renderDevicesList();
+            }
+        } else {
+            showToast(data?.message || "Action failed", "error");
+        }
+    }
+
+    async function reportViolation() {
+        const deviceId = document.getElementById("violationDevice").value;
+        const violationType = document.getElementById("violationType").value;
+        const details = document.getElementById("violationDetails").value;
+        
+        if (!deviceId) {
+            showToast("Select a device", "error");
+            return;
+        }
+        
+        if (!details) {
+            showToast("Please provide violation details", "error");
+            return;
+        }
+        
+        showToast("Reporting violation...", "info");
+        
+        const data = await apiCall("/report-violation", {
+            method: "POST",
+            body: JSON.stringify({
+                licenseKey: currentLicense,
+                deviceId: deviceId,
+                violationType: violationType,
+                details: details,
+                location: window.location.href
+            })
+        });
+        
+        if (data && data.ok) {
+            showToast(`Violation reported. Device status: ${data.deviceStatus}`, data.deviceStatus === "SUSPENDED" ? "error" : "warning");
+            document.getElementById("violationDetails").value = "";
+            
+            if (data.deviceStatus === "SUSPENDED") {
+                const device = devicesData.find(d => d.deviceId === deviceId);
+                if (device) {
+                    device.status = "SUSPENDED";
+                    renderDevicesList();
+                }
+                showToast("⚠️ Device has been suspended due to multiple violations. Contact admin.", "error");
+            }
+            
+            loadActivityLog();
+        } else {
+            showToast(data?.message || "Failed to report violation", "error");
+        }
+    }
+
+    async function loadActivityLog() {
+        let localActivity = JSON.parse(localStorage.getItem("vms_client_activity") || "[]");
+        activityData = localActivity.slice(0, 50);
+        renderActivityTable();
+        updateStats();
+    }
+
+    function renderActivityTable() {
+        const tbody = document.getElementById("activityTableBody");
+        
+        if (!activityData || activityData.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align: center;">No activity recorded yet</span></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = "";
+        
+        for (const activity of activityData.slice(0, 30)) {
+            const row = tbody.insertRow();
+            const actionClass = activity.action === 'CHECK_IN' ? 'text-success' : (activity.action === 'CHECK_OUT' ? 'text-warning' : 'text-info');
+            row.innerHTML = `
+                <td>${formatDateTime(activity.timestamp)}</span></td>
+                <td>${escapeHtml(activity.deviceName || activity.deviceId)}</span></td>
+                <td class="${actionClass}">${activity.action || activity.type}</span></td>
+                <td>${escapeHtml(activity.details || '-')}</span></td>
+            `;
+        }
+    }
+
+    function logActivity(deviceId, deviceName, action, details) {
+        const activity = {
+            timestamp: Date.now(),
+            deviceId: deviceId,
+            deviceName: deviceName,
+            action: action,
+            details: details
+        };
+        
+        let localActivity = JSON.parse(localStorage.getItem("vms_client_activity") || "[]");
+        localActivity.unshift(activity);
+        localActivity = localActivity.slice(0, 200);
+        localStorage.setItem("vms_client_activity", JSON.stringify(localActivity));
+        
+        activityData = localActivity;
+        renderActivityTable();
+    }
+
+    function viewDeviceActivity(deviceId) {
+        const deviceActivity = activityData.filter(a => a.deviceId === deviceId);
+        if (deviceActivity.length === 0) {
+            showToast("No activity found for this device", "info");
+            return;
+        }
+        
+        let message = `📋 Activity for ${deviceId}:\n`;
+        deviceActivity.slice(0, 10).forEach(a => {
+            message += `\n${formatDateTime(a.timestamp)} - ${a.action}`;
+        });
+        alert(message);
+    }
+
+    async function requestAdditionalDevice() {
+        const deviceName = document.getElementById("requestDeviceName").value;
+        const reason = document.getElementById("requestReason").value;
+        
+        if (!deviceName) {
+            showToast("Device name required", "error");
+            return;
+        }
+        
+        showToast("Submitting request...", "info");
+        
+        const data = await apiCall("/request-device", {
+            method: "POST",
+            body: JSON.stringify({
+                licenseKey: currentLicense,
+                deviceName: deviceName,
+                reason: reason || "Additional device request"
+            })
+        });
+        
+        if (data && data.ok) {
+            showToast(`Request submitted! Fee: Rp ${data.fee.toLocaleString()}. Wait for admin approval.`, "success");
+            document.getElementById("requestDeviceName").value = "";
+            document.getElementById("requestReason").value = "";
+        } else {
+            showToast(data?.message || "Request failed", "error");
+        }
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
+
+    function refreshStatus() {
+        validateLicense();
+        loadDevices();
+        loadActivityLog();
+        showToast("Status refreshed", "success");
+    }
+
+    function closeModal(modalId) {
+        document.getElementById(modalId).classList.remove("active");
+    }
+
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.classList.remove('active');
+            }
+        });
+    });
+
+    function startAutoRefresh() {
+        if (refreshInterval) clearInterval(refreshInterval);
+        refreshInterval = setInterval(() => {
+            validateLicense();
+            loadDevices();
+        }, 30000);
+    }
+
+    async function init() {
+        const isValid = await validateLicense();
+        if (isValid) {
+            await loadDevices();
+            await loadActivityLog();
+            startAutoRefresh();
+        } else {
+            setTimeout(init, 5000);
+        }
+    }
+
+    init();
+</script>
+<script>
+// ============================================================
+// 🧠⚙️👑 VMS HARDENING INJECTION PACK v1.0 (SAFE MODE)
+// ============================================================
+
+(function(){
+
+console.log("[VMS HARDENING] INIT...");
+
+// ============================================================
+// 🔐 1. API CALL HARDEN (NO BREAK CORE)
+// ============================================================
+
+if (window.apiCall) {
+    const __old_apiCall = window.apiCall;
+
+    window.apiCall = async function(endpoint, options = {}) {
+        if (!navigator.onLine) {
+            console.warn("[API] Offline mode");
+            return null;
+        }
+
+        try {
+            return await __old_apiCall(endpoint, options);
+        } catch (e) {
+            console.error("[API ERROR]", endpoint, e);
+            return null;
+        }
+    };
+
+    console.log("[VMS] API HARDENED");
+}
+
+// ============================================================
+// 📱 2. DEVICE SYNC HARDEN (SERVER SOURCE OF TRUTH)
+// ============================================================
+
+if (window.loadDevices) {
+    const __old_loadDevices = window.loadDevices;
+
+    window.loadDevices = async function () {
+        try {
+            const licenseKey = localStorage.getItem("vms_license_key");
+            if (!licenseKey) return __old_loadDevices();
+
+            const res = await fetch(API_URL + "/client/devices", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ licenseKey })
+            });
+
+            if (!res.ok) throw new Error("Server error");
+
+            const data = await res.json();
+
+            if (data.devices && data.devices.length > 0) {
+                if (typeof devicesData !== "undefined") {
+                    devicesData = data.devices;
+                }
+
+                localStorage.setItem("vms_devices", JSON.stringify(data.devices));
+
+                if (typeof renderDevicesList === "function") renderDevicesList();
+                if (typeof updateDeviceSelects === "function") updateDeviceSelects();
+                if (typeof updateStats === "function") updateStats();
+
+                console.log("[VMS] DEVICE SYNC FROM SERVER");
+
+                return;
+            }
+
+        } catch (e) {
+            console.warn("[SYNC FALLBACK LOCAL]", e.message);
+        }
+
+        return __old_loadDevices();
+    };
+
+    console.log("[VMS] DEVICE SYNC HARDENED");
+}
+
+// ============================================================
+// 🔁 3. SYNC LOCK HARDEN (ANTI SPAM)
+// ============================================================
+
+if (window.syncToCloud) {
+    const __old_sync = window.syncToCloud;
+
+    window.syncToCloud = async function(payload){
+        if (window.__sync_lock) {
+            console.warn("[SYNC BLOCKED]");
+            return;
+        }
+
+        window.__sync_lock = true;
+
+        try {
+            return await __old_sync(payload);
+        } catch(e){
+            console.warn("[SYNC ERROR]", e);
+        } finally {
+            setTimeout(()=>{
+                window.__sync_lock = false;
+            }, 1000);
+        }
+    };
+
+    console.log("[VMS] SYNC LOCK ACTIVE");
+}
+
+// ============================================================
+// 🌐 4. SAFE FETCH (GLOBAL FALLBACK)
+// ============================================================
+
+window.safeFetch = async function(url, options = {}) {
+    try {
+        const res = await fetch(url, options);
+        if (!res.ok) throw new Error(res.status);
+        return await res.json();
+    } catch (e) {
+        console.warn("[SAFE FETCH ERROR]", url, e.message);
+        return null;
+    }
+};
+
+// ============================================================
+// 📡 5. AUTO HEALTH LOG
+// ============================================================
+
+console.log("[VMS HARDENING] READY ✅");
+
+})();
+</script>
+</body>
+</html>

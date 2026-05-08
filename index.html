@@ -1,0 +1,2736 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>VMS SAPAM MEDED | Enterprise Hardened System</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #f0f2f5; font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; color: #1a2c3e; }
+        :root { --primary: #1f4e4a; }
+        .app-layout { display: flex; min-height: 100vh; }
+        .sidebar { width: 280px; background: #0f2c2c; color: #e2e8f0; position: fixed; height: 100vh; overflow-y: auto; z-index: 20; }
+        .logo-area { padding: 28px 24px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .logo-area h1 { font-size: 1.6rem; font-weight: 600; color: white; }
+        .logo-area p { font-size: 0.7rem; color: #8ea5a5; margin-top: 6px; }
+        .nav-item { display: flex; align-items: center; gap: 14px; padding: 12px 24px; margin: 4px 12px; border-radius: 14px; color: #cbdcd9; font-weight: 500; cursor: pointer; }
+        .nav-item.active { background: #2b5a55; color: white; }
+        .main-content { flex: 1; margin-left: 280px; padding: 24px 32px; width: calc(100% - 280px); }
+        .mobile-header { display: none; background: #0f2c2c; padding: 16px 20px; color: white; align-items: center; justify-content: space-between; }
+        .menu-toggle { background: none; border: none; font-size: 1.8rem; color: white; cursor: pointer; }
+        .mobile-sidebar { position: fixed; top: 0; left: -280px; width: 260px; height: 100%; background: #0f2c2c; z-index: 200; transition: 0.2s; padding-top: 20px; }
+        .mobile-sidebar.open { left: 0; }
+        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 199; display: none; }
+        .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 24px; margin-bottom: 36px; }
+        .stat-card { background: white; border-radius: 24px; padding: 22px 20px; border: 1px solid #e2edf2; }
+        .stat-card h4 { font-size: 0.7rem; text-transform: uppercase; color: #5f7f7c; margin-bottom: 12px; }
+        .stat-number { font-size: 2.2rem; font-weight: 700; color: #1f4e4a; }
+        .form-card { background: white; border-radius: 28px; padding: 28px 30px; border: 1px solid #e7edf2; margin-bottom: 28px; }
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px 32px; }
+        .input-field { display: flex; flex-direction: column; gap: 6px; }
+        .input-field label { font-size: 0.7rem; font-weight: 600; color: #2b5a55; text-transform: uppercase; }
+        input, select { padding: 12px 14px; border-radius: 18px; border: 1px solid #d4e0e5; font-size: 0.9rem; }
+        button { background: #1f4e4a; border: none; padding: 10px 24px; border-radius: 40px; color: white; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-outline { background: white; border: 1px solid #cbd5e1; color: #1f4e4a; }
+        .badge { display: inline-block; padding: 4px 12px; border-radius: 40px; font-size: 0.7rem; font-weight: 600; }
+        .badge-VVIP { background: #fde68a; color: #92400e; }
+        .badge-VIP { background: #e2e8f0; color: #334155; }
+        .badge-UMUM { background: #d1fae5; color: #065f46; }
+        .toast-msg { position: fixed; bottom: 24px; right: 24px; background: #1e293b; color: white; padding: 10px 20px; border-radius: 40px; z-index: 1000; font-size: 0.8rem; animation: fadeIn 0.2s; }
+        .toast-msg.success { background: #1f4e4a; }
+        .toast-msg.error { background: #b91c1c; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 3000; visibility: hidden; opacity: 0; transition: 0.2s; }
+        .modal-overlay.active { visibility: visible; opacity: 1; }
+        .modal-card { background: white; width: 480px; max-width: 90%; border-radius: 32px; padding: 28px; }
+        .qr-preview { width: 120px; margin: 16px auto; display: block; }
+        .flex-btns { display: flex; gap: 12px; margin-top: 20px; }
+        .loader { display: inline-block; width: 16px; height: 16px; border: 2px solid white; border-top: 2px solid transparent; border-radius: 50%; animation: spin 0.6s linear infinite; margin-left: 8px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .tab-pane { display: none; }
+        .tab-pane.active-pane { display: block; animation: fade 0.2s; }
+        @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+        .table-wrap { overflow-x: auto; border-radius: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 14px 16px; background: #f8fafc; color: #1f4e4a; border-bottom: 1px solid #e2e8f0; }
+        td { padding: 12px 16px; border-bottom: 1px solid #edf2f7; }
+        #cameraPreview { width: 100%; max-width: 500px; background: #000; border-radius: 24px; overflow: hidden; min-height: 200px; }
+        @media (max-width: 780px) {
+            .sidebar { display: none; }
+            .mobile-header { display: flex; }
+            .main-content { margin-left: 0; width: 100%; padding: 16px; }
+            .grid-2 { grid-template-columns: 1fr; }
+        }
+        .error-fallback { background: #fef2f2; border: 1px solid #fecaca; border-radius: 16px; padding: 20px; text-align: center; color: #991b1b; margin: 20px; }
+        .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: white; z-index: 10000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); background: rgba(15,44,44,0.95); }
+        .login-card { background: white; border-radius: 48px; padding: 40px; width: 360px; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.2); }
+        .user-badge { background: #e2e8f0; border-radius: 40px; padding: 6px 16px; font-size: 0.75rem; margin-left: 16px; font-weight: 600; color: #1f4e4a; display: inline-flex; align-items: center; gap: 8px; }
+        .site-selector-wrap { margin-bottom: 20px; background: white; border-radius: 28px; padding: 8px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; border: 1px solid #e2edf2; }
+        .site-selector-wrap label { font-weight: 600; color: #2b5a55; font-size: 0.8rem; }
+        #siteSelector { width: auto; min-width: 140px; }
+        .logout-btn { background: #b91c1c; padding: 6px 14px; font-size: 0.75rem; margin-left: auto; }
+        .admin-hide { display: none; }
+        .brand-preview { font-weight: 600; }
+        .license-badge { background: #fbbf24; color: #92400e; padding: 4px 12px; border-radius: 40px; font-size: 0.7rem; font-weight: 600; margin-left: 12px; }
+        .progress-bar-container { background: #e2e8f0; border-radius: 20px; height: 12px; overflow: hidden; margin: 16px 0; width: 100%; }
+        .progress-bar-fill { height: 100%; border-radius: 20px; transition: width 0.3s ease; background: #1f4e4a; }
+        .progress-bar-fill.warning { background: #f59e0b; }
+        .progress-bar-fill.critical { background: #ef4444; }
+        .limit-info { font-size: 0.75rem; color: #5f7f7c; margin-top: 4px; display: flex; justify-content: space-between; }
+        .monetization-badge { font-size: 0.7rem; font-weight: 600; margin-left: 8px; }
+        .monetization-badge.demo { background: #fef3c7; color: #92400e; }
+        .monetization-badge.basic { background: #dbeafe; color: #1e40af; }
+        .monetization-badge.pro { background: #d1fae5; color: #065f46; }
+    </style>
+</head>
+<body>
+
+<div id="loginOverlay" class="login-overlay" style="display: none;">
+    <div class="login-card">
+        <h2 style="color: #1f4e4a; margin-bottom: 24px;">🔐 VMS Enterprise</h2>
+        <div class="input-field" style="margin-bottom: 16px;">
+            <label>Username</label>
+            <input type="text" id="loginUsername" placeholder="username">
+        </div>
+        <div class="input-field" style="margin-bottom: 24px;">
+            <label>Password</label>
+            <input type="password" id="loginPassword" placeholder="********">
+        </div>
+        <button id="doLoginBtn" style="width:100%;">Login</button>
+    </div>
+</div>
+
+<div id="temp-reader" style="display:none;"></div>
+
+<div class="mobile-header">
+    <button class="menu-toggle" id="mobileMenuBtn">☰</button>
+    <strong style="font-size: 1.2rem;" id="brandMobile">VMS SAPAM MEDED</strong>
+    <div style="width: 28px;"></div>
+</div>
+<div class="overlay" id="overlay"></div>
+<div class="mobile-sidebar" id="mobileSidebar">
+    <div class="logo-area"><h1 id="brandSidebar">VMS</h1><p>Access Control</p></div>
+    <div class="nav-item mobile-nav" data-tab="dashboard">📊 Dashboard</div>
+    <div class="nav-item mobile-nav" data-tab="register">📝 Register</div>
+    <div class="nav-item mobile-nav" data-tab="scanner">📷 Scanner</div>
+    <div class="nav-item mobile-nav" data-tab="logs">📜 Logs</div>
+</div>
+
+<div class="app-layout" id="appLayout" style="display: none;">
+    <div class="sidebar">
+        <div class="logo-area"><h1 id="brandSidebarMain">VMS</h1><p>Enterprise Access</p></div>
+        <div class="nav-item active" data-tab="dashboard">📊 Dashboard</div>
+        <div class="nav-item" data-tab="register">📝 Register Visitor</div>
+        <div class="nav-item" data-tab="scanner">📷 Security Scan</div>
+        <div class="nav-item" data-tab="logs">📜 Audit Logs</div>
+        <div style="margin-top: 40px; padding: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
+            <div class="site-selector-wrap" style="background: transparent; border: none; color: white; padding: 0;">
+                <label style="color:white;">🌍 Site</label>
+                <select id="siteSelector" style="background:#2b5a55; color:white; border-color:#4a7a76;">
+                    <option value="SITE_A">🏭 SITE A</option>
+                    <option value="SITE_B">🏢 SITE B</option>
+                    <option value="SITE_C">🏬 SITE C</option>
+                </select>
+                <div id="userInfoSidebar" class="user-badge" style="background:#2b5a55; color:white;"></div>
+                <button id="logoutBtnSidebar" class="btn-outline" style="margin-top:12px; background:#b91c1c; color:white; border:none;">Logout</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+            <div class="site-selector-wrap" style="background: white;">
+                <label>🌐 Active Site</label>
+                <select id="siteSelectorTop">
+                    <option value="SITE_A">🏭 SITE A</option>
+                    <option value="SITE_B">🏢 SITE B</option>
+                    <option value="SITE_C">🏬 SITE C</option>
+                </select>
+                <div id="userInfoTop" class="user-badge"></div>
+                <button id="logoutBtnTop" class="btn-outline" style="background:#b91c1c; color:white;">Logout</button>
+            </div>
+        </div>
+
+        <div id="licenseBox" style="background:white; border-radius:20px; padding:16px; margin-bottom:16px; border:1px solid #e2e8f0; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <input type="text" id="licenseInput" placeholder="Masukkan license key..." style="flex:1;">
+            <button id="submitLicenseBtn">Aktivasi License</button>
+            <div id="licenseStatusBadge" class="license-badge">DEMO MODE</div>
+        </div>
+
+        <!-- MONETIZATION PROGRESS BAR UI -->
+        <div id="monetizationProgressCard" style="background:white; border-radius:20px; padding:16px; margin-bottom:16px; border:1px solid #e2e8f0;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span style="font-weight:600; font-size:0.8rem;">📊 Visitor Usage Limit</span>
+                <span id="visitorLimitText" style="font-size:0.7rem; color:#5f7f7c;">0 / Unlimited</span>
+            </div>
+            <div class="progress-bar-container">
+                <div id="visitorProgressBar" class="progress-bar-fill" style="width:0%"></div>
+            </div>
+            <div id="visitorLimitWarning" class="limit-info"></div>
+        </div>
+
+        <div id="dashboardPane" class="tab-pane active-pane">
+            <div class="stats-row" id="statsWidget"></div>
+            <div class="form-card"><canvas id="trendChart" height="90"></canvas></div>
+            <div class="form-card"><canvas id="categoryChart" height="90"></canvas></div>
+        </div>
+
+        <div id="registerPane" class="tab-pane">
+            <div class="form-card">
+                <div class="grid-2">
+                    <div class="input-field"><label>Full name</label><input type="text" id="regName" placeholder="John Carter"></div>
+                    <div class="input-field"><label>Company</label><input type="text" id="regCompany" placeholder="PT Nusantara"></div>
+                    <div class="input-field"><label>Category</label><select id="regCategory"><option value="UMUM">UMUM</option><option value="VIP">VIP</option><option value="VVIP">VVIP</option></select></div>
+                    <div class="input-field"><label>Purpose</label><select id="regPurpose"><option>Meeting</option><option>Interview</option><option>Service</option><option>Lainnya</option></select><input type="text" id="regCustomPurpose" placeholder="Other purpose" style="margin-top:8px;"></div>
+                    <div class="input-field"><label>PIC</label><input type="text" id="regPic" placeholder="Budi Santoso"></div>
+                    <div class="input-field"><label>Department</label><input type="text" id="regDept" placeholder="IT / HR"></div>
+                    <div class="input-field"><label>Start date</label><input type="date" id="regStartDate"></div>
+                    <div class="input-field"><label>Expired date</label><input type="date" id="regExpDate"></div>
+                    <div class="input-field"><label>Photo (optional)</label><input type="file" id="regPhotoFile" accept="image/*"><img id="previewPhotoThumb" width="50" style="margin-top:8px; border-radius:12px;"></div>
+                </div>
+                <div style="display:flex; gap: 16px; margin-top: 24px; flex-wrap:wrap;">
+                    <button id="walkinBtn">⚡ Walk-in Cepat</button>
+                    <button id="generateQRBtn">🔐 Generate QR & Register</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="scannerPane" class="tab-pane">
+            <div class="form-card">
+                <div style="display:flex; gap: 12px; flex-wrap:wrap; margin-bottom:20px;">
+                    <select id="scanMode"><option value="CHECK_IN">CHECK-IN</option><option value="CHECK_OUT">CHECK-OUT</option></select>
+                    <button id="startCamBtn">📷 Start Camera</button>
+                    <button id="stopCamBtn" class="btn-outline">Stop</button>
+                    <button id="uploadQrBtn">🖼️ Upload QR</button>
+                    <input type="file" id="uploadQrFile" accept="image/*" style="display:none">
+                </div>
+                <div id="cameraPreview"></div>
+                <div class="input-field" style="margin-top:24px;"><label>Manual REG Number</label><input type="text" id="manualReg" placeholder="REG2026xxxx"><button id="manualProcess" style="margin-top:8px;">Proses</button></div>
+            </div>
+        </div>
+
+        <div id="logsPane" class="tab-pane">
+            <div class="form-card">
+                <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:24px;">
+                    <input type="text" id="searchLog" placeholder="Cari Nama / REG" style="width:200px;">
+                    <button id="refreshLogsBtn">Refresh</button>
+                    <button id="selectAllBtn">Select all</button>
+                    <button id="deselectAllBtn">Deselect</button>
+                    <button id="deleteSelectedBtn" style="background:#b91c1c;" class="admin-only">Hapus terpilih</button>
+                    <button id="deleteAllBtn" style="background:#b91c1c;" class="admin-only">Hapus semua</button>
+                    <button id="exportExcelAction">Export Excel</button>
+                    <button id="backupAction">Backup</button>
+                    <button id="resetDatabaseAction" style="background:#92400e;" class="admin-only">Reset DB</button>
+                </div>
+                <div class="table-wrap">
+                    <table id="logTable">
+                        <thead><tr><th><input type="checkbox" id="checkAllMaster"></th><th>REG</th><th>Nama</th><th>Perusahaan</th><th>Kategori</th><th>Aksi</th><th>Waktu</th><th>Site</th><th>PDF</th></tr></thead>
+                        <tbody id="logTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+
+// ================= DEVICE ID (WAJIB) =================
+if(!localStorage.getItem("vms_device_id")){
+localStorage.setItem("vms_device_id",
+"dev_"+Date.now()+"_"+Math.random().toString(36).slice(2)
+);
+}
+
+// ============================================================
+// HARDENED LICENSE SYSTEM - HASH BASED (NO HARDCODE)
+// ============================================================
+let LICENSE_MODE = localStorage.getItem("vms_license") || "DEMO";
+let currentUser = null;
+let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
+let lastScanTime = {};
+
+// =============================
+// 🔥 ANTI NAKAL ENGINE
+// =============================
+
+let ANTI_NAKAL = {
+    lastSite: localStorage.getItem("vms_last_site") || null,
+    lastGPS: localStorage.getItem("vms_last_gps") || null,
+    lastOnline: Date.now(),
+    flags: []
+};
+
+function getGPS(){
+    return new Promise((resolve) => {
+        if(!navigator.geolocation){
+            resolve(null);
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+            function(pos) {
+                resolve({
+                    lat: pos.coords.latitude,
+                    lon: pos.coords.longitude
+                });
+            },
+            function(error) {
+                console.warn("GPS error (getGPS):", error.message);
+                resolve(null);
+            }
+        );
+    });
+}
+
+function distanceKM(a, b){
+    if(!a || !b) return 0;
+
+    const R = 6371;
+    const dLat = (b.lat - a.lat) * Math.PI/180;
+    const dLon = (b.lon - a.lon) * Math.PI/180;
+
+    const x =
+        Math.sin(dLat/2)*Math.sin(dLat/2) +
+        Math.cos(a.lat*Math.PI/180) *
+        Math.cos(b.lat*Math.PI/180) *
+        Math.sin(dLon/2)*Math.sin(dLon/2);
+
+    return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+
+async function runAntiNakalCheck(){
+
+    const deviceId = localStorage.getItem("vms_device_id");
+    const site = SITE_ID;
+    const now = Date.now();
+
+    // ======================
+    // 1. SITE SWITCH DETECT
+    // ======================
+    if(ANTI_NAKAL.lastSite && ANTI_NAKAL.lastSite !== site){
+        ANTI_NAKAL.flags.push({
+            type: "SITE_JUMP",
+            from: ANTI_NAKAL.lastSite,
+            to: site,
+            time: now
+        });
+    }
+
+    ANTI_NAKAL.lastSite = site;
+    localStorage.setItem("vms_last_site", site);
+
+    // ======================
+    // 2. GPS CHECK
+    // ======================
+    const gps = await getGPS();
+
+    if(gps){
+        if(ANTI_NAKAL.lastGPS){
+            const dist = distanceKM(ANTI_NAKAL.lastGPS, gps);
+
+            if(dist > 5){ // 🔥 radius 5km
+                ANTI_NAKAL.flags.push({
+                    type: "GPS_ANOMALY",
+                    distance: dist.toFixed(2),
+                    time: now
+                });
+            }
+        }
+
+        ANTI_NAKAL.lastGPS = gps;
+        localStorage.setItem("vms_last_gps", JSON.stringify(gps));
+    }
+
+    // ======================
+    // 3. OFFLINE ABUSE
+    // ======================
+    if(!navigator.onLine){
+        ANTI_NAKAL.lastOnline = now;
+    }else{
+        const offlineDuration = now - ANTI_NAKAL.lastOnline;
+
+        if(offlineDuration > 1000 * 60 * 30){ // 30 menit
+            ANTI_NAKAL.flags.push({
+                type: "OFFLINE_ABUSE",
+                duration: Math.floor(offlineDuration / 60000),
+                time: now
+            });
+        }
+    }
+
+    // ======================
+    // 4. SAVE REPORT
+    // ======================
+    localStorage.setItem("vms_anti_flags", JSON.stringify(ANTI_NAKAL.flags.slice(-20)));
+
+}
+
+// ========== CLOUD CONFIGURATION ==========
+const CLOUD_URL = "https://vms3mode.sapammeded.workers.dev";
+
+function isCloudAllowed(){
+    return !isDemo();
+}
+
+function isDemo(){ return LICENSE_MODE === "DEMO"; }
+function isBasic(){ return LICENSE_MODE === "BASIC"; }
+function isPro(){ return LICENSE_MODE === "PRO"; }
+
+async function hashKey(key){
+    const enc = new TextEncoder().encode(key);
+    const buf = await crypto.subtle.digest("SHA-256", enc);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('').slice(0,8);
+}
+
+// ============================================================
+// 🔥 LICENSE SYSTEM - VALIDASI KE WORKER (BUKAN HASH LOKAL)
+// ============================================================
+
+// Hapus VALID_HASH yang lama, ganti dengan validasi ke Worker
+async function applyLicenseKey(key) {
+    if (!key) {
+        toast("Masukkan license key", "error");
+        return;
+    }
+    
+    toast("Memvalidasi license...", "info");
+    
+    try {
+        const response = await fetch(CLOUD_URL + "/validate-license", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                licenseKey: key,
+                deviceId: localStorage.getItem("vms_device_id"),
+                deviceName: "VMS Field Device"
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data && data.ok) {
+            // License valid dari Worker
+            LICENSE_MODE = data.company?.package || "PRO";
+            localStorage.setItem("vms_license", LICENSE_MODE);
+            localStorage.setItem("vms_license_key", key);
+            
+            // Simpan info company
+            if (data.company) {
+                localStorage.setItem("vms_company", data.company.name || "");
+                localStorage.setItem("vms_max_devices", data.company.maxDevices || 0);
+            }
+            
+            toast(`✅ License aktif: ${LICENSE_MODE}`, "success");
+            applyLicenseUI();
+            
+            // Reload dashboard biar limit berubah
+            if (window.renderDashboard) window.renderDashboard();
+            if (window.updateMonetizationUI) window.updateMonetizationUI();
+        } else {
+            toast(data?.message || "License tidak valid", "error");
+        }
+    } catch(e) {
+        console.error("License validation error:", e);
+        toast("Gagal memvalidasi license. Periksa koneksi internet.", "error");
+    }
+}
+
+function applyDemoLock(){
+    if(isDemo()){
+        const exportBtn = document.getElementById("exportExcelAction");
+        const backupBtn = document.getElementById("backupAction");
+        if(exportBtn) exportBtn.style.display = "none";
+        if(backupBtn) backupBtn.style.display = "none";
+    } else {
+        const exportBtn = document.getElementById("exportExcelAction");
+        const backupBtn = document.getElementById("backupAction");
+        if(exportBtn) exportBtn.style.display = "inline-flex";
+        if(backupBtn) backupBtn.style.display = "inline-flex";
+    }
+}
+
+function getUsers(){
+    return JSON.parse(localStorage.getItem("vms_users") || "[]");
+}
+
+async function hashPassword(pw){
+    const enc = new TextEncoder().encode(pw);
+    const buf = await crypto.subtle.digest("SHA-256", enc);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function createUser(username, password, role="OPERATOR", site=SITE_ID){
+
+    let users = getUsers();
+
+    if(users.find(u=>u.username === username)){
+        toast("User sudah ada","error");
+        return;
+    }
+
+    hashPassword(password).then(hash=>{
+        users.push({
+            username,
+            password: hash,
+            role,
+            site
+        });
+
+        localStorage.setItem("vms_users", JSON.stringify(users));
+
+        toast("User dibuat","success");
+    });
+}
+
+async function login(username, password){
+    if(!isPro()) return false;
+    let users = getUsers();
+    let hash = await hashPassword(password);
+    let u = users.find(x =>
+    x.username === username &&
+    x.password === hash &&
+    (x.site === SITE_ID || x.role === "SUPER_ADMIN")
+);
+    if(u){
+        currentUser = u;
+        localStorage.setItem("vms_user", JSON.stringify(u));
+        document.getElementById("loginOverlay").style.display = "none";
+        document.getElementById("appLayout").style.display = "flex";
+        updateUserUI();
+        applyRoleVisibility();
+        toast(`Welcome ${currentUser.username} (${currentUser.role})`, "success");
+        if(window.renderDashboard) window.renderDashboard();
+        return true;
+    }
+    toast("Login gagal", "error");
+    return false;
+}
+
+function logout(){
+    currentUser = null;
+    localStorage.removeItem("vms_user");
+    if(isPro()){
+        document.getElementById("appLayout").style.display = "none";
+        document.getElementById("loginOverlay").style.display = "flex";
+    } else {
+        document.getElementById("appLayout").style.display = "flex";
+    }
+    toast("Logged out", "info");
+}
+
+function loadUserSession(){
+    if(!isPro()){
+        document.getElementById("loginOverlay").style.display = "none";
+        document.getElementById("appLayout").style.display = "flex";
+        currentUser = { username: "demo", role: "OPERATOR" };
+        updateUserUI();
+        applyRoleVisibility();
+        return true;
+    }
+    let u = localStorage.getItem("vms_user");
+    if(u){
+        currentUser = JSON.parse(u);
+        if(currentUser){
+            document.getElementById("loginOverlay").style.display = "none";
+            document.getElementById("appLayout").style.display = "flex";
+            updateUserUI();
+            applyRoleVisibility();
+            return true;
+        }
+    }
+    document.getElementById("loginOverlay").style.display = "flex";
+    document.getElementById("appLayout").style.display = "none";
+    return false;
+}
+
+function isAdmin() { return currentUser?.role === "SUPER_ADMIN" && isPro(); }
+
+function applyRoleVisibility() {
+    const adminOnly = document.querySelectorAll(".admin-only");
+    adminOnly.forEach(el => {
+        if(isAdmin()) el.classList.remove("admin-hide");
+        else el.classList.add("admin-hide");
+    });
+}
+
+function updateUserUI(){
+    const userSpan = document.querySelectorAll("#userInfoTop, #userInfoSidebar");
+    userSpan.forEach(el => { if(el) el.innerHTML = `👤 ${currentUser?.username} (${currentUser?.role || "DEMO"})`; });
+}
+
+function setSite(site){
+
+    if(!site || site.trim() === ""){
+        toast("Site kosong", "error");
+        return;
+    }
+
+    const clean = site
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9_ ]/g, "")
+        .replace(/\s+/g, "_");
+
+    SITE_ID = clean;
+
+    localStorage.setItem("vms_site", SITE_ID);
+
+    document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel=>{
+        if(![...sel.options].find(o=>o.value===clean)){
+            let opt = document.createElement("option");
+            opt.value = clean;
+            opt.text = clean;
+            sel.appendChild(opt);
+        }
+        sel.value = clean;
+    });
+
+    toast(`Site aktif: ${SITE_ID}`, "success");
+
+    if(window.renderDashboard) window.renderDashboard();
+    if(window.renderLogTable) window.renderLogTable();
+    if(window.updateMonetizationUI) window.updateMonetizationUI();
+}
+
+function lockLicense(){
+    // dummy safe (biar ga error)
+}
+
+function applyLicenseUI(){
+    const loginOverlay = document.getElementById("loginOverlay");
+    const appLayout = document.getElementById("appLayout");
+    const adminOnly = document.querySelectorAll(".admin-only");
+    if(isPro()){
+        if(loginOverlay) loginOverlay.style.display = "flex";
+        if(appLayout) appLayout.style.display = "none";
+        adminOnly.forEach(el => el.style.display = "inline-flex");
+    } else {
+        if(loginOverlay) loginOverlay.style.display = "none";
+        if(appLayout) appLayout.style.display = "flex";
+        adminOnly.forEach(el => el.style.display = "none");
+    }
+    const badge = document.getElementById("licenseStatusBadge");
+    if(badge) badge.innerText = LICENSE_MODE + " MODE";
+    applyDemoLock();
+    if(window.updateMonetizationUI) window.updateMonetizationUI();
+}
+
+// ============================================================
+// MONETIZATION SYSTEM (PATCH ONLY - TIDAK MERUSAK)
+// ============================================================
+function getCurrentVisitorCount() {
+    return Object.keys(visitors).filter(k => k.startsWith(SITE_ID + "_")).length;
+}
+
+function getBasicMaxVisitor() { return 150; }
+function getDemoMaxRegister() { return 5; }
+function getDemoMaxScan() { return 5; }
+
+function getCurrentScanCount() {
+    return logs.filter(l => (l.action === "CHECK_IN" || l.action === "CHECK_OUT") && l.site === SITE_ID).length;
+}
+
+function isBasicLimitReached() {
+    if(!isBasic()) return false;
+    const count = getCurrentVisitorCount();
+    return count >= getBasicMaxVisitor();
+}
+
+function isBasicWarning() {
+    if(!isBasic()) return false;
+    const count = getCurrentVisitorCount();
+    const max = getBasicMaxVisitor();
+    if(count >= max) return "critical";
+    if(count >= max * 0.93) return "critical";
+    if(count >= max * 0.8) return "warning";
+    return null;
+}
+
+function checkBasicLimit() {
+    if(!isBasic()) return true;
+    if(isBasicLimitReached()) {
+        alert("LIMIT BASIC TERCAPAI\nUpgrade ke PRO untuk akses tanpa batas");
+        return false;
+    }
+    const warning = isBasicWarning();
+    if(warning === "critical") {
+        toast("⚠️ PERINGATAN KRITIS! Hampir mencapai limit BASIC (150). Hapus data atau upgrade ke PRO!", "error");
+    } else if(warning === "warning") {
+        toast("⚠️ Peringatan: Sudah mencapai 80% limit BASIC. Upgrade ke PRO untuk unlimited!", "warning");
+    }
+    return true;
+}
+
+// SILENT VERSIONS (TANPA ALERT) UNTUK UI UPDATE
+function canRegisterSilent() {
+    if(isDemo()) {
+        return getCurrentVisitorCount() < getDemoMaxRegister();
+    }
+    if(isBasic()) {
+        return getCurrentVisitorCount() < getBasicMaxVisitor();
+    }
+    return true;
+}
+
+function canScanSilent() {
+    if(isDemo()) {
+        return getCurrentScanCount() < getDemoMaxScan();
+    }
+    if(isBasic()) {
+        return getCurrentVisitorCount() < getBasicMaxVisitor();
+    }
+    return true;
+}
+
+// PUBLIC VERSIONS (DENGAN ALERT) UNTUK ACTION
+function canRegister() {
+    if(isDemo()) {
+        const registerCount = getCurrentVisitorCount();
+        if(registerCount >= getDemoMaxRegister()) {
+            alert("DEMO LIMIT HABIS\nUpgrade ke BASIC/PRO untuk lanjut DAN MENDAPATKAN FASILITAS TERBAIK");
+            return false;
+        }
+        return true;
+    }
+    if(isBasic()) {
+        return checkBasicLimit();
+    }
+    return true;
+}
+
+function canScan() {
+    if(isDemo()) {
+        const scanCount = getCurrentScanCount();
+        if(scanCount >= getDemoMaxScan()) {
+            alert("DEMO LIMIT HABIS\nUpgrade ke BASIC/PRO untuk lanjut DAN MENDAPATKAN FASILITAS TERBAIK");
+            return false;
+        }
+        return true;
+    }
+    if(isBasic()) {
+        return checkBasicLimit();
+    }
+    return true;
+}
+
+function updateMonetizationUI() {
+    const progressCard = document.getElementById("monetizationProgressCard");
+    if(!progressCard) return;
+    
+    const visitorCount = getCurrentVisitorCount();
+    let maxLimit = 0;
+    let modeText = "";
+    
+    // HARD UI LOCK - disable/enable buttons based on limits (GUNAKAN SILENT VERSION)
+    const generateBtn = document.getElementById("generateQRBtn");
+    const walkinBtn = document.getElementById("walkinBtn");
+    const startCamBtn = document.getElementById("startCamBtn");
+    const manualProcessBtn = document.getElementById("manualProcess");
+    const uploadQrBtn = document.getElementById("uploadQrBtn");
+    
+    const canReg = canRegisterSilent();
+    const canScn = canScanSilent();
+    
+    if(generateBtn) generateBtn.disabled = !canReg;
+    if(walkinBtn) walkinBtn.disabled = !canReg;
+    if(startCamBtn) startCamBtn.disabled = !canScn;
+    if(manualProcessBtn) manualProcessBtn.disabled = !canScn;
+    if(uploadQrBtn) uploadQrBtn.disabled = !canScn;
+    
+    if(isPro()) {
+        maxLimit = 0;
+        modeText = "Unlimited";
+        document.getElementById("visitorLimitText").innerHTML = `${visitorCount} / Unlimited ✨`;
+        const progressBar = document.getElementById("visitorProgressBar");
+        if(progressBar) progressBar.style.width = "0%";
+        const warningDiv = document.getElementById("visitorLimitWarning");
+        if(warningDiv) warningDiv.innerHTML = "✅ PRO Mode - Unlimited akses";
+        return;
+    } else if(isBasic()) {
+        maxLimit = getBasicMaxVisitor();
+        modeText = `Basic (Max ${maxLimit})`;
+        const percent = (visitorCount / maxLimit) * 100;
+        const progressBar = document.getElementById("visitorProgressBar");
+        if(progressBar) {
+            progressBar.style.width = Math.min(percent, 100) + "%";
+            if(percent >= 90) progressBar.className = "progress-bar-fill critical";
+            else if(percent >= 70) progressBar.className = "progress-bar-fill warning";
+            else progressBar.className = "progress-bar-fill";
+        }
+        document.getElementById("visitorLimitText").innerHTML = `${visitorCount} / ${maxLimit}`;
+        const warningDiv = document.getElementById("visitorLimitWarning");
+        if(percent >= 100) {
+            warningDiv.innerHTML = "🔴 LIMIT TERCAPAI! Upgrade ke PRO untuk lanjut.";
+            warningDiv.style.color = "#ef4444";
+        } else if(percent >= 90) {
+            warningDiv.innerHTML = "⚠️ KRITIS! Sisa slot sedikit. Upgrade ke PRO!";
+            warningDiv.style.color = "#ef4444";
+        } else if(percent >= 70) {
+            warningDiv.innerHTML = "⚠️ Peringatan: Mendekati limit BASIC. Upgrade ke PRO!";
+            warningDiv.style.color = "#f59e0b";
+        } else {
+            warningDiv.innerHTML = `📊 Sisa ${maxLimit - visitorCount} slot tersedia`;
+            warningDiv.style.color = "#5f7f7c";
+        }
+    } else if(isDemo()) {
+        maxLimit = getDemoMaxRegister();
+        const scanCount = getCurrentScanCount();
+        const maxScan = getDemoMaxScan();
+        modeText = `Demo (Max ${maxLimit} visitor / ${maxScan} scan)`;
+        const percent = (visitorCount / maxLimit) * 100;
+        const progressBar = document.getElementById("visitorProgressBar");
+        if(progressBar) {
+            progressBar.style.width = Math.min(percent, 100) + "%";
+            if(percent >= 90) progressBar.className = "progress-bar-fill critical";
+            else if(percent >= 70) progressBar.className = "progress-bar-fill warning";
+            else progressBar.className = "progress-bar-fill";
+        }
+        document.getElementById("visitorLimitText").innerHTML = `${visitorCount} / ${maxLimit} (${scanCount}/${maxScan} scan)`;
+        const warningDiv = document.getElementById("visitorLimitWarning");
+        if(visitorCount >= maxLimit || scanCount >= maxScan) {
+            warningDiv.innerHTML = "🔴 DEMO LIMIT HABIS! Upgrade license.";
+            warningDiv.style.color = "#ef4444";
+        } else if(visitorCount >= maxLimit * 0.8 || scanCount >= maxScan * 0.8) {
+            warningDiv.innerHTML = "⚠️ Demo hampir limit. Upgrade untuk lanjut!";
+            warningDiv.style.color = "#f59e0b";
+        } else {
+            warningDiv.innerHTML = `Demo mode: ${maxLimit - visitorCount} register, ${maxScan - scanCount} scan tersisa`;
+            warningDiv.style.color = "#5f7f7c";
+        }
+    }
+}
+
+// ============================================================
+// SECURE STORAGE WITH SIGNATURE (ANTI TAMPER)
+// ============================================================
+let visitors = {};
+let logs = [];
+let auditLogs = [];
+
+async function signData(data){
+    const enc = new TextEncoder().encode(JSON.stringify(data) + "VMS_LOCK_v2");
+    const buf = await crypto.subtle.digest("SHA-256", enc);
+    return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+
+async function secureSave(){
+    try {
+        const payload = { visitors, logs, auditLogs };
+        const sig = await signData(payload);
+        localStorage.setItem("vms_secure", JSON.stringify({ payload, sig }));
+        localStorage.setItem("vms_visitors_backup", JSON.stringify(visitors));
+        if(window.updateMonetizationUI) window.updateMonetizationUI();
+    } catch(e) { console.warn("Save error:", e); }
+}
+
+async function secureLoad(){
+    try {
+        let raw = localStorage.getItem("vms_secure");
+        if(!raw) {
+            let v = localStorage.getItem("vms_visitors_backup");
+            if(v) visitors = JSON.parse(v);
+            return;
+        }
+        let parsed = JSON.parse(raw);
+        let check = await signData(parsed.payload);
+        if(check === parsed.sig){
+            visitors = parsed.payload.visitors || {};
+            logs = parsed.payload.logs || [];
+            auditLogs = parsed.payload.auditLogs || [];
+        } else {
+            console.warn("Data tamper detected! Resetting...");
+            visitors = {};
+            logs = [];
+            auditLogs = [];
+        }
+    } catch(e) { console.warn("Load error:", e); }
+}
+
+window.saveStore = secureSave;
+
+// ============================================================
+// GLOBAL ERROR HANDLER
+// ============================================================
+window.onerror = function(msg, url, line, col, error) {
+    console.error('GLOBAL ERROR:', msg, error);
+    return true;
+};
+window.onunhandledrejection = function(e) {
+    console.error('UNHANDLED REJECTION:', e.reason);
+    e.preventDefault();
+    return true;
+};
+
+// ============================================================
+// VMS ULTIMATE MODE - UNLIMITED SCAN | NO NONCE | NO STATUS LOCK
+// ============================================================
+(async function(){
+    const QR_SECRET = "VmsEnt2026!";
+    let processingRegs = new Set();
+    let isManualProcessing = false;
+    
+    let deviceId = localStorage.getItem('vms_device_id');
+    if(!deviceId){
+        deviceId = 'dev_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+        localStorage.setItem('vms_device_id', deviceId);
+    }
+
+    Object.defineProperty(window, "visitors", {
+        get: () => visitors,
+        set: (val) => { visitors = val || {}; secureSave(); }
+    });
+    window.logs = logs;
+
+    function toast(msg, type='info'){
+        let t = document.createElement('div');
+        t.className = `toast-msg ${type}`;
+        t.innerText = msg;
+        document.body.appendChild(t);
+        setTimeout(()=>t.remove(), 3000);
+    }
+    window.toast = toast;
+
+    await secureLoad();
+    
+    function generateReg(){ return "REG"+Date.now()+Math.floor(Math.random() * 10000); }
+
+    async function generateSignature(payload){
+        const enc = new TextEncoder().encode(payload + QR_SECRET);
+        const hash = await crypto.subtle.digest('SHA-256', enc);
+        return btoa(String.fromCharCode(...new Uint8Array(hash)));
+    }
+
+    async function buildQR(reg, data){
+        const ts = Date.now();
+        const payload = JSON.stringify({
+            reg: reg,
+            nama: data.nama,
+            perusahaan: data.perusahaan,
+            exp: data.expDate,
+            ts: ts
+        });
+        const sig = await generateSignature(payload);
+        return btoa(JSON.stringify({ payload, sig, ts }));
+    }
+    
+    async function parseQR(raw){
+        try{
+            const decoded = JSON.parse(atob(raw));
+            const expectedSig = await generateSignature(decoded.payload);
+            if(decoded.sig !== expectedSig) return null;
+            const payloadData = JSON.parse(decoded.payload);
+            return payloadData;
+        }catch(e){
+            return null;
+        }
+    }
+
+    async function waitQRCodeReady(){
+        let retry = 0;
+        while(typeof QRCode === "undefined" && retry < 20){
+            await new Promise(r=>setTimeout(r,100));
+            retry++;
+        }
+        return typeof QRCode !== "undefined";
+    }
+
+    async function generateQRImage(qrPayload){
+        const ready = await waitQRCodeReady();
+        if(ready){
+            try{
+                const canvas = document.createElement('canvas');
+                await QRCode.toCanvas(canvas, qrPayload, {
+                    width: 200,
+                    margin: 1,
+                    color: { dark: '#000000', light: '#FFFFFF' }
+                });
+                return canvas.toDataURL("image/png");
+            }catch(e){ console.warn("Local QR failed:", e); }
+        }
+        for(let i=0;i<2;i++){
+            try{
+                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrPayload)}`;
+                const img = new Image();
+                img.crossOrigin = "Anonymous";
+                const result = await new Promise((resolve)=>{
+                    img.onload = ()=>{
+                        const canvas = document.createElement('canvas');
+                        canvas.width = 200;
+                        canvas.height = 200;
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = "white";
+                        ctx.fillRect(0,0,200,200);
+                        ctx.drawImage(img,0,0,200,200);
+                        resolve(canvas.toDataURL("image/png"));
+                    };
+                    img.onerror = ()=>resolve(null);
+                    img.src = qrUrl;
+                    setTimeout(()=>resolve(null), 3000);
+                });
+                if(result) return result;
+            } catch(e){ console.warn("Retry QR API:", i, e); }
+        }
+        return null;
+    }
+
+    function addLog(regRaw, action){
+
+    let siteKey = SITE_ID + "_" + regRaw;
+    let v = visitors[siteKey];
+
+    const newLog = {
+        reg: regRaw,
+        name: v?.nama || regRaw,
+        company: v?.perusahaan || '',
+        category: v?.kategori || 'UMUM',
+        action,
+        time: Date.now(),
+        site: SITE_ID,
+        deviceId: localStorage.getItem("vms_device_id"),
+        hash: btoa(regRaw + action + Date.now())
+    };
+
+    logs.unshift(newLog);
+    logs = logs.slice(0,1000);
+    window.logs = logs;
+    secureSave();
+
+}
+
+    async function ensureJsPDFReady(){
+    if(window.jspdf) return true;
+    return new Promise((resolve)=>{
+        let max = 100;
+        let i = 0;
+        const interval = setInterval(()=>{
+            if(window.jspdf){
+                clearInterval(interval);
+                resolve(true);
+            }
+            if(i++ > max){
+                clearInterval(interval);
+                resolve(false);
+            }
+        },100);
+    });
+}
+
+    function forceDownloadPDF(doc, filename){
+        try{
+            const blob = doc.output("blob");
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => { URL.revokeObjectURL(url); }, 3000);
+            return true;
+        }catch(err){ console.error("FORCE DOWNLOAD ERROR:", err); return false; }
+    }
+
+    async function downloadPDFStable(reg, data){
+        try{
+            const ready = await ensureJsPDFReady();
+            if(!ready){ toast("PDF engine gagal dimuat. Coba refresh.", "error"); return false; }
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+            let headerColor = [31,78,74];
+            if(data.kategori === "VVIP") headerColor = [217,119,6];
+            else if(data.kategori === "VIP") headerColor = [100,116,139];
+            doc.setFillColor(...headerColor);
+            doc.rect(0,0,210,40,'F');
+            doc.setTextColor(255,255,255);
+            doc.setFontSize(22);
+            doc.text("INVITATION LETTER",105,20,{align:"center"});
+            doc.setFontSize(10);
+            doc.text("Corporate Access System",105,32,{align:"center"});
+            doc.setTextColor(0,0,0);
+            doc.setFontSize(12);
+            doc.setFont(undefined,'bold');
+            doc.text("VISITOR INFORMATION",20,60);
+            doc.setFontSize(10);
+            doc.setFont(undefined,'normal');
+            let y=75;
+            doc.text(`Name : ${data.nama||"-"}`,20,y); y+=8;
+            doc.text(`Company : ${data.perusahaan||"-"}`,20,y); y+=8;
+            doc.text(`Purpose : ${data.tujuan||"-"}`,20,y); y+=8;
+            doc.text(`PIC : ${data.pic||"-"}`,20,y); y+=8;
+            doc.text(`Dept : ${data.dept||"-"}`,20,y); y+=8;
+            doc.text(`Validity : ${data.startDate||"-"} → ${data.expDate||"-"}`,20,y);
+            if(data.foto && data.foto.startsWith('data')){ try{ doc.addImage(data.foto,'JPEG',20,y+10,30,30); }catch(e){} }
+            const qrPayload = await buildQR(reg, data);
+            const qrBase64 = await generateQRImage(qrPayload);
+            if(qrBase64 && qrBase64.startsWith("data:image")){ try{ doc.addImage(qrBase64, 'PNG', 140, 70, 50, 50); }catch(e){ doc.setFontSize(9); doc.text("QR ERROR",150,90); } }
+            else{ doc.setFontSize(9); doc.text("QR FAILED",150,90); }
+            const success = forceDownloadPDF(doc, `INVITATION_${reg}.pdf`);
+            if(!success){ toast("Download gagal. Gunakan browser Chrome.", "error"); return false; }
+            toast(`PDF ${reg} berhasil didownload`, "success");
+            return true;
+        }catch(err){ console.error("PDF ERROR:", err); toast("Terjadi error saat generate PDF", "error"); return false; }
+    }
+
+    let previewData = null;
+    let isDownloading = false;
+    
+    function showPreview(reg, data){
+        previewData = { reg, data };
+        let modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        buildQR(reg, data).then(async qrPayload => {
+            const qrBase64 = await generateQRImage(qrPayload);
+            modal.innerHTML = `
+                <div class="modal-card">
+                    <h3 style="margin-bottom:16px;">📄 Preview Invitation</h3>
+                    <div style="background:#f8fafc; padding:14px; border-radius:20px; margin-bottom:16px;">
+                        <p><strong>Name</strong> : ${data.nama}</p>
+                        <p><strong>Company</strong> : ${data.perusahaan}</p>
+                        <p><strong>Purpose</strong> : ${data.tujuan}</p>
+                        <p><strong>PIC</strong> : ${data.pic}</p>
+                        <p><strong>Validity</strong> : ${data.startDate} → ${data.expDate}</p>
+                        <p><strong>REG</strong> : ${reg}</p>
+                    </div>
+                    ${qrBase64 ? `<img class="qr-preview" src="${qrBase64}">` : '<div style="color:red; text-align:center;">QR gagal dimuat</div>'}
+                    <div class="flex-btns">
+                        <button id="confirmDownloadBtn">Download PDF</button>
+                        <button id="closePreviewBtn" class="btn-outline">Close</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            setTimeout(()=>modal.classList.add('active'),10);
+            const confirmBtn = modal.querySelector('#confirmDownloadBtn');
+            confirmBtn.onclick = async () => {
+                if(isDownloading) return;
+                isDownloading = true;
+                const originalText = confirmBtn.innerText;
+                confirmBtn.innerHTML = `Processing <span class="loader"></span>`;
+                confirmBtn.disabled = true;
+                if(previewData) await downloadPDFStable(previewData.reg, previewData.data);
+                confirmBtn.innerHTML = originalText;
+                confirmBtn.disabled = false;
+                isDownloading = false;
+                modal.remove();
+            };
+            modal.querySelector('#closePreviewBtn').onclick = () => modal.remove();
+        });
+    }
+
+    const originalGenerateQRHandler = document.getElementById('generateQRBtn').onclick;
+    document.getElementById('generateQRBtn').onclick = async () => {
+        if(!canRegister()) return;
+        if(originalGenerateQRHandler) await originalGenerateQRHandler();
+        else {
+            // fallback logic if needed - but preserve original
+            let nama = document.getElementById('regName').value;
+            let perusahaan = document.getElementById('regCompany').value;
+            let kategori = document.getElementById('regCategory').value;
+            let tujuan = document.getElementById('regPurpose').value;
+            let custom = document.getElementById('regCustomPurpose').value;
+            if(tujuan === "Lainnya") tujuan = custom || "Custom";
+            let pic = document.getElementById('regPic').value;
+            let dept = document.getElementById('regDept').value;
+            let startDate = document.getElementById('regStartDate').value || new Date().toISOString().slice(0,10);
+            let expDate = document.getElementById('regExpDate').value;
+            if(!nama || !perusahaan || !pic || !dept || !expDate){ toast("Lengkapi semua field wajib","error"); return; }
+            let reg = generateReg();
+            let foto = "";
+            let file = document.getElementById('regPhotoFile').files[0];
+            if(file){ 
+                let reader = await new Promise(r=>{let fr=new FileReader(); fr.onload=()=>r(fr.result); fr.readAsDataURL(file);});
+                let img = new Image();
+                img.src = reader;
+                await new Promise(r => img.onload = r);
+                let canvas = document.createElement("canvas");
+                let maxWidth = 400;
+                let scale = maxWidth / img.width;
+                canvas.width = maxWidth;
+                canvas.height = img.height * scale;
+                let ctx = canvas.getContext("2d");
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                foto = canvas.toDataURL("image/jpeg", 0.4);
+            }
+            let data = { nama, perusahaan, kategori, tujuan, pic, dept, startDate, expDate, foto, sessions:[], currentStatus:"OUT", updatedAt: Date.now(), version: 1, deviceId: deviceId, site: SITE_ID };
+            let siteKey = SITE_ID + "_" + reg;
+            visitors[siteKey] = data;
+            addLog(reg, "REGISTER");
+            toast(`✅ ${nama} terdaftar (${reg})`,"success");
+            showPreview(reg, data);
+            document.getElementById('regName').value = ""; 
+            document.getElementById('regCompany').value = ""; 
+            document.getElementById('regPic').value = ""; 
+            document.getElementById('regDept').value = ""; 
+            document.getElementById('regPhotoFile').value = ""; 
+            document.getElementById('previewPhotoThumb').src = "";
+            renderDashboard(); 
+            renderLogTable();
+            secureSave();
+        }
+        updateMonetizationUI();
+    };
+
+    async function capturePhoto(){
+        return new Promise(async(resolve)=>{
+            let modalDiv = document.createElement('div');
+            modalDiv.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:4000;display:flex;align-items:center;justify-content:center;';
+            modalDiv.innerHTML = `<div style="background:white;border-radius:32px;padding:20px;width:90%;max-width:400px;"><video id="camVideoWalk" autoplay playsinline style="width:100%;border-radius:16px;"></video><canvas id="canvasWalk" style="display:none;"></canvas><div style="display:flex;gap:12px;margin-top:16px;"><button id="takeWalkBtn">Ambil Foto</button><button id="closeWalkBtn">Batal</button></div></div>`;
+            document.body.appendChild(modalDiv);
+            let video = modalDiv.querySelector('#camVideoWalk');
+            let stream = await navigator.mediaDevices.getUserMedia({video:true});
+            video.srcObject = stream; 
+            await video.play();
+            modalDiv.querySelector('#takeWalkBtn').onclick = () => {
+                let canvas = modalDiv.querySelector('#canvasWalk');
+                canvas.width = video.videoWidth; 
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video,0,0);
+                canvas.toBlob(blob=>{ 
+                    stream.getTracks().forEach(t=>t.stop()); 
+                    modalDiv.remove(); 
+                    resolve(new File([blob],'walkin.jpg',{type:'image/jpeg'})); 
+                },'image/jpeg',0.8);
+            };
+            modalDiv.querySelector('#closeWalkBtn').onclick = () => { 
+                stream.getTracks().forEach(t=>t.stop()); 
+                modalDiv.remove(); 
+                resolve(null); 
+            };
+        });
+    }
+    
+    const originalWalkinHandler = document.getElementById('walkinBtn').onclick;
+    document.getElementById('walkinBtn').onclick = async () => {
+        if(!canRegister()) return;
+        if(originalWalkinHandler) await originalWalkinHandler();
+        else {
+            toast("Ambil foto untuk walk-in","info");
+            let photoFile = await capturePhoto();
+            let fotoBase64 = "";
+            if(photoFile){ 
+                let reader = await new Promise(r=>{let fr=new FileReader(); fr.onload=()=>r(fr.result); fr.readAsDataURL(photoFile);});
+                let img = new Image();
+                img.src = reader;
+                await new Promise(r => img.onload = r);
+                let canvas = document.createElement("canvas");
+                let maxWidth = 400;
+                let scale = maxWidth / img.width;
+                canvas.width = maxWidth;
+                canvas.height = img.height * scale;
+                let ctx = canvas.getContext("2d");
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                fotoBase64 = canvas.toDataURL("image/jpeg", 0.4);
+            }
+            let reg = generateReg();
+            let now = new Date(); 
+            let exp = new Date(now); 
+            exp.setDate(exp.getDate()+1);
+            let walkData = { 
+                nama: `WALK-IN ${now.toLocaleString()}`, 
+                perusahaan: "Guest Visitor", 
+                kategori: "UMUM", 
+                tujuan: "Immediate Visit", 
+                pic: "Reception", 
+                dept: "Umum", 
+                startDate: now.toISOString().slice(0,10), 
+                expDate: exp.toISOString().slice(0,10), 
+                foto: fotoBase64, 
+                sessions:[], 
+                currentStatus:"OUT",
+                updatedAt: Date.now(),
+                version: 1,
+                deviceId: deviceId,
+                site: SITE_ID
+            };
+            let siteKey = SITE_ID + "_" + reg;
+            visitors[siteKey] = walkData;
+            addLog(reg, "WALK-IN");
+            toast(`Walk-in registered ${reg}`,"success");
+            showPreview(reg, walkData);
+            renderDashboard(); 
+            renderLogTable();
+            secureSave();
+        }
+        updateMonetizationUI();
+    };
+
+    let scannerInstance = null;
+    let isScanning = false;
+    let currentCameraId = null;
+
+    async function initScanner() {
+        if (scannerInstance) { await stopScanner(); }
+        try {
+            const cameras = await Html5Qrcode.getCameras();
+            if (!cameras || cameras.length === 0) { toast("Tidak ada kamera terdeteksi", "error"); return false; }
+            const backCamera = cameras.find(cam => cam.label.toLowerCase().includes('back') || cam.label.toLowerCase().includes('rear') || cam.label.toLowerCase().includes('belakang'));
+            currentCameraId = backCamera ? backCamera.id : cameras[0].id;
+            scannerInstance = new Html5Qrcode("cameraPreview");
+            return true;
+        } catch (err) { console.error("Init scanner error:", err); toast("Gagal inisialisasi kamera", "error"); return false; }
+    }
+
+    async function startScanner() {
+        if (isScanning) return;
+        if (!scannerInstance) { const init = await initScanner(); if (!init) return; }
+        try {
+            await scannerInstance.start(currentCameraId, { fps: 10, qrbox: { width: 280, height: 280 }, aspectRatio: 1.0 },
+                async (decodedText) => {
+                    if (!canScan()) return;
+                    if (processingRegs.has(decodedText)) { return; }
+                    try { await processScan(decodedText); } catch (err) {}
+                },
+                (error) => { if (error && !error.includes("No MultiFormat Readers")) { console.log("Scan error:", error); } }
+            );
+            isScanning = true;
+            toast("Scanner siap - unlimited scan mode", "success");
+        } catch (err) { console.error("Start scanner error:", err); toast("Gagal start kamera: " + err.message, "error"); isScanning = false; }
+    }
+
+    async function stopScanner() {
+        if (scannerInstance && isScanning) { try { await scannerInstance.stop(); await scannerInstance.clear(); } catch (err) { console.error("Stop scanner error:", err); } }
+        isScanning = false;
+    }
+
+    async function cleanupScanner() {
+        if (scannerInstance) { try { await scannerInstance.stop().catch(()=>{}); await scannerInstance.clear().catch(()=>{}); } catch (e) {} scannerInstance = null; }
+        isScanning = false;
+        const container = document.getElementById("cameraPreview");
+        if(container) container.innerHTML = "";
+    }
+
+    const originalStartCamHandler = document.getElementById('startCamBtn').onclick;
+    document.getElementById('startCamBtn').onclick = async () => { 
+        if(!canScan()) return;
+        const container = document.getElementById('cameraPreview'); 
+        container.innerHTML = ''; 
+        await stopScanner(); 
+        await cleanupScanner(); 
+        await startScanner(); 
+    };
+    document.getElementById('stopCamBtn').onclick = async () => { await stopScanner(); await cleanupScanner(); toast("Kamera berhenti", "info"); };
+    
+    document.getElementById('uploadQrBtn').onclick = () => document.getElementById('uploadQrFile').click();
+    const originalUploadHandler = document.getElementById('uploadQrFile').onchange;
+    document.getElementById('uploadQrFile').onchange = async (e) => {
+        if(!canScan()) return;
+        let file = e.target.files[0];
+        if(!file) return;
+        try {
+            if(!window.Html5Qrcode){ toast("QR engine belum siap", "error"); return; }
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.src = url;
+            await img.decode();
+            URL.revokeObjectURL(url);
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            const scanner = new Html5Qrcode("temp-reader");
+            const decoded = await scanner.scanImage(canvas, { qrbox: { width: img.width, height: img.height } });
+            await processScan(decoded);
+            await scanner.clear();
+            document.getElementById("temp-reader").innerHTML = "";
+        } catch(err){ console.error(err); toast("QR tidak terbaca / file tidak valid", "error"); }
+    };
+    
+    async function processScan(qrText){
+        let mode = document.getElementById('scanMode').value;
+        let payload = await parseQR(qrText);
+        if(!payload){ toast("QR tidak valid (bukan dari sistem ini)","error"); return; }
+        let reg = payload.reg;
+        
+        if(lastScanTime[reg] && Date.now() - lastScanTime[reg] < 1000){
+            toast("Scan terlalu cepat","warning");
+            return;
+        }
+        lastScanTime[reg] = Date.now();
+        
+        if(processingRegs.has(reg)){ toast("Sedang diproses, tunggu sebentar","warning"); return; }
+        processingRegs.add(reg);
+        try {
+            let siteKey = SITE_ID + "_" + reg;
+            let visitor = visitors[siteKey];
+            if(!visitor){ toast(`Visitor ${reg} tidak ditemukan`,"error"); return; }
+            let exp = new Date(visitor.expDate);
+            exp.setHours(23,59,59,999);
+            if(exp < new Date()){ toast("QR sudah expired","error"); return; }
+            if(mode === "CHECK_IN"){
+                if(!visitor.sessions) visitor.sessions = [];
+                visitor.sessions.push({ checkIn: Date.now(), checkOut: null });
+                visitors[siteKey] = { ...visitor, currentStatus: "IN", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
+                addLog(reg, "CHECK_IN");
+                toast(`✅ CHECK-IN ${visitor.nama} berhasil`,"success");
+            } else {
+                if(!visitor.sessions) visitor.sessions = [];
+                let openSession = null;
+                for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
+                if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: Date.now(), checkOut: Date.now() }); }
+                else { openSession.checkOut = Date.now(); }
+                visitors[siteKey] = { ...visitor, currentStatus: "OUT", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
+                addLog(reg, "CHECK_OUT");
+                toast(`✅ CHECK-OUT ${visitor.nama} berhasil`,"success");
+            }
+            renderDashboard(); 
+            renderLogTable();
+            secureSave();
+            updateMonetizationUI();
+        } finally { setTimeout(()=>processingRegs.delete(reg), 1000); }
+    }
+    
+    const originalManualHandler = document.getElementById('manualProcess').onclick;
+    document.getElementById('manualProcess').onclick = async () => {
+        if(!canScan()) return;
+        if(isManualProcessing){ toast("Sedang diproses","warning"); return; }
+        isManualProcessing = true;
+        try {
+            let reg = document.getElementById('manualReg').value.trim();
+            let mode = document.getElementById('scanMode').value;
+            let siteKey = SITE_ID + "_" + reg;
+            let visitor = visitors[siteKey];
+            if(!visitor){ toast("REG tidak ditemukan","error"); return; }
+            let exp = new Date(visitor.expDate);
+            exp.setHours(23,59,59,999);
+            if(exp < new Date()){ toast("QR sudah expired","error"); return; }
+            if(mode === "CHECK_IN"){
+                if(!visitor.sessions) visitor.sessions = [];
+                visitor.sessions.push({ checkIn: Date.now(), checkOut: null });
+                visitors[siteKey] = { ...visitor, currentStatus: "IN", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
+                addLog(reg, "CHECK_IN");
+                toast(`Check-in ${visitor.nama} success`,"success");
+            } else {
+                if(!visitor.sessions) visitor.sessions = [];
+                let openSession = null;
+                for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
+                if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: Date.now(), checkOut: Date.now() }); }
+                else { openSession.checkOut = Date.now(); }
+                visitors[siteKey] = { ...visitor, currentStatus: "OUT", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
+                addLog(reg, "CHECK_OUT");
+                toast(`Check-out ${visitor.nama} success`,"success");
+            }
+            renderDashboard(); 
+            renderLogTable();
+            secureSave();
+            updateMonetizationUI();
+        } finally { isManualProcessing = false; }
+    };
+
+    function renderDashboard(){
+        try {
+            let v = Object.values(visitors);
+            let active = v.filter(x=>x.currentStatus==="IN").length;
+            let today = new Date().toDateString();
+            let todayCheck = logs.filter(l=> new Date(l.time).toDateString()===today && l.action==="CHECK_IN").length;
+            document.getElementById('statsWidget').innerHTML = `
+                <div class="stat-card"><h4>Total Visitors</h4><div class="stat-number">${v.length}</div></div>
+                <div class="stat-card"><h4>Active Inside</h4><div class="stat-number">${active}</div></div>
+                <div class="stat-card"><h4>Check-ins Today</h4><div class="stat-number">${todayCheck}</div></div>
+            `;
+            let last7 = [...Array(7)].map((_,i)=>{let d=new Date(); d.setDate(d.getDate()-i); return d.toLocaleDateString('id',{weekday:'short'});}).reverse();
+            let trend = last7.map((_,i)=>{let d=new Date(); d.setDate(d.getDate()-(6-i)); return logs.filter(l=>new Date(l.time).toDateString()===d.toDateString() && l.action==="CHECK_IN").length;});
+            const trendCanvas = document.getElementById('trendChart');
+            const categoryCanvas = document.getElementById('categoryChart');
+            if(window.Chart && trendCanvas && categoryCanvas) {
+                if(window.lineChart) window.lineChart.destroy();
+                window.lineChart = new Chart(trendCanvas, { type:'line', data:{ labels:last7, datasets:[{ label:'Visit trend', data:trend, borderColor:'#1f4e4a', fill:false }] } });
+                let catCount = { VVIP:0, VIP:0, UMUM:0 };
+                v.forEach(x=>{ if(x.kategori) catCount[x.kategori]++; });
+                if(window.pieChart) window.pieChart.destroy();
+                window.pieChart = new Chart(categoryCanvas, { type:'pie', data:{ labels:['VVIP','VIP','UMUM'], datasets:[{ data:[catCount.VVIP,catCount.VIP,catCount.UMUM], backgroundColor:['#fbbf24','#94a3b8','#1f4e4a'] }] } });
+            } else { if(trendCanvas) trendCanvas.style.display = 'none'; if(categoryCanvas) categoryCanvas.style.display = 'none'; }
+            updateMonetizationUI();
+        } catch(e) { console.error("Render dashboard error:", e); }
+    }
+    
+    function renderLogTable(){
+        try {
+            let search = document.getElementById('searchLog')?.value.toLowerCase() || '';
+            let filtered = logs.filter(l=> (l.name?.toLowerCase().includes(search) || l.reg?.toLowerCase().includes(search)) && (!l.site || l.site === SITE_ID));
+            let tbody = document.getElementById('logTableBody');
+            if(!tbody) return;
+            tbody.innerHTML = "";
+            filtered.forEach(l=>{
+                let row = tbody.insertRow();
+                row.insertCell(0).innerHTML = `<input type="checkbox" class="logCheckItem" data-reg="${l.reg}">`;
+                row.insertCell(1).innerText = l.reg;
+                row.insertCell(2).innerText = l.name;
+                row.insertCell(3).innerText = l.company;
+                row.insertCell(4).innerHTML = `<span class="badge badge-${l.category}">${l.category}</span>`;
+                row.insertCell(5).innerText = l.action;
+                row.insertCell(6).innerText = new Date(l.time).toLocaleString();
+                row.insertCell(7).innerText = l.site || "SITE_A";
+                let btn = document.createElement('button'); btn.innerText="PDF"; btn.classList.add('btn-outline'); btn.style.padding="4px 12px"; btn.onclick = () => { let siteKey = SITE_ID + "_" + l.reg; let v = visitors[siteKey]; if(v) showPreview(l.reg, v); };
+                row.insertCell(8).appendChild(btn);
+            });
+        } catch(e) { console.error("Render log table error:", e); }
+    }
+
+    document.getElementById('refreshLogsBtn').onclick = renderLogTable;
+    document.getElementById('selectAllBtn').onclick = () => document.querySelectorAll('.logCheckItem').forEach(c=>c.checked=true);
+    document.getElementById('deselectAllBtn').onclick = () => document.querySelectorAll('.logCheckItem').forEach(c=>c.checked=false);
+    document.getElementById('deleteSelectedBtn').onclick = () => {
+        if(!isAdmin()) return;
+        let regs = [...new Set([...document.querySelectorAll('.logCheckItem:checked')].map(c=>c.dataset.reg))];
+        regs.forEach(r=>{
+            let siteKey = SITE_ID + "_" + r;
+            delete visitors[siteKey];
+        });
+        const newLogs = logs.filter(l=>!regs.includes(l.reg));
+        logs.length = 0;
+        logs.push(...newLogs);
+        window.logs = logs;
+        secureSave();
+        renderDashboard(); renderLogTable(); toast(`Deleted ${regs.length} records`,"success");
+        updateMonetizationUI();
+    };
+    document.getElementById('deleteAllBtn').onclick = () => { 
+        if(!isAdmin()) return;
+        visitors = {}; 
+        window.visitors = visitors;
+        logs.length = 0;
+        window.logs = logs;
+        secureSave(); 
+        renderDashboard(); 
+        renderLogTable(); 
+        toast("All data cleared","info"); 
+        updateMonetizationUI();
+    };
+    
+        document.getElementById('exportExcelAction').onclick = () => {
+        if(isDemo()) { toast("Export tidak tersedia di DEMO mode. Upgrade license!", "error"); return; }
+        try {
+            if (!window.XLSX) {
+                toast("Excel engine belum siap", "error");
+                return;
+            }
+
+            const dataForExcel = [];
+
+            Object.entries(visitors).forEach(([siteKey, visitor]) => {
+                if (!siteKey.startsWith(SITE_ID + "_")) return;
+
+                const reg = siteKey.replace(SITE_ID + "_", "");
+                const now = new Date();
+                const expDate = visitor.expDate ? new Date(visitor.expDate) : null;
+                
+                let masaBerlakuStatus = "";
+                let keterangan = "";
+                
+                if (expDate) {
+                    if (expDate < now) {
+                        masaBerlakuStatus = "❌ EXPIRED";
+                        keterangan = "QR Code sudah kadaluarsa";
+                    } else {
+                        const daysLeft = Math.ceil((expDate - now) / (1000 * 60 * 60 * 24));
+                        masaBerlakuStatus = `✅ AKTIF (sisa ${daysLeft} hari)`;
+                        keterangan = `Berlaku hingga ${visitor.expDate}`;
+                    }
+                } else {
+                    masaBerlakuStatus = "⚠️ TIDAK DITENTUKAN";
+                    keterangan = "Tanggal kadaluarsa tidak diisi";
+                }
+
+                const hasAnyCheckIn = visitor.sessions && visitor.sessions.some(s => s.checkIn);
+                
+                if (!hasAnyCheckIn) {
+                    keterangan += " | Belum pernah melakukan check-in";
+                } else {
+                    const isCurrentlyInside = visitor.currentStatus === "IN";
+                    if (isCurrentlyInside) {
+                        keterangan += " | Sedang berada di dalam area";
+                    } else {
+                        keterangan += " | Sudah check-out";
+                    }
+                }
+
+                if (visitor.sessions && visitor.sessions.length > 0) {
+                    visitor.sessions.forEach((session, idx) => {
+                        const checkInDate = session.checkIn ? new Date(session.checkIn) : null;
+                        const checkOutDate = session.checkOut ? new Date(session.checkOut) : null;
+                        
+                        const formatDateTime = (date) => {
+                            if (!date) return "-";
+                            const y = date.getFullYear();
+                            const m = String(date.getMonth() + 1).padStart(2, '0');
+                            const d = String(date.getDate()).padStart(2, '0');
+                            const h = String(date.getHours()).padStart(2, '0');
+                            const mi = String(date.getMinutes()).padStart(2, '0');
+                            const s = String(date.getSeconds()).padStart(2, '0');
+                            return `${y}-${m}-${d} ${h}:${mi}:${s}`;
+                        };
+
+                        let durationText = "-";
+                        let statusText = "IN PROGRESS";
+                        let sessionKeterangan = keterangan;
+
+                        if (session.checkIn && session.checkOut) {
+                            const durationMinutes = Math.floor((session.checkOut - session.checkIn) / 60000);
+                            durationText = durationMinutes.toString();
+                            statusText = "COMPLETED";
+                            sessionKeterangan += ` | Durasi kunjungan: ${durationMinutes} menit`;
+                        } else if (session.checkIn && !session.checkOut) {
+                            durationText = "IN PROGRESS";
+                            statusText = "IN PROGRESS";
+                            const durationMinutes = Math.floor((now - session.checkIn) / 60000);
+                            sessionKeterangan += ` | Sedang berkunjung (${durationMinutes} menit berjalan)`;
+                        }
+
+                        dataForExcel.push({
+                            "Nama": visitor.nama || "-",
+                            "No. Registrasi": reg,
+                            "Perusahaan": visitor.perusahaan || "-",
+                            "Kategori": visitor.kategori || "UMUM",
+                            "Tujuan": visitor.tujuan || "-",
+                            "PIC": visitor.pic || "-",
+                            "Departemen": visitor.dept || "-",
+                            "Sesi Ke": idx + 1,
+                            "Check-In": formatDateTime(checkInDate),
+                            "Check-Out": formatDateTime(checkOutDate),
+                            "Durasi (menit)": durationText,
+                            "Status Sesi": statusText,
+                            "Masa Berlaku QR": masaBerlakuStatus,
+                            "Tanggal Kadaluarsa": visitor.expDate || "-",
+                            "Keterangan": sessionKeterangan
+                        });
+                    });
+                } else {
+                    dataForExcel.push({
+                        "Nama": visitor.nama || "-",
+                        "No. Registrasi": reg,
+                        "Perusahaan": visitor.perusahaan || "-",
+                        "Kategori": visitor.kategori || "UMUM",
+                        "Tujuan": visitor.tujuan || "-",
+                        "PIC": visitor.pic || "-",
+                        "Departemen": visitor.dept || "-",
+                        "Sesi Ke": "-",
+                        "Check-In": "-",
+                        "Check-Out": "-",
+                        "Durasi (menit)": "-",
+                        "Status Sesi": "TERDAFTAR (Belum ada aktivitas)",
+                        "Masa Berlaku QR": masaBerlakuStatus,
+                        "Tanggal Kadaluarsa": visitor.expDate || "-",
+                        "Keterangan": keterangan + " | Belum melakukan scan QR"
+                    });
+                }
+            });
+
+            dataForExcel.sort((a, b) => (a["Nama"] || "").localeCompare(b["Nama"] || ""));
+
+            const ws = XLSX.utils.json_to_sheet(dataForExcel);
+            
+            ws['!cols'] = [
+                {wch:25}, {wch:18}, {wch:20}, {wch:12}, {wch:20},
+                {wch:15}, {wch:15}, {wch:8}, {wch:20}, {wch:20},
+                {wch:15}, {wch:18}, {wch:18}, {wch:18}, {wch:35}
+            ];
+            
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "VMS_Visitor_Report");
+            XLSX.writeFile(wb, `VMS_Report_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.xlsx`);
+            
+            toast("✅ Excel berhasil di export dengan kolom keterangan lengkap", "success");
+        } catch(err) { 
+            console.error("Export error:", err); 
+            toast("Export gagal: " + err.message, "error"); 
+        }
+    };
+    
+    document.getElementById('backupAction').onclick = () => {
+        if(isDemo()) { toast("Backup tidak tersedia di DEMO mode. Upgrade license!", "error"); return; }
+        try { let a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify({visitors,logs,auditLogs})],{type:"application/json"})); a.download = `vms_backup_${Date.now()}.json`; a.click(); toast("Backup ready","success"); }
+        catch(e) { toast("Backup gagal", "error"); }
+    };
+    document.getElementById('resetDatabaseAction').onclick = () => { 
+        if(!isAdmin()) return;
+        visitors = {}; 
+        window.visitors = visitors;
+        logs.length = 0;
+        window.logs = logs;
+        auditLogs = [];
+        secureSave(); 
+        renderDashboard(); 
+        renderLogTable(); 
+        toast("Database reset","info"); 
+        updateMonetizationUI();
+    };
+    document.getElementById('regPhotoFile').onchange = (e) => { if(e.target.files[0]){ let r=new FileReader(); r.onload=ev=>document.getElementById('previewPhotoThumb').src=ev.target.result; r.readAsDataURL(e.target.files[0]); } };
+
+    const panes = { dashboard: document.getElementById('dashboardPane'), register: document.getElementById('registerPane'), scanner: document.getElementById('scannerPane'), logs: document.getElementById('logsPane') };
+    function switchTab(tabId){
+        Object.values(panes).forEach(p=>p.classList.remove('active-pane'));
+        if(panes[tabId]) panes[tabId].classList.add('active-pane');
+        document.querySelectorAll('.nav-item').forEach(nav=>{ if(nav.dataset.tab === tabId) nav.classList.add('active'); else nav.classList.remove('active'); });
+        document.querySelectorAll('.mobile-nav').forEach(nav=>{ if(nav.dataset.tab === tabId) nav.classList.add('active'); else nav.classList.remove('active'); });
+    }
+    document.querySelectorAll('.nav-item, .mobile-nav').forEach(el=>{
+        if(el.dataset && el.dataset.tab){
+            el.addEventListener('click',()=>{ switchTab(el.dataset.tab); if(window.innerWidth<=780) document.getElementById('mobileSidebar').classList.remove('open'); document.getElementById('overlay').style.display='none'; });
+        }
+    });
+    document.getElementById('mobileMenuBtn').onclick = () => { document.getElementById('mobileSidebar').classList.add('open'); document.getElementById('overlay').style.display='block'; };
+    document.getElementById('overlay').onclick = () => { document.getElementById('mobileSidebar').classList.remove('open'); document.getElementById('overlay').style.display='none'; };
+    window.addEventListener('resize',()=>{ if(window.innerWidth>780){ document.getElementById('mobileSidebar').classList.remove('open'); document.getElementById('overlay').style.display='none'; } });
+    
+    document.getElementById('submitLicenseBtn').onclick = () => {
+        let input = document.getElementById("licenseInput");
+        if(input) applyLicenseKey(input.value);
+        input.value = "";
+    };
+    document.getElementById('doLoginBtn').onclick = () => {
+        let u = document.getElementById('loginUsername').value;
+        let p = document.getElementById('loginPassword').value;
+        login(u, p);
+    };
+    document.getElementById('logoutBtnTop').onclick = logout;
+    document.getElementById('logoutBtnSidebar').onclick = logout;
+    document.getElementById('siteSelector').onchange = (e) => setSite(e.target.value);
+document.getElementById('siteSelectorTop').onchange = (e) => setSite(e.target.value);
+
+loadUserSession();
+setSite(SITE_ID);
+
+renderDashboard(); 
+renderLogTable();
+updateMonetizationUI();
+
+applyLicenseUI();
+lockLicense();
+
+// 🔥 ANTI NAKAL ENGINE
+setInterval(async ()=>{
+    if(!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+        async function(pos) {
+            try{
+                const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
+                await fetch(CLOUD_URL + "/save",{
+                    method:"POST",
+                    headers:{ "Content-Type":"application/json" },
+                    body: JSON.stringify({
+                        deviceId: localStorage.getItem("vms_device_id"),
+                        meta: meta,
+                        anti:{
+                            lat: pos.coords.latitude,
+                            lng: pos.coords.longitude,
+                            acc: pos.coords.accuracy,
+                            license: localStorage.getItem("vms_license"),
+                            flags: JSON.parse(localStorage.getItem("vms_anti_flags") || "[]")
+                        }
+                    })
+                });
+            }catch(e){
+                console.log("GPS send gagal:", e);
+            }
+        },
+        function(error) {
+            console.warn("GPS error (interval):", error.message);
+        }
+    );
+},5000);
+
+// 🔥 GPS LOOP (FIX - LANGSUNG KIRIM KE WORKER DENGAN FORMAT YANG BENAR)
+setInterval(()=>{
+    if(!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+        async function(pos) {
+            if(!pos || !pos.coords) return;
+            try{
+                // Kirim GPS sebagai bagian dari anti nakal report
+                const gpsData = {
+                    lat: pos.coords.latitude,
+                    lng: pos.coords.longitude,
+                    acc: pos.coords.accuracy,
+                    ts: Date.now()
+                };
+                // Simpan di localStorage untuk dikirim via sync nanti
+                localStorage.setItem("vms_last_gps_raw", JSON.stringify(gpsData));
+                // Update anti nakal flags
+                let flags = [];
+                try{
+                    flags = JSON.parse(localStorage.getItem("vms_anti_flags") || "[]");
+                }catch(e){}
+                flags.push({
+                    type: "GPS_LOCATION",
+                    lat: pos.coords.latitude,
+                    lng: pos.coords.longitude,
+                    time: Date.now()
+                });
+                localStorage.setItem("vms_anti_flags", JSON.stringify(flags.slice(-50)));
+            }catch(e){
+                console.log("GPS error:", e);
+            }
+        },
+        function(error) {
+            console.warn("GPS error (30s loop):", error.message);
+        }
+    );
+}, 30000); // 30 detik, tidak terlalu spam
+
+window.downloadPDFStable = downloadPDFStable;
+window.logs = logs;
+window.toast = toast;
+window.processScan = processScan;
+window.addLog = addLog;
+window.renderDashboard = renderDashboard;
+window.renderLogTable = renderLogTable;
+window.buildQR = buildQR;
+window.parseQR = parseQR;
+window.generateQRImage = generateQRImage;
+window.updateMonetizationUI = updateMonetizationUI;
+window.canRegister = canRegister;
+window.canScan = canScan;
+window.canRegisterSilent = canRegisterSilent;
+window.canScanSilent = canScanSilent;
+window.getCurrentVisitorCount = getCurrentVisitorCount;
+window.getCurrentScanCount = getCurrentScanCount;
+
+window.addEventListener("beforeunload", () => secureSave());
+    
+    toast("🔥 HYBRID SYSTEM ACTIVE - License: " + LICENSE_MODE + " | QR Unlimited | Multi-Site Safe","success");
+})();
+</script>
+
+<!-- 🔥 SUPER SYNC PATCH FINAL (INJECTED CLEAN) -->
+<script>
+(function(){
+
+if(window.__VMS_SUPER_PATCH__) return;
+window.__VMS_SUPER_PATCH__ = true;
+
+// ================== STATE ==================
+let retryQueue = [];
+let isSyncing = false;
+let syncTimer = null;
+let lastSyncTime = 0;
+let lastPayloadHash = "";
+let isBeaconSending = false;
+
+const MAX_QUEUE = 20;
+const CLOUD_URL = "https://vms3mode.sapammeded.workers.dev";
+
+// ================== HASH ==================
+function hashPayload(p){
+    return (
+        Object.entries(p.visitors || {})
+            .sort(([a],[b]) => a.localeCompare(b))
+            .map(([k, v]) => k + "_" + (v.updatedAt || 0))
+            .join("|")
+        +
+        "_"
+        +
+        (p.logs || [])
+            .map(l => l.time + "_" + (l.reg||"") + "_" + (l.action||""))
+            .sort()
+            .join("|")
+    );
+}
+
+// ================== BUILD PAYLOAD (ANTI NAKAL + SAFE) ==================
+function buildPayload(){
+
+    const now = Date.now();
+
+    // ======================
+    // VISITOR DELTA
+    // ======================
+    const deltaVisitors = {};
+    Object.entries(window.visitors || {}).forEach(([k, v]) => {
+        if((v.updatedAt || 0) > lastSyncTime){
+            deltaVisitors[k] = v;
+        }
+    });
+
+    // ======================
+    // LOG DELTA
+    // ======================
+    const deltaLogs = (window.logs || [])
+        .filter(l => (l.time || 0) > lastSyncTime)
+        .slice(0, 100);
+
+    // ======================
+    // ANTI NAKAL DATA
+    // ======================
+    let antiFlags = [];
+    try{
+        antiFlags = JSON.parse(localStorage.getItem("vms_anti_flags") || "[]");
+    }catch(e){
+        antiFlags = [];
+    }
+
+    // ======================
+    // FINAL PAYLOAD
+    // ======================
+    return {
+        visitors: deltaVisitors,
+        logs: deltaLogs,
+        deviceId: localStorage.getItem('vms_device_id') || 'unknown',
+        site: localStorage.getItem('vms_site') || 'SITE_A',
+        ts: now,
+
+        // 🔥 ANTI NAKAL REPORT
+        anti: {
+            flags: antiFlags.slice(-20),
+            deviceId: localStorage.getItem("vms_device_id"),
+            license: localStorage.getItem("vms_license"),
+            site: localStorage.getItem("vms_site"),
+            ts: now
+        }
+    };
+}
+
+// ================== SAFE SYNC ==================
+async function saveToCloudSafe(payload){
+
+    if(
+    !payload ||
+    (
+        (!payload.visitors || Object.keys(payload.visitors).length === 0) &&
+        (!payload.logs || payload.logs.length === 0)
+    )
+){
+    return;
+}
+
+    const hash = hashPayload(payload);
+
+    if(hash === lastPayloadHash && lastSyncTime > 0){
+        return;
+    }
+
+    if(isSyncing || !navigator.onLine) return;
+
+    isSyncing = true;
+
+    try{
+const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
+payload.meta = meta;
+        const res = await fetch(CLOUD_URL + "/save",{
+            method:"POST",
+            headers:{ "Content-Type":"application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        if(res.ok){
+            lastSyncTime = payload.ts || Date.now();
+            lastPayloadHash = hash;
+
+            if(retryQueue.length && retryQueue[0]?.payload?.ts === payload.ts){
+                retryQueue.shift();
+            }
+        }else{
+            throw new Error("Bad response");
+        }
+
+    }catch(e){
+
+        const exists = retryQueue.find(i => i.payload?.ts === payload.ts);
+
+        if(!exists){
+            if(retryQueue.length >= MAX_QUEUE){
+                retryQueue.shift();
+            }
+
+            retryQueue.push({
+                payload,
+                time: Date.now(),
+                retry: 0
+            });
+        }
+
+    } finally {
+        isSyncing = false;
+    }
+}
+
+// ================== RETRY ==================
+setInterval(async ()=>{
+
+    if(!navigator.onLine || !retryQueue.length) return;
+
+    const item = retryQueue[0];
+
+    if(item.retry >= 5){
+        retryQueue.shift();
+        return;
+    }
+
+    const backoff = Math.min(3000 * Math.pow(2, item.retry), 30000);
+
+    if(Date.now() - item.time < backoff) return;
+
+    await saveToCloudSafe(item.payload);
+
+    if(retryQueue.length && retryQueue[0] === item){
+        item.retry++;
+        item.time = Date.now();
+    }
+
+}, 3000);
+
+// ================== SMART SYNC ==================
+function smartSync(type="normal"){
+    clearTimeout(syncTimer);
+
+    const delay = type === "scan" ? 300 : 1000;
+
+    syncTimer = setTimeout(()=>{
+        saveToCloudSafe(buildPayload());
+    }, delay);
+}
+
+// ================== OVERRIDE ==================
+window.saveToCloud = function(){
+    smartSync();
+};
+
+window.smartSync = smartSync;
+
+// ================== HOOK ==================
+if(window.addLog){
+    const old = window.addLog;
+    window.addLog = function(){
+        const r = old.apply(this, arguments);
+        smartSync("scan");
+        return r;
+    };
+}
+
+if(window.processScan){
+    const old = window.processScan;
+    window.processScan = async function(){
+        const r = await old.apply(this, arguments);
+        smartSync("scan");
+        return r;
+    };
+}
+
+// ================== ONLINE ==================
+window.addEventListener("online", ()=>{
+    smartSync();
+});
+
+// ================== CLOSE APP ==================
+window.addEventListener("visibilitychange", ()=>{
+    if(document.visibilityState === "hidden"){
+        if(isBeaconSending) return;
+        isBeaconSending = true;
+
+        try{
+            const payload = buildPayload();
+            navigator.sendBeacon(CLOUD_URL + "/save", JSON.stringify(payload));
+        }catch(e){
+            console.warn("Beacon error:", e);
+        } finally {
+            setTimeout(()=> isBeaconSending=false, 1000);
+        }
+    }
+});
+
+// ================== INIT ==================
+window.addEventListener("load", ()=>{
+    smartSync();
+});
+
+console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
+
+})();
+</script>
+<script>
+// ============================================================
+// HYBRID ORCHESTRATION LAYER - HARDENED PRODUCTION v1.0
+// TAMBAHKAN DI BAWAH index.html (sebelum </body>)
+// ============================================================
+(function() {
+    if (window.__HYBRID_ORCHESTRATION_LOADED__) return;
+    window.__HYBRID_ORCHESTRATION_LOADED__ = true;
+
+    const CLOUD_URL = "https://vms3mode.sapammeded.workers.dev";
+    let currentMode = "DEMO";
+    let onlineStatus = true;
+    let lastValidSession = null;
+
+    // ========== UTILITIES ==========
+    async function sha256(str) {
+        const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function detectMode() {
+        const license = localStorage.getItem("vms_license") || "DEMO";
+        currentMode = license === "PRO" ? "PRO" : (license === "BASIC" ? "BASIC" : "DEMO");
+        return currentMode;
+    }
+
+    async function checkOnline() {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 3000);
+            const res = await fetch(CLOUD_URL + "/", { signal: controller.signal });
+            clearTimeout(timeout);
+            onlineStatus = res.ok;
+        } catch {
+            onlineStatus = false;
+        }
+        return onlineStatus;
+    }
+
+    // ========== TOAST HELPER ==========
+    function showToast(message, type = "info") {
+        const toast = document.createElement("div");
+        toast.className = `toast-msg ${type}`;
+        toast.innerText = message;
+        toast.style.cssText = `
+            position: fixed; bottom: 20px; right: 20px;
+            background: ${type === "error" ? "#b91c1c" : (type === "success" ? "#1f4e4a" : "#1e293b")};
+            color: white; padding: 10px 20px; border-radius: 40px;
+            z-index: 10000; font-size: 0.8rem; animation: fadeIn 0.2s;
+        `;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+    window.showToast = showToast;
+
+    // ========== USER MANAGEMENT ==========
+    async function ensureDefaultAdmin() {
+        let users = JSON.parse(localStorage.getItem("vms_users") || "[]");
+        if (users.length === 0) {
+            users = [{
+                username: "admin",
+                password: await sha256("123456"),
+                role: "SUPER_ADMIN"
+            }];
+            localStorage.setItem("vms_users", JSON.stringify(users));
+        }
+        return users;
+    }
+
+    async function syncUsersToServer() {
+        if (!onlineStatus) return false;
+        try {
+            const localUsers = JSON.parse(localStorage.getItem("vms_users") || "[]");
+            const res = await fetch(CLOUD_URL + "/sync-users", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ users: localUsers })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.users) localStorage.setItem("vms_users", JSON.stringify(data.users));
+                return true;
+            }
+        } catch (e) {
+            console.warn("Sync users failed:", e);
+        }
+        return false;
+    }
+
+    // ========== LOGIN HANDLERS ==========
+    async function serverLogin(username, password) {
+        try {
+            const res = await fetch(CLOUD_URL + "/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await res.json();
+            if (data.ok && data.token) {
+                localStorage.setItem("vms_token", data.token);
+                localStorage.setItem("vms_role", data.role);
+                localStorage.setItem("vms_user", JSON.stringify({ username, role: data.role }));
+                lastValidSession = { username, role: data.role, token: data.token, timestamp: Date.now() };
+                localStorage.setItem("vms_last_valid_session", JSON.stringify(lastValidSession));
+                return { success: true, role: data.role };
+            }
+            return { success: false, error: data.error || "Login failed" };
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
+    }
+
+    async function localLogin(username, password) {
+        await ensureDefaultAdmin();
+        const users = JSON.parse(localStorage.getItem("vms_users") || "[]");
+        const passwordHash = await sha256(password);
+        const user = users.find(u => u.username === username && u.password === passwordHash);
+        if (user) {
+            localStorage.setItem("vms_user", JSON.stringify({ username: user.username, role: user.role }));
+            localStorage.setItem("vms_role", user.role);
+            localStorage.removeItem("vms_token");
+            return { success: true, role: user.role };
+        }
+        return { success: false, error: "Invalid username or password" };
+    }
+
+    // ========== HYBRID LOGIN CONTROLLER ==========
+    window.hybridLogin = async function(username, password) {
+        if (!username || !password) {
+            showToast("Username dan password wajib diisi", "warning");
+            return false;
+        }
+
+        detectMode();
+        await checkOnline();
+
+        if (currentMode === "DEMO") {
+            showToast("DEMO MODE: Tidak perlu login", "warning");
+            return false;
+        }
+
+        if (currentMode === "PRO" && onlineStatus) {
+            const result = await serverLogin(username, password);
+            if (result.success) {
+                showToast(`✅ Login berhasil (ONLINE) - ${result.role}`, "success");
+                return true;
+            }
+            showToast(result.error || "Login gagal", "error");
+            return false;
+        }
+
+        if (currentMode === "PRO" && !onlineStatus) {
+            const cached = localStorage.getItem("vms_last_valid_session");
+            if (cached) {
+                const session = JSON.parse(cached);
+                if (session.username === username && (Date.now() - session.timestamp) < 86400000) {
+                    localStorage.setItem("vms_user", JSON.stringify({ username: session.username, role: session.role }));
+                    localStorage.setItem("vms_role", session.role);
+                    if (session.token) localStorage.setItem("vms_token", session.token);
+                    showToast(`⚠️ OFFLINE MODE - Menggunakan session cached: ${username}`, "warning");
+                    return true;
+                }
+            }
+            showToast("❌ OFFLINE MODE - Tidak ada session valid. Koneksikan internet untuk login PRO.", "error");
+            return false;
+        }
+
+        if (currentMode === "BASIC") {
+            const result = await localLogin(username, password);
+            if (result.success) {
+                showToast(`✅ Login berhasil (LOCAL) - ${result.role}`, "success");
+                return true;
+            }
+            showToast(result.error || "Login gagal", "error");
+            return false;
+        }
+
+        return false;
+    };
+
+    // ========== HYBRID LOGOUT ==========
+    window.hybridLogout = function() {
+        localStorage.removeItem("vms_token");
+        localStorage.removeItem("vms_user");
+        localStorage.removeItem("vms_role");
+        
+        detectMode();
+        
+        const loginOverlay = document.getElementById("loginOverlay");
+        const appLayout = document.getElementById("appLayout");
+        
+        if (currentMode === "PRO") {
+            if (loginOverlay) loginOverlay.style.display = "flex";
+            if (appLayout) appLayout.style.display = "none";
+        } else {
+            if (loginOverlay) loginOverlay.style.display = "none";
+            if (appLayout) appLayout.style.display = "flex";
+        }
+        
+        showToast("Logged out", "info");
+        if (window.renderDashboard) window.renderDashboard();
+        if (window.renderLogTable) window.renderLogTable();
+    };
+
+    // ========== SESSION VALIDATION ==========
+    async function validateSession() {
+        const userStr = localStorage.getItem("vms_user");
+        if (!userStr) return false;
+        
+        detectMode();
+        
+        if (currentMode === "DEMO") {
+            if (!localStorage.getItem("vms_user")) {
+                localStorage.setItem("vms_user", JSON.stringify({ username: "demo", role: "OPERATOR" }));
+                localStorage.setItem("vms_role", "OPERATOR");
+            }
+            return true;
+        }
+        
+        if (currentMode === "PRO" && onlineStatus) {
+            const token = localStorage.getItem("vms_token");
+            if (token) {
+                try {
+                    const res = await fetch(CLOUD_URL + "/users", { headers: { "x-token": token } });
+                    if (res.ok) return true;
+                    localStorage.removeItem("vms_token");
+                    localStorage.removeItem("vms_user");
+                    localStorage.removeItem("vms_role");
+                    return false;
+                } catch {
+                    const cached = localStorage.getItem("vms_last_valid_session");
+                    if (cached) {
+                        const session = JSON.parse(cached);
+                        if (Date.now() - session.timestamp < 86400000) return true;
+                    }
+                    return false;
+                }
+            }
+            return false;
+        }
+        
+        return true;
+    }
+
+    // ========== INIT SESSION ==========
+    window.hybridInitSession = async function() {
+        detectMode();
+        await checkOnline();
+        
+        const loginOverlay = document.getElementById("loginOverlay");
+        const appLayout = document.getElementById("appLayout");
+        
+        if (currentMode === "DEMO") {
+            if (loginOverlay) loginOverlay.style.display = "none";
+            if (appLayout) appLayout.style.display = "flex";
+            if (!localStorage.getItem("vms_user")) {
+                localStorage.setItem("vms_user", JSON.stringify({ username: "demo", role: "OPERATOR" }));
+                localStorage.setItem("vms_role", "OPERATOR");
+            }
+            if (window.updateUserUI) window.updateUserUI();
+            if (window.renderDashboard) window.renderDashboard();
+            if (window.renderLogTable) window.renderLogTable();
+            return true;
+        }
+        
+        if (currentMode === "BASIC") {
+            if (loginOverlay) loginOverlay.style.display = "none";
+            if (appLayout) appLayout.style.display = "flex";
+            const savedUser = localStorage.getItem("vms_user");
+            if (savedUser) {
+                const user = JSON.parse(savedUser);
+                localStorage.setItem("vms_role", user.role);
+                if (window.updateUserUI) window.updateUserUI();
+            }
+            if (window.renderDashboard) window.renderDashboard();
+            if (window.renderLogTable) window.renderLogTable();
+            return true;
+        }
+        
+        if (currentMode === "PRO") {
+            const isValid = await validateSession();
+            if (isValid) {
+                if (loginOverlay) loginOverlay.style.display = "none";
+                if (appLayout) appLayout.style.display = "flex";
+                if (window.updateUserUI) window.updateUserUI();
+                if (window.renderDashboard) window.renderDashboard();
+                if (window.renderLogTable) window.renderLogTable();
+                return true;
+            } else {
+                if (loginOverlay) loginOverlay.style.display = "flex";
+                if (appLayout) appLayout.style.display = "none";
+                return false;
+            }
+        }
+        
+        return false;
+    };
+
+    // ========== UI OVERRIDES ==========
+    function overrideLoginButton() {
+        const doLoginBtn = document.getElementById("doLoginBtn");
+        if (doLoginBtn && !doLoginBtn._hybridOverridden) {
+            doLoginBtn._hybridOverridden = true;
+            doLoginBtn.onclick = async () => {
+                const username = document.getElementById("loginUsername")?.value || "";
+                const password = document.getElementById("loginPassword")?.value || "";
+                const success = await window.hybridLogin(username, password);
+                if (success) {
+                    const loginOverlay = document.getElementById("loginOverlay");
+                    const appLayout = document.getElementById("appLayout");
+                    if (loginOverlay) loginOverlay.style.display = "none";
+                    if (appLayout) appLayout.style.display = "flex";
+                    if (window.renderDashboard) window.renderDashboard();
+                    if (window.renderLogTable) window.renderLogTable();
+                    if (window.updateUserUI) window.updateUserUI();
+                }
+            };
+        }
+    }
+
+    function overrideLogoutButtons() {
+        document.querySelectorAll("#logoutBtnTop, #logoutBtnSidebar").forEach(btn => {
+            if (!btn._hybridOverridden) {
+                btn._hybridOverridden = true;
+                btn.onclick = () => window.hybridLogout();
+            }
+        });
+    }
+
+    // ========== STATUS INDICATOR ==========
+    function addStatusIndicator() {
+        if (document.getElementById("hybridStatusIndicator")) return;
+        
+        const indicator = document.createElement("div");
+        indicator.id = "hybridStatusIndicator";
+        indicator.style.cssText = `
+            position: fixed; bottom: 10px; right: 10px; z-index: 9999;
+            background: rgba(0,0,0,0.8); color: white; padding: 4px 12px;
+            border-radius: 20px; font-size: 10px; font-family: monospace;
+            pointer-events: none; backdrop-filter: blur(4px);
+        `;
+        document.body.appendChild(indicator);
+        
+        async function updateIndicator() {
+            const mode = detectMode();
+            await checkOnline();
+            const icon = onlineStatus ? "🟢" : "🟡";
+            const modeIcon = mode === "PRO" ? "🔴" : (mode === "BASIC" ? "🔵" : "🟠");
+            indicator.innerHTML = `${icon} ${modeIcon} ${mode} | ${onlineStatus ? "ONLINE" : "OFFLINE"}`;
+        }
+        
+        updateIndicator();
+        setInterval(updateIndicator, 10000);
+    }
+
+    // ========== AUTO FORCE INIT ==========
+    async function safeForceInit() {
+        if (!onlineStatus) return;
+        try {
+            const res = await fetch(CLOUD_URL + "/force-init", { method: "POST" });
+            const data = await res.json();
+            if (data.ok) console.log("Force init completed");
+        } catch (e) {
+            console.warn("Force init skipped:", e.message);
+        }
+    }
+
+    // ========== ONLINE MONITOR ==========
+    function monitorOnlineStatus() {
+        window.addEventListener("online", async () => {
+            await checkOnline();
+            await syncUsersToServer();
+            await window.hybridInitSession();
+            showToast("🟢 Kembali ONLINE - Sinkronisasi data", "success");
+            if (window.renderDashboard) window.renderDashboard();
+            if (window.renderLogTable) window.renderLogTable();
+        });
+        
+        window.addEventListener("offline", async () => {
+            await checkOnline();
+            showToast("🟡 MODE OFFLINE - Menggunakan data lokal", "warning");
+        });
+    }
+
+    // ========== START ==========
+    async function start() {
+        await ensureDefaultAdmin();
+        await checkOnline();
+        await safeForceInit();
+        await syncUsersToServer();
+        await window.hybridInitSession();
+        
+        addStatusIndicator();
+        overrideLoginButton();
+        overrideLogoutButtons();
+        monitorOnlineStatus();
+        
+        setInterval(async () => {
+            await checkOnline();
+            if (onlineStatus) await syncUsersToServer();
+        }, 30000);
+    }
+    
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", start);
+    } else {
+        start();
+    }
+})();
+</script>
+<script>
+// ============================================================
+// 🔥 LICENSE CLIENT PATCH (NO BREAK SYSTEM)
+// ============================================================
+
+(function(){
+ if(window.__LICENSE_SYSTEM__) return;
+ window.__LICENSE_SYSTEM__ = true;
+
+ function askLicense(){
+  let license = localStorage.getItem("vms_license_key");
+
+  if(!license){
+   license = prompt("Masukkan LICENSE KEY dari ADMIN:");
+   if(license){
+    localStorage.setItem("vms_license_key", license);
+   }
+  }
+
+  return license;
+ }
+
+ const originalFetch = window.fetch;
+
+ window.fetch = async function(url, options={}){
+  try{
+   if(typeof url === "string" && url.includes("/save") && options.body){
+
+    let body = JSON.parse(options.body);
+
+    body.license = askLicense();
+
+    options.body = JSON.stringify(body);
+   }
+  }catch(e){
+   console.warn("License inject skip", e);
+  }
+
+  return originalFetch(url, options);
+ };
+
+})();
+</script>
+<script>
+// ============================================================
+// 🔥 DEVICE IDENTITY SYSTEM (SAFE ADD-ON)
+// ============================================================
+
+(function(){
+ if(window.__DEVICE_IDENTITY__) return;
+ window.__DEVICE_IDENTITY__ = true;
+
+ const KEY = "device_meta";
+
+ function createForm(){
+  const box = document.createElement("div");
+  box.id = "deviceIdentityBox";
+  box.style.cssText = `
+   position:fixed;top:0;left:0;width:100%;height:100%;
+   background:rgba(0,0,0,0.9);
+   display:flex;align-items:center;justify-content:center;
+   z-index:99999;
+  `;
+
+  box.innerHTML = `
+   <div style="background:#020617;padding:20px;border-radius:12px;width:300px;color:#fff;">
+    <h3>🔐 Setup Device</h3>
+    <input id="meta_company" placeholder="Company" style="width:100%;margin:5px 0;">
+    <input id="meta_site" placeholder="Site" style="width:100%;margin:5px 0;">
+    <input id="meta_name" placeholder="Device Name" style="width:100%;margin:5px 0;">
+    <input id="meta_pic" placeholder="PIC" style="width:100%;margin:5px 0;">
+    <input id="meta_phone" placeholder="Phone" style="width:100%;margin:5px 0;">
+    <button id="saveMetaBtn" style="width:100%;margin-top:10px;">SAVE</button>
+   </div>
+  `;
+
+  document.body.appendChild(box);
+
+  document.getElementById("saveMetaBtn").onclick = () => {
+   const meta = {
+    company: document.getElementById("meta_company").value,
+    site: document.getElementById("meta_site").value,
+    device_name: document.getElementById("meta_name").value,
+    pic: document.getElementById("meta_pic").value,
+    phone: document.getElementById("meta_phone").value
+   };
+
+   localStorage.setItem(KEY, JSON.stringify(meta));
+   box.remove();
+  };
+ }
+
+ function ensureMeta(){
+  const existing = localStorage.getItem(KEY);
+  if(!existing){
+   createForm();
+  }
+ }
+
+ // expose
+ window.getDeviceMeta = function(){
+  return JSON.parse(localStorage.getItem(KEY) || "{}");
+ };
+
+ ensureMeta();
+
+})();
+</script>
+
+<script>
+const SYNC_CLOUD_URL = "https://vms3mode.sapammeded.workers.dev";
+
+async function syncToCloud(payload) {
+    try {
+        if (!payload || !payload.deviceId) return;
+        if (!navigator.onLine) return;
+
+        const lastSync = localStorage.getItem("vms_last_sync");
+        const currentHash = JSON.stringify(payload);
+
+        if (lastSync === currentHash) return;
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+
+        const res = await fetch(SYNC_CLOUD_URL + "/save", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal
+        });
+
+        clearTimeout(timeout);
+
+        if (res.ok) {
+            localStorage.setItem("vms_last_sync", currentHash);
+            console.log("SYNC SUCCESS");
+        }
+
+    } catch (err) {
+        console.warn("SYNC ERROR:", err.message);
+    }
+}
+</script>
+<script>
+// ============================================================
+// 🧠⚙️👑 VMS HARDENING INJECTION PACK v1.0 (SAFE MODE)
+// ============================================================
+
+(function(){
+
+console.log("[VMS HARDENING] INIT...");
+
+// ============================================================
+// 🔐 1. API CALL HARDEN (NO BREAK CORE)
+// ============================================================
+
+if (window.apiCall) {
+    const __old_apiCall = window.apiCall;
+
+    window.apiCall = async function(endpoint, options = {}) {
+        if (!navigator.onLine) {
+            console.warn("[API] Offline mode");
+            return null;
+        }
+
+        try {
+            return await __old_apiCall(endpoint, options);
+        } catch (e) {
+            console.error("[API ERROR]", endpoint, e);
+            return null;
+        }
+    };
+
+    console.log("[VMS] API HARDENED");
+}
+
+// ============================================================
+// 📱 2. DEVICE SYNC HARDEN (SERVER SOURCE OF TRUTH)
+// ============================================================
+
+if (window.loadDevices) {
+    const __old_loadDevices = window.loadDevices;
+
+    window.loadDevices = async function () {
+        try {
+            const licenseKey = localStorage.getItem("vms_license_key");
+            if (!licenseKey) return __old_loadDevices();
+
+            const res = await fetch(API_URL + "/client/devices", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ licenseKey })
+            });
+
+            if (!res.ok) throw new Error("Server error");
+
+            const data = await res.json();
+
+            if (data.devices && data.devices.length > 0) {
+                if (typeof devicesData !== "undefined") {
+                    devicesData = data.devices;
+                }
+
+                localStorage.setItem("vms_devices", JSON.stringify(data.devices));
+
+                if (typeof renderDevicesList === "function") renderDevicesList();
+                if (typeof updateDeviceSelects === "function") updateDeviceSelects();
+                if (typeof updateStats === "function") updateStats();
+
+                console.log("[VMS] DEVICE SYNC FROM SERVER");
+
+                return;
+            }
+
+        } catch (e) {
+            console.warn("[SYNC FALLBACK LOCAL]", e.message);
+        }
+
+        return __old_loadDevices();
+    };
+
+    console.log("[VMS] DEVICE SYNC HARDENED");
+}
+
+// ============================================================
+// 🔁 3. SYNC LOCK HARDEN (ANTI SPAM)
+// ============================================================
+
+if (window.syncToCloud) {
+    const __old_sync = window.syncToCloud;
+
+    window.syncToCloud = async function(payload){
+        if (window.__sync_lock) {
+            console.warn("[SYNC BLOCKED]");
+            return;
+        }
+
+        window.__sync_lock = true;
+
+        try {
+            return await __old_sync(payload);
+        } catch(e){
+            console.warn("[SYNC ERROR]", e);
+        } finally {
+            setTimeout(()=>{
+                window.__sync_lock = false;
+            }, 1000);
+        }
+    };
+
+    console.log("[VMS] SYNC LOCK ACTIVE");
+}
+
+// ============================================================
+// 🌐 4. SAFE FETCH (GLOBAL FALLBACK)
+// ============================================================
+
+window.safeFetch = async function(url, options = {}) {
+    try {
+        const res = await fetch(url, options);
+        if (!res.ok) throw new Error(res.status);
+        return await res.json();
+    } catch (e) {
+        console.warn("[SAFE FETCH ERROR]", url, e.message);
+        return null;
+    }
+};
+
+// ============================================================
+// 📡 5. AUTO HEALTH LOG
+// ============================================================
+
+console.log("[VMS HARDENING] READY ✅");
+
+})();
+</script>
+</body>
+</html>

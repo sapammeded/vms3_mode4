@@ -1,0 +1,2254 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>VMS Command Center | Enterprise Admin Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #0a0f1a;
+            --primary-light: #111827;
+            --accent: #10b981;
+            --accent-dark: #059669;
+            --danger: #ef4444;
+            --danger-dark: #dc2626;
+            --warning: #f59e0b;
+            --info: #3b82f6;
+            --text: #f9fafb;
+            --text-muted: #9ca3af;
+            --border: #1f2937;
+            --card-bg: #1f2937;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--primary);
+            color: var(--text);
+            overflow-x: hidden;
+        }
+
+        .app {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: var(--primary-light);
+            border-right: 1px solid var(--border);
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            transition: transform 0.3s ease;
+            z-index: 100;
+        }
+
+        .sidebar-header {
+            padding: 24px 20px;
+            border-bottom: 1px solid var(--border);
+            background: linear-gradient(135deg, #0a0f1a 0%, #111827 100%);
+        }
+
+        .sidebar-header h1 {
+            font-size: 1.4rem;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .sidebar-header p {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 20px;
+            margin: 6px 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .nav-item:hover {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--text);
+        }
+
+        .nav-item.active {
+            background: var(--accent);
+            color: white;
+        }
+
+        .nav-item i {
+            width: 24px;
+            font-size: 1.2rem;
+        }
+
+        .main-content {
+            flex: 1;
+            margin-left: 280px;
+            padding: 24px 32px;
+            min-height: 100vh;
+        }
+
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .page-title h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+        }
+
+        .page-title p {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-top: 4px;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            background: var(--card-bg);
+            padding: 8px 20px;
+            border-radius: 40px;
+            border: 1px solid var(--border);
+        }
+
+        .user-info span {
+            font-size: 0.85rem;
+        }
+
+        .logout-btn {
+            background: var(--danger);
+            border: none;
+            padding: 6px 14px;
+            border-radius: 30px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border-radius: 20px;
+            padding: 20px;
+            border: 1px solid var(--border);
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: var(--accent);
+        }
+
+        .stat-card h4 {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .stat-change {
+            font-size: 0.7rem;
+            margin-top: 8px;
+            color: var(--text-muted);
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 20px;
+            padding: 24px;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .card-header h3 {
+            font-size: 1.1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+        }
+
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            border-radius: 16px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 14px 12px;
+            background: var(--primary);
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85rem;
+        }
+
+        tr:hover {
+            background: rgba(16, 185, 129, 0.05);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .badge-active { background: #10b98120; color: #10b981; border: 1px solid #10b981; }
+        .badge-expired { background: #ef444420; color: #ef4444; border: 1px solid #ef4444; }
+        .badge-pending { background: #f59e0b20; color: #f59e0b; border: 1px solid #f59e0b; }
+        .badge-suspended { background: #8b5cf620; color: #8b5cf6; border: 1px solid #8b5cf6; }
+        .badge-banned { background: #dc262620; color: #dc2626; border: 1px solid #dc2626; }
+        .badge-pro { background: #10b98120; color: #10b981; border: 1px solid #10b981; }
+        .badge-basic { background: #3b82f620; color: #3b82f6; border: 1px solid #3b82f6; }
+        .badge-demo { background: #f59e0b20; color: #f59e0b; border: 1px solid #f59e0b; }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.8rem;
+        }
+
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: var(--accent-dark); }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { background: var(--danger-dark); }
+        .btn-warning { background: var(--warning); color: white; }
+        .btn-info { background: var(--info); color: white; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-outline:hover { background: var(--border); }
+        .btn-sm { padding: 4px 10px; font-size: 0.7rem; }
+
+        input, select, textarea {
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--primary);
+            color: var(--text);
+            font-size: 0.85rem;
+            width: 100%;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--primary-light);
+            border-radius: 24px;
+            padding: 28px;
+            max-width: 550px;
+            width: 90%;
+            max-height: 85vh;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .close-modal {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .tab-pane {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1100;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            background: var(--card-bg);
+            padding: 12px 20px;
+            border-radius: 12px;
+            border-left: 4px solid var(--accent);
+            animation: slideIn 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            font-size: 0.85rem;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .login-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--primary);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-overlay.hidden {
+            display: none;
+        }
+
+        .login-card {
+            background: var(--card-bg);
+            border-radius: 32px;
+            padding: 40px;
+            width: 380px;
+            border: 1px solid var(--border);
+        }
+
+        .login-card h2 {
+            text-align: center;
+            margin-bottom: 28px;
+            color: var(--accent);
+        }
+
+        .loader {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid white;
+            border-top: 2px solid transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+                position: fixed;
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 16px;
+            }
+            .grid-2, .grid-3 {
+                grid-template-columns: 1fr;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+            }
+            .mobile-menu-btn {
+                display: block;
+                position: fixed;
+                top: 16px;
+                left: 16px;
+                z-index: 101;
+                background: var(--accent);
+                border: none;
+                padding: 10px 14px;
+                border-radius: 10px;
+                color: white;
+                cursor: pointer;
+                font-size: 1.2rem;
+            }
+            .top-bar {
+                margin-top: 50px;
+            }
+        }
+
+        @media (min-width: 769px) {
+            .mobile-menu-btn {
+                display: none;
+            }
+        }
+
+        .text-muted { color: var(--text-muted); }
+        .text-success { color: var(--accent); }
+        .text-danger { color: var(--danger); }
+        .text-warning { color: var(--warning); }
+        .mb-2 { margin-bottom: 8px; }
+        .mb-3 { margin-bottom: 12px; }
+        .mb-4 { margin-bottom: 20px; }
+        .code {
+            font-family: monospace;
+            font-size: 0.7rem;
+            background: var(--primary);
+            padding: 2px 6px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+
+<button class="mobile-menu-btn" id="mobileMenuBtn">☰ MENU</button>
+
+<div class="app">
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h1>🎯 VMS COMMAND</h1>
+            <p>Enterprise Control Center v3.0</p>
+        </div>
+        
+        <div class="nav-item active" data-tab="dashboard">
+            <span>📊</span> Dashboard
+        </div>
+        <div class="nav-item" data-tab="companies">
+            <span>🏢</span> Companies
+        </div>
+        <div class="nav-item" data-tab="devices">
+            <span>📱</span> Devices
+        </div>
+        <div class="nav-item" data-tab="violations">
+            <span>⚠️</span> Violations
+        </div>
+        <div class="nav-item" data-tab="requests">
+            <span>📝</span> Pending Approvals
+        </div>
+        <div class="nav-item" data-tab="license">
+            <span>🔑</span> Generate License
+        </div>
+        <div class="nav-item" data-tab="invoices">
+            <span>💰</span> Invoices
+        </div>
+        <div class="nav-item" data-tab="devicerequests">
+            <span>💸</span> Device Requests
+        </div>
+        <div class="nav-item" data-tab="settings">
+            <span>⚙️</span> Settings
+        </div>
+        
+        <div style="margin-top: 40px; padding: 20px; border-top: 1px solid var(--border);">
+            <div class="user-info" style="margin-bottom: 12px; background: transparent; padding: 0;">
+                <span>👤 <span id="sidebarUsername">Admin</span></span>
+                <span class="badge badge-active" id="sidebarRole">SUPER_ADMIN</span>
+            </div>
+            <button class="btn btn-danger" id="sidebarLogoutBtn" style="width: 100%;">🚪 Logout</button>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="top-bar">
+            <div class="page-title">
+                <h2 id="pageTitle">Dashboard</h2>
+                <p id="pageSubtitle">Welcome back, Admin</p>
+            </div>
+            <div class="user-info">
+                <span>👤 <span id="topUsername">Admin</span></span>
+                <span class="badge badge-active" id="topRole">SUPER_ADMIN</span>
+                <button class="logout-btn" id="topLogoutBtn">Logout</button>
+            </div>
+        </div>
+
+        <div id="dashboardTab" class="tab-pane active">
+            <div class="stats-grid" id="statsGrid">
+                <div class="stat-card"><h4>Total Companies</h4><div class="stat-number" id="statTotalCompanies">-</div></div>
+                <div class="stat-card"><h4>Active Companies</h4><div class="stat-number" id="statActiveCompanies">-</div></div>
+                <div class="stat-card"><h4>Total Devices</h4><div class="stat-number" id="statTotalDevices">-</div></div>
+                <div class="stat-card"><h4>Active Devices</h4><div class="stat-number" id="statActiveDevices">-</div></div>
+                <div class="stat-card"><h4>Pending Approvals</h4><div class="stat-number" id="statPendingDevices">-</div></div>
+                <div class="stat-card"><h4>Suspended/Banned</h4><div class="stat-number" id="statSuspendedDevices">-</div></div>
+                <div class="stat-card"><h4>Total Violations</h4><div class="stat-number" id="statTotalViolations">-</div></div>
+                <div class="stat-card"><h4>Monthly Revenue</h4><div class="stat-number" id="statMonthlyRevenue">-</div></div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📊 Package Distribution</h3>
+                    </div>
+                    <canvas id="packageChart" height="200"></canvas>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📈 Violation Trends (30 Days)</h3>
+                    </div>
+                    <canvas id="violationChart" height="200"></canvas>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>🚨 Recent Violations</h3>
+                    <button class="btn btn-outline btn-sm" onclick="refreshData()">🔄 Refresh</button>
+                </div>
+                <div class="table-wrapper">
+                    <table id="recentViolationsTable" style="width: 100%;">
+                        <thead>
+                            <tr><th>Company</th><th>Device</th><th>Violation Type</th><th>Time</th><th>Status</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>⏰ Expiring Licenses (Next 7 Days)</h3>
+                </div>
+                <div class="table-wrapper">
+                    <table id="expiringTable" style="width: 100%;">
+                        <thead>
+                            <tr><th>Company</th><th>Package</th><th>Expiry Date</th><th>Devices</th><th>Status</th><th>Action</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="companiesTab" class="tab-pane">
+            <div class="card">
+                <div class="card-header">
+                    <h3>🏢 All Companies</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <input type="text" id="companySearch" placeholder="Search company..." style="width: 200px;">
+                        <button class="btn btn-primary btn-sm" onclick="openGenerateLicenseModal()">+ New License</button>
+                        <button class="btn btn-info btn-sm" onclick="exportCompaniesToExcel()">📊 Export Excel</button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table id="companiesTable" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Company</th><th>License Key</th><th>Package</th><th>Devices</th><th>Max</th><th>Expiry</th><th>Status</th><th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="devicesTab" class="tab-pane">
+            <div class="card">
+                <div class="card-header">
+                    <h3>📱 All Devices</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <input type="text" id="deviceSearch" placeholder="Search device/company..." style="width: 220px;">
+                        <select id="deviceStatusFilter" style="width: 140px;">
+                            <option value="">All Status</option>
+                            <option value="ACTIVE">Active</option>
+                            <option value="PENDING_APPROVAL">Pending</option>
+                            <option value="SUSPENDED">Suspended</option>
+                            <option value="BANNED">Banned</option>
+                        </select>
+                        <button class="btn btn-info btn-sm" onclick="exportDevicesToExcel()">📊 Export</button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table id="devicesTable" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Device ID</th><th>Device Name</th><th>Company</th><th>License</th><th>Status</th><th>Last Seen</th><th>Violations</th><th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="violationsTab" class="tab-pane">
+            <div class="card">
+                <div class="card-header">
+                    <h3>⚠️ All Violations Log</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <input type="text" id="violationSearch" placeholder="Search..." style="width: 200px;">
+                        <select id="violationTypeFilter" style="width: 160px;">
+                            <option value="">All Types</option>
+                            <option value="GPS_SPOOFING">GPS Spoofing</option>
+                            <option value="MULTIPLE_DEVICE">Multiple Device</option>
+                            <option value="LICENSE_TAMPER">License Tamper</option>
+                            <option value="SUSPICIOUS_ACTIVITY">Suspicious</option>
+                        </select>
+                        <button class="btn btn-danger btn-sm" onclick="clearViolationsConfirm()">🗑️ Clear All</button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table id="violationsTable" style="width: 100%;">
+                        <thead>
+                            <tr><th>Company</th><th>Device</th><th>Violation Type</th><th>Details</th><th>Time</th><th>Action</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="requestsTab" class="tab-pane">
+            <div class="card">
+                <div class="card-header">
+                    <h3>📝 Pending Device Approvals</h3>
+                    <span id="pendingCount" class="badge badge-warning">0</span>
+                </div>
+                <div class="table-wrapper">
+                    <table id="requestsTable" style="width: 100%;">
+                        <thead>
+                            <tr><th>Company</th><th>Device ID</th><th>Device Name</th><th>Requested At</th><th>Actions</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="licenseTab" class="tab-pane">
+            <div class="card">
+                <div class="card-header">
+                    <h3>🔑 Generate New License</h3>
+                </div>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Company Name *</label>
+                        <input type="text" id="genCompanyName" placeholder="PT. Contoh Perusahaan">
+                    </div>
+                    <div class="form-group">
+                        <label>PIC Name *</label>
+                        <input type="text" id="genPic" placeholder="Nama Penanggung Jawab">
+                    </div>
+                    <div class="form-group">
+                        <label>Phone *</label>
+                        <input type="text" id="genPhone" placeholder="0812-3456-7890">
+                    </div>
+                    <div class="form-group">
+                        <label>Email *</label>
+                        <input type="email" id="genEmail" placeholder="email@perusahaan.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Package *</label>
+                        <select id="genPackage">
+                            <option value="DEMO">DEMO - 2 devices, 7 days trial (Rp 0)</option>
+                            <option value="BASIC">BASIC - 10 devices, Rp 500.000/bulan</option>
+                            <option value="PRO">PRO - Unlimited devices, Rp 2.000.000/bulan</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Custom Max Devices (optional)</label>
+                        <input type="number" id="genMaxDevices" placeholder="Leave empty for package default">
+                    </div>
+                    <div class="form-group">
+                        <label>Address</label>
+                        <textarea id="genAddress" rows="2" placeholder="Alamat lengkap perusahaan"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Notes</label>
+                        <textarea id="genNotes" rows="2" placeholder="Catatan internal"></textarea>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="generateLicense()" style="width: 100%;">🚀 Generate License</button>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>📋 Recently Generated</h3>
+                </div>
+                <div id="recentLicensesList" class="table-wrapper">
+                    <table style="width: 100%;">
+                        <thead><tr><th>Company</th><th>License Key</th><th>Package</th><th>Created</th></tr></thead>
+                        <tbody id="recentLicensesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="devicerequestsTab" class="tab-pane">
+            <div class="card">
+                <div class="card-header">
+                    <h3>💸 Device Addition Requests</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <select id="requestStatusFilter" style="width: 140px;">
+                            <option value="">All</option>
+                            <option value="PENDING">Pending</option>
+                            <option value="WAITING_PAYMENT">Waiting Payment</option>
+                            <option value="PAID">Paid</option>
+                            <option value="REJECTED">Rejected</option>
+                        </select>
+                        <button class="btn btn-info btn-sm" onclick="loadDeviceRequests()">🔄 Refresh</button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table id="deviceRequestsTable" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Company</th><th>Device Name</th><th>Fee</th><th>Status</th><th>Requested</th><th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="invoicesTab" class="tab-pane">
+            <div class="card">
+                <div class="card-header">
+                    <h3>💰 Invoices & Payments</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <select id="invoiceStatusFilter" style="width: 130px;">
+                            <option value="">All</option>
+                            <option value="PAID">Paid</option>
+                            <option value="UNPAID">Unpaid</option>
+                        </select>
+                        <button class="btn btn-info btn-sm" onclick="exportInvoicesToExcel()">📊 Export</button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table id="invoicesTable" style="width: 100%;">
+                        <thead>
+                            <tr><th>Invoice #</th><th>Company</th><th>Amount</th><th>Months</th><th>Status</th><th>Created</th><th>Actions</th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="settingsTab" class="tab-pane">
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>👥 Admin Users</h3>
+                    </div>
+                    <div class="form-group">
+                        <label>New Username</label>
+                        <input type="text" id="newAdminUser" placeholder="username">
+                    </div>
+                    <div class="form-group">
+                        <label>New Password</label>
+                        <input type="password" id="newAdminPass" placeholder="password">
+                    </div>
+                    <div class="form-group">
+                        <label>Role</label>
+                        <select id="newAdminRole">
+                            <option value="ADMIN">ADMIN</option>
+                            <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" onclick="addAdminUser()">➕ Add Admin User</button>
+                    
+                    <div style="margin-top: 24px;">
+                        <h4 style="margin-bottom: 12px;">Existing Admins</h4>
+                        <div id="adminUsersList"></div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>💰 Pricing Configuration</h3>
+                    </div>
+                    <div class="form-group">
+                        <label>BASIC Package Price (Rp/month)</label>
+                        <input type="number" id="priceBasic" value="500000">
+                    </div>
+                    <div class="form-group">
+                        <label>PRO Package Price (Rp/month)</label>
+                        <input type="number" id="pricePro" value="2000000">
+                    </div>
+                    <div class="form-group">
+                        <label>Extra Device Fee (Rp/device/month) - for BASIC</label>
+                        <input type="number" id="extraDeviceFee" value="50000">
+                    </div>
+                    <div class="form-group">
+                        <label>Tax (%)</label>
+                        <input type="number" id="taxRate" value="11">
+                    </div>
+                    <button class="btn btn-primary" onclick="savePricing()">💾 Save Pricing</button>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔄 System Actions</h3>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 12px;">
+                        <button class="btn btn-info" onclick="backupData()">📦 Backup All Data</button>
+                        <button class="btn btn-warning" onclick="checkExpiredNow()">⏰ Check Expired Licenses</button>
+                        <button class="btn btn-danger" onclick="resetSystem()">⚠️ Reset System (Clear All Data)</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>ℹ️ System Info</h3>
+                    </div>
+                    <div id="systemInfo">
+                        <p>Version: v3.0 Enterprise</p>
+                        <p>Status: <span class="badge badge-active">Online</span></p>
+                        <p id="serverTime">-</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="loginOverlay" class="login-overlay">
+    <div class="login-card">
+        <h2>🔐 VMS Command Center</h2>
+        <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="loginUser" placeholder="admin">
+        </div>
+        <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="loginPass" placeholder="********">
+        </div>
+        <button class="btn btn-primary" onclick="doLogin()" style="width: 100%;">Login</button>
+    </div>
+</div>
+
+<div id="renewModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>🔄 Renew License</h3>
+            <button class="close-modal" onclick="closeModal('renewModal')">&times;</button>
+        </div>
+        <div class="form-group">
+            <label>Company</label>
+            <input type="text" id="renewCompanyName" readonly>
+        </div>
+        <div class="form-group">
+            <label>Months</label>
+            <select id="renewMonths">
+                <option value="1">1 Month</option>
+                <option value="3">3 Months (5% discount)</option>
+                <option value="6">6 Months (10% discount)</option>
+                <option value="12">12 Months (15% discount)</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Payment Method</label>
+            <select id="renewPaymentMethod">
+                <option value="MANUAL">Manual (Bank Transfer)</option>
+                <option value="CASH">Cash</option>
+            </select>
+        </div>
+        <div style="display: flex; gap: 12px; margin-top: 20px;">
+            <button class="btn btn-primary" onclick="confirmRenew()">Renew License</button>
+            <button class="btn btn-outline" onclick="closeModal('renewModal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div id="upgradeModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>📈 Upgrade Package</h3>
+            <button class="close-modal" onclick="closeModal('upgradeModal')">&times;</button>
+        </div>
+        <div class="form-group">
+            <label>Company</label>
+            <input type="text" id="upgradeCompanyName" readonly>
+        </div>
+        <div class="form-group">
+            <label>Current Package</label>
+            <input type="text" id="upgradeCurrentPackage" readonly>
+        </div>
+        <div class="form-group">
+            <label>New Package</label>
+            <select id="upgradePackage">
+                <option value="BASIC">BASIC - 10 devices</option>
+                <option value="PRO">PRO - Unlimited devices</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Custom Max Devices (for PRO)</label>
+            <input type="number" id="upgradeMaxDevices" placeholder="Leave empty for unlimited">
+        </div>
+        <div class="form-group">
+            <label>Notes</label>
+            <textarea id="upgradeNotes" rows="2" placeholder="Upgrade notes"></textarea>
+        </div>
+        <div style="display: flex; gap: 12px; margin-top: 20px;">
+            <button class="btn btn-primary" onclick="confirmUpgrade()">Upgrade Package</button>
+            <button class="btn btn-outline" onclick="closeModal('upgradeModal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div id="deviceDetailModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+            <h3>📱 Device Details</h3>
+            <button class="close-modal" onclick="closeModal('deviceDetailModal')">&times;</button>
+        </div>
+        <div id="deviceDetailContent"></div>
+    </div>
+</div>
+
+<div id="companyDetailModal" class="modal">
+    <div class="modal-content" style="max-width: 650px;">
+        <div class="modal-header">
+            <h3>🏢 Company Details</h3>
+            <button class="close-modal" onclick="closeModal('companyDetailModal')">&times;</button>
+        </div>
+        <div id="companyDetailContent"></div>
+    </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+    const API_URL = "https://vms3mode.sapammeded.workers.dev";
+    
+    let token = localStorage.getItem("vms_admin_token") || null;
+    let currentUser = null;
+    let refreshInterval = null;
+    
+    let packageChart = null;
+    let violationChart = null;
+    
+    let companiesData = [];
+    let devicesData = [];
+    let activityData = [];
+    let invoicesData = [];
+
+    let syncLock = false;
+
+    function showToast(message, type = "info") {
+        const container = document.getElementById("toastContainer");
+        const toast = document.createElement("div");
+        toast.className = "toast";
+        const colors = {
+            success: "#10b981",
+            error: "#ef4444",
+            warning: "#f59e0b",
+            info: "#3b82f6"
+        };
+        toast.style.borderLeftColor = colors[type] || colors.info;
+        toast.innerHTML = message;
+        container.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+
+    async function apiCall(endpoint, options = {}) {
+        try {
+            const headers = {
+                "Content-Type": "application/json",
+                ...options.headers
+            };
+            
+            const currentToken = token || localStorage.getItem("vms_admin_token");
+            if (currentToken) {
+                headers["x-token"] = currentToken;
+                console.log(`[API_CALL] Using token: ${currentToken.substring(0, 20)}...`);
+            }
+            
+            const url = API_URL + endpoint;
+            console.log(`[API_CALL] ${options.method || 'GET'} ${url}`);
+            
+            const res = await fetch(url, {
+                ...options,
+                headers,
+                credentials: 'omit'
+            });
+            
+            console.log(`[API_CALL] Response status: ${res.status}`);
+            
+            // FIX: handle error response properly
+            if (!res.ok) {
+                const text = await res.text();
+                console.error("[API ERROR]", res.status, text);
+                throw new Error("API ERROR " + res.status + " " + text.substring(0, 100));
+            }
+            
+            let data;
+            const contentType = res.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                data = await res.json();
+            } else {
+                const text = await res.text();
+                console.error(`[API_CALL] Non-JSON response: ${text.substring(0, 200)}`);
+                throw new Error('Server returned non-JSON response');
+            }
+            
+            if (res.status === 401) {
+                console.log('[API_CALL] Unauthorized, logging out...');
+                logout();
+                return null;
+            }
+            
+            return data;
+            
+        } catch (e) {
+            console.error(`[API_CALL] Network error for ${endpoint}:`, e);
+            showToast("Network error: " + e.message, "error");
+            return null;
+        }
+    }
+
+    function formatCurrency(amount) {
+        return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount);
+    }
+
+    function formatDate(timestamp) {
+        if (!timestamp) return '-';
+        return new Date(timestamp).toLocaleDateString('id-ID', { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    function formatDateTime(timestamp) {
+        if (!timestamp) return '-';
+        return new Date(timestamp).toLocaleString('id-ID');
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str).replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
+
+    async function doLogin() {
+        const username = document.getElementById("loginUser").value.trim();
+        const password = document.getElementById("loginPass").value;
+        
+        if (!username || !password) {
+            showToast("Username and password required", "error");
+            return;
+        }
+        
+        showToast("Logging in...", "info");
+        
+        try {
+            const data = await apiCall("/login", {
+                method: "POST",
+                body: JSON.stringify({ username, password })
+            });
+            
+            if (data && data.ok) {
+                token = data.token;
+                currentUser = { username: data.username, role: data.role };
+                
+                localStorage.setItem("vms_admin_token", token);
+                localStorage.setItem("vms_admin_user", data.username);
+                localStorage.setItem("vms_admin_role", data.role);
+                
+                const loginOverlay = document.getElementById("loginOverlay");
+                
+                if (loginOverlay) loginOverlay.classList.add("hidden");
+                
+                const topUsername = document.getElementById("topUsername");
+                const sidebarUsername = document.getElementById("sidebarUsername");
+                const topRole = document.getElementById("topRole");
+                const sidebarRole = document.getElementById("sidebarRole");
+                
+                if (topUsername) topUsername.innerText = data.username;
+                if (sidebarUsername) sidebarUsername.innerText = data.username;
+                if (topRole) topRole.innerText = data.role;
+                if (sidebarRole) sidebarRole.innerText = data.role;
+                
+                showToast(`Welcome ${data.username} (${data.role})`, "success");
+                
+                startRefresh();
+                loadAllData();
+            } else {
+                showToast(data?.error || "Login failed - please check username/password", "error");
+            }
+        } catch (err) {
+            console.error("[LOGIN] Exception:", err);
+            showToast("Login error: " + err.message, "error");
+        }
+    }
+
+    function logout() {
+        token = null;
+        currentUser = null;
+        localStorage.removeItem("vms_admin_token");
+        localStorage.removeItem("vms_admin_user");
+        localStorage.removeItem("vms_admin_role");
+        
+        const loginOverlay = document.getElementById("loginOverlay");
+        
+        if (loginOverlay) loginOverlay.classList.remove("hidden");
+        
+        showToast("Logged out", "info");
+    }
+
+    async function loadAllData() {
+        // FIX: sync lock to prevent spam requests
+        if (syncLock) return;
+        syncLock = true;
+        
+        try {
+            await Promise.all([
+                loadStats(),
+                loadCompanies(),
+                loadDevices(),
+                loadActivity(),
+                loadInvoices(),
+                loadRecentLicenses(),
+                loadDeviceRequests()
+            ]);
+        } finally {
+            setTimeout(() => { syncLock = false; }, 1000);
+        }
+    }
+
+    async function loadStats() {
+        const data = await apiCall("/admin/stats");
+        if (data) {
+            document.getElementById("statTotalCompanies").innerText = data.companies?.total || 0;
+            document.getElementById("statActiveCompanies").innerText = data.companies?.active || 0;
+            document.getElementById("statTotalDevices").innerText = data.devices?.total || 0;
+            document.getElementById("statActiveDevices").innerText = data.devices?.active || 0;
+            document.getElementById("statPendingDevices").innerText = data.devices?.pending || 0;
+            document.getElementById("statSuspendedDevices").innerText = (data.devices?.suspended || 0) + (data.devices?.banned || 0);
+            document.getElementById("statTotalViolations").innerText = data.violations?.total || 0;
+            document.getElementById("statMonthlyRevenue").innerHTML = formatCurrency(data.revenue?.last30Days || 0);
+            
+            if (packageChart) packageChart.destroy();
+            if (violationChart) violationChart.destroy();
+            
+            const pkgCtx = document.getElementById("packageChart").getContext("2d");
+            packageChart = new Chart(pkgCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['DEMO', 'BASIC', 'PRO'],
+                    datasets: [{
+                        data: [data.companies?.byPackage?.DEMO || 0, data.companies?.byPackage?.BASIC || 0, data.companies?.byPackage?.PRO || 0],
+                        backgroundColor: ['#f59e0b', '#3b82f6', '#10b981'],
+                        borderWidth: 0
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: true, plugins: { legend: { position: 'bottom', labels: { color: '#f9fafb' } } } }
+            });
+            
+            const violCtx = document.getElementById("violationChart").getContext("2d");
+            violationChart = new Chart(violCtx, {
+                type: 'line',
+                data: {
+                    labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
+                    datasets: [{
+                        label: 'Violations',
+                        data: [data.violations?.last7Days || 0, 0, 0, data.violations?.last30Days || 0],
+                        borderColor: '#ef4444',
+                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: true, plugins: { legend: { labels: { color: '#f9fafb' } } }, scales: { y: { ticks: { color: '#9ca3af' } }, x: { ticks: { color: '#9ca3af' } } } }
+            });
+        }
+    }
+
+    async function loadCompanies() {
+        const data = await apiCall("/admin/companies");
+        if (data && Array.isArray(data)) {
+            companiesData = data;
+            renderCompaniesTable();
+            renderExpiringTable();
+            renderRecentLicensesTable();
+        }
+    }
+
+    function renderCompaniesTable() {
+        const tbody = document.querySelector("#companiesTable tbody");
+        if (!tbody) return;
+        
+        const search = document.getElementById("companySearch")?.value.toLowerCase() || "";
+        const filtered = companiesData.filter(c => c.companyName.toLowerCase().includes(search));
+        
+        tbody.innerHTML = "";
+        
+        for (const company of filtered) {
+            const row = tbody.insertRow();
+            const isExpired = company.expiredAt < Date.now();
+            const packageClass = company.package === 'PRO' ? 'badge-pro' : (company.package === 'BASIC' ? 'badge-basic' : 'badge-demo');
+            
+            row.innerHTML = `
+                <td>
+                    <strong>${escapeHtml(company.companyName)}</strong><br>
+                    <small class="text-muted">${escapeHtml(company.pic || '-')}</small>
+                </td>
+                <td><code class="code">${company.licenseKey}</code></span></td>
+                <td><span class="badge ${packageClass}">${company.package}</span></span></td>
+                <td>${company.currentDevices || 0} / ${company.maxDevices}</span></td>
+                <td>${company.maxDevices}</span></td>
+                <td class="${isExpired ? 'text-danger' : ''}">${formatDate(company.expiredAt)}</span></td>
+                <td><span class="badge ${isExpired ? 'badge-expired' : 'badge-active'}">${isExpired ? 'EXPIRED' : (company.status || 'ACTIVE')}</span></span></td>
+                <td>
+                    <button class="btn btn-info btn-sm" onclick="viewCompanyDetails('${company.id}')">Detail</button>
+                    <button class="btn btn-warning btn-sm" onclick="openRenewModal('${company.id}', '${escapeHtml(company.companyName)}')">Renew</button>
+                    <button class="btn btn-primary btn-sm" onclick="openUpgradeModal('${company.id}', '${escapeHtml(company.companyName)}', '${company.package}')">Upgrade</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteCompany('${company.id}')">Delete</button>
+                </span>
+            `;
+        }
+    }
+
+    function renderExpiringTable() {
+        const tbody = document.querySelector("#expiringTable tbody");
+        if (!tbody) return;
+        
+        const now = Date.now();
+        const expiringSoon = companiesData
+            .filter(c => c.expiredAt < now + 7 * 86400000)
+            .sort((a, b) => a.expiredAt - b.expiredAt)
+            .slice(0, 10);
+        
+        tbody.innerHTML = "";
+        
+        for (const company of expiringSoon) {
+            const row = tbody.insertRow();
+            const isExpired = company.expiredAt < now;
+            row.innerHTML = `
+                <td><strong>${escapeHtml(company.companyName)}</strong></td>
+                <td><span class="badge ${company.package === 'PRO' ? 'badge-pro' : 'badge-basic'}">${company.package}</span></span></td>
+                <td class="${isExpired ? 'text-danger' : 'text-warning'}">${formatDate(company.expiredAt)}</span></td>
+                <td>${company.currentDevices || 0}</span></td>
+                <td><span class="badge ${isExpired ? 'badge-expired' : 'badge-warning'}">${isExpired ? 'EXPIRED' : 'Expiring Soon'}</span></span></td>
+                <td><button class="btn btn-warning btn-sm" onclick="openRenewModal('${company.id}', '${escapeHtml(company.companyName)}')">Renew</button></span></td>
+            `;
+        }
+    }
+
+    async function loadDevices() {
+        const data = await apiCall("/admin/devices");
+        if (data && Array.isArray(data)) {
+            devicesData = data;
+            renderDevicesTable();
+            renderPendingRequests();
+        }
+    }
+
+    function renderDevicesTable() {
+        const tbody = document.querySelector("#devicesTable tbody");
+        if (!tbody) return;
+        
+        const search = document.getElementById("deviceSearch")?.value.toLowerCase() || "";
+        const statusFilter = document.getElementById("deviceStatusFilter")?.value || "";
+        
+        const filtered = devicesData.filter(d => 
+            (d.deviceId.toLowerCase().includes(search) || 
+             (d.companyName || "").toLowerCase().includes(search) ||
+             (d.deviceName || "").toLowerCase().includes(search)) &&
+            (statusFilter === "" || d.status === statusFilter)
+        );
+        
+        tbody.innerHTML = "";
+        
+        for (const device of filtered) {
+            const row = tbody.insertRow();
+            let statusClass = "badge-active";
+            if (device.status === "PENDING_APPROVAL") statusClass = "badge-pending";
+            if (device.status === "SUSPENDED") statusClass = "badge-suspended";
+            if (device.status === "BANNED") statusClass = "badge-banned";
+            
+            row.innerHTML = `
+                <td><code class="code">${device.deviceId.substring(0, 16)}...</code></td>
+                <td>${escapeHtml(device.deviceName || '-')}</span></td>
+                <td><strong>${escapeHtml(device.companyName || '-')}</strong></span></td>
+                <td><code class="code">${device.licenseKey?.substring(0, 20) || '-'}</code></span></td>
+                <td><span class="badge ${statusClass}">${device.status || 'UNKNOWN'}</span></span></td>
+                <td>${formatDateTime(device.lastSeen)}</span></td>
+                <td>${device.violations?.length || 0}</span></td>
+                <td>
+                    <button class="btn btn-info btn-sm" onclick="viewDeviceDetails('${device.deviceId}')">Detail</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteDevice('${device.deviceId}')">Delete</button>
+                  </span>
+            `;
+        }
+    }
+
+    async function loadActivity() {
+        const data = await apiCall("/admin/activity?limit=500");
+        if (data && Array.isArray(data)) {
+            activityData = data;
+            renderViolationsTable();
+            renderRecentViolations();
+        }
+    }
+
+    function renderViolationsTable() {
+        const tbody = document.querySelector("#violationsTable tbody");
+        if (!tbody) return;
+        
+        const search = document.getElementById("violationSearch")?.value.toLowerCase() || "";
+        const typeFilter = document.getElementById("violationTypeFilter")?.value || "";
+        
+        const violations = activityData
+            .filter(a => a.type === "VIOLATION_REPORTED")
+            .filter(v => (v.companyName || "").toLowerCase().includes(search) || (v.deviceId || "").toLowerCase().includes(search))
+            .filter(v => typeFilter === "" || v.violationType === typeFilter)
+            .slice(0, 200);
+        
+        tbody.innerHTML = "";
+        
+        for (const v of violations) {
+            const row = tbody.insertRow();
+            row.innerHTML = `
+                <td><strong>${escapeHtml(v.companyName || '-')}</strong></td>
+                <td><code class="code">${v.deviceId?.substring(0, 12)}...</code></td>
+                <td><span class="badge badge-danger">${v.violationType || 'Unknown'}</span></td>
+                <td>${escapeHtml(v.details || '-')}</td>
+                <td>${formatDateTime(v.timestamp)}</span></td>
+                <td><button class="btn btn-warning btn-sm" onclick="viewViolationDetails('${v.id}')">View</button></td>
+            `;
+        }
+    }
+
+    function renderRecentViolations() {
+        const tbody = document.querySelector("#recentViolationsTable tbody");
+        if (!tbody) return;
+        
+        const violations = activityData.filter(a => a.type === "VIOLATION_REPORTED").slice(0, 20);
+        
+        tbody.innerHTML = "";
+        
+        for (const v of violations) {
+            const row = tbody.insertRow();
+            row.innerHTML = `
+                <td><strong>${escapeHtml(v.companyName || '-')}</strong></td>
+                <td><code class="code">${v.deviceId?.substring(0, 12)}...</code></td>
+                <td><span class="badge badge-danger">${v.violationType || 'Unknown'}</span></td>
+                <td>${formatDateTime(v.timestamp)}</span></td>
+                <td><span class="badge badge-warning">Reported</span></td>
+            `;
+        }
+    }
+
+    function renderPendingRequests() {
+        const pending = devicesData.filter(d => d.status === "PENDING_APPROVAL");
+        const tbody = document.querySelector("#requestsTable tbody");
+        if (!tbody) return;
+        
+        document.getElementById("pendingCount").innerText = pending.length;
+        
+        tbody.innerHTML = "";
+        
+        for (const device of pending) {
+            const row = tbody.insertRow();
+            row.innerHTML = `
+                <td><strong>${escapeHtml(device.companyName || '-')}</strong></td>
+                <td><code class="code">${device.deviceId.substring(0, 16)}...</code></td>
+                <td>${escapeHtml(device.deviceName || '-')}</td>
+                <td>${formatDateTime(device.approvalRequest?.requestedAt || device.firstSeen)}</span></td>
+                <td>
+                    <button class="btn btn-success btn-sm" onclick="approveDeviceRequest('${device.deviceId}', true)">✅ Approve</button>
+                    <button class="btn btn-danger btn-sm" onclick="approveDeviceRequest('${device.deviceId}', false)">❌ Reject</button>
+                  </span>
+            `;
+        }
+    }
+
+    async function loadInvoices() {
+        const data = await apiCall("/admin/invoices");
+        if (data && Array.isArray(data)) {
+            invoicesData = data;
+            renderInvoicesTable();
+        }
+    }
+
+    function renderInvoicesTable() {
+        const tbody = document.querySelector("#invoicesTable tbody");
+        if (!tbody) return;
+        
+        const statusFilter = document.getElementById("invoiceStatusFilter")?.value || "";
+        const filtered = invoicesData.filter(i => statusFilter === "" || i.status === statusFilter);
+        
+        tbody.innerHTML = "";
+        
+        for (const inv of filtered.slice(0, 100)) {
+            const row = tbody.insertRow();
+            row.innerHTML = `
+                <td><code class="code">${inv.id}</code></td>
+                <td><strong>${escapeHtml(inv.companyName)}</strong></td>
+                <td>${formatCurrency(inv.amount)}</span></td>
+                <td>${inv.months} month(s)</span></td>
+                <td><span class="badge ${inv.status === 'PAID' ? 'badge-active' : 'badge-pending'}">${inv.status}</span></span></td>
+                <td>${formatDate(inv.createdAt)}</span></td>
+                <td>
+                    ${inv.status === 'UNPAID' ? `<button class="btn btn-success btn-sm" onclick="markInvoicePaid('${inv.id}')">Mark Paid</button>` : '-'}
+                  </span>
+            `;
+        }
+    }
+
+    async function loadRecentLicenses() {
+        const recent = [...companiesData].sort((a, b) => b.createdAt - a.createdAt).slice(0, 10);
+        renderRecentLicensesTable(recent);
+    }
+
+    function renderRecentLicensesTable(recent = companiesData.slice(0, 10)) {
+        const tbody = document.getElementById("recentLicensesBody");
+        if (!tbody) return;
+        
+        tbody.innerHTML = "";
+        
+        for (const company of recent.slice(0, 10)) {
+            const row = tbody.insertRow();
+            row.innerHTML = `
+                <td>${escapeHtml(company.companyName)}</span></td>
+                <td><code class="code">${company.licenseKey}</code></span></td>
+                <td><span class="badge ${company.package === 'PRO' ? 'badge-pro' : 'badge-basic'}">${company.package}</span></span></td>
+                <td>${formatDate(company.createdAt)}</span></td>
+            `;
+        }
+    }
+
+    async function generateLicense() {
+        const companyName = document.getElementById("genCompanyName").value;
+        const pic = document.getElementById("genPic").value;
+        const phone = document.getElementById("genPhone").value;
+        const email = document.getElementById("genEmail").value;
+        const pkg = document.getElementById("genPackage").value;
+        const maxDevices = document.getElementById("genMaxDevices").value;
+        const address = document.getElementById("genAddress").value;
+        const notes = document.getElementById("genNotes").value;
+        
+        if (!companyName || !pic || !phone || !email) {
+            showToast("Please fill all required fields", "error");
+            return;
+        }
+        
+        showToast("Generating license...", "info");
+        
+        const data = await apiCall("/generate-license", {
+            method: "POST",
+            body: JSON.stringify({
+                companyName, pic, phone, email, address,
+                package: pkg,
+                customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
+                notes
+            })
+        });
+        
+        if (data && data.ok) {
+            showToast(`License generated for ${companyName}`, "success");
+            
+            await navigator.clipboard.writeText(data.licenseKey);
+            showToast(`License key copied to clipboard: ${data.licenseKey}`, "success");
+            
+            document.getElementById("genCompanyName").value = "";
+            document.getElementById("genPic").value = "";
+            document.getElementById("genPhone").value = "";
+            document.getElementById("genEmail").value = "";
+            document.getElementById("genAddress").value = "";
+            document.getElementById("genNotes").value = "";
+            document.getElementById("genMaxDevices").value = "";
+            
+            loadCompanies();
+        } else {
+            showToast(data?.error || "Failed to generate license", "error");
+        }
+    }
+
+    async function approveDeviceRequest(deviceId, approve) {
+        const data = await apiCall("/approve-device", {
+            method: "POST",
+            body: JSON.stringify({ deviceId, approve })
+        });
+        
+        if (data && data.ok) {
+            showToast(`Device ${approve ? 'approved' : 'rejected'}`, "success");
+            loadDevices();
+            loadCompanies();
+        } else {
+            showToast(data?.error || "Action failed", "error");
+        }
+    }
+
+    async function deleteDevice(deviceId) {
+        if (!confirm("Delete this device? This action cannot be undone.")) return;
+        
+        const data = await apiCall("/delete-device", {
+            method: "POST",
+            body: JSON.stringify({ deviceId, reason: "Deleted by admin" })
+        });
+        
+        if (data && data.ok) {
+            showToast("Device deleted", "success");
+            loadDevices();
+            loadCompanies();
+        }
+    }
+
+    async function deleteCompany(companyId) {
+        if (!confirm("Delete this company and all its devices? This action cannot be undone.")) return;
+        
+        const data = await apiCall("/delete-company", {
+            method: "POST",
+            body: JSON.stringify({ companyId, reason: "Deleted by admin" })
+        });
+        
+        if (data && data.ok) {
+            showToast("Company deleted", "success");
+            loadCompanies();
+            loadDevices();
+        }
+    }
+
+    let currentRenewCompanyId = null;
+    function openRenewModal(companyId, companyName) {
+        currentRenewCompanyId = companyId;
+        document.getElementById("renewCompanyName").value = companyName;
+        document.getElementById("renewModal").classList.add("active");
+    }
+
+    async function confirmRenew() {
+        const months = parseInt(document.getElementById("renewMonths").value);
+        const paymentMethod = document.getElementById("renewPaymentMethod").value;
+        
+        const company = companiesData.find(c => c.id === currentRenewCompanyId);
+        let amount = 0;
+        if (company.package === 'BASIC') amount = 500000 * months;
+        if (company.package === 'PRO') amount = 2000000 * months;
+        
+        if (months >= 3) amount = amount * 0.95;
+        if (months >= 6) amount = amount * 0.90;
+        if (months >= 12) amount = amount * 0.85;
+        
+        if (!confirm(`Renew license for ${months} month(s) with amount ${formatCurrency(amount)}?`)) return;
+        
+        const data = await apiCall("/renew-license", {
+            method: "POST",
+            body: JSON.stringify({ 
+                companyId: currentRenewCompanyId, 
+                months, 
+                amount: Math.round(amount),
+                paymentMethod 
+            })
+        });
+        
+        if (data && data.ok) {
+            showToast(`License renewed for ${months} months`, "success");
+            closeModal("renewModal");
+            loadCompanies();
+            loadDevices();
+        } else {
+            showToast(data?.error || "Renewal failed", "error");
+        }
+    }
+
+    let currentUpgradeCompanyId = null;
+    function openUpgradeModal(companyId, companyName, currentPackage) {
+        currentUpgradeCompanyId = companyId;
+        document.getElementById("upgradeCompanyName").value = companyName;
+        document.getElementById("upgradeCurrentPackage").value = currentPackage;
+        const select = document.getElementById("upgradePackage");
+        if (currentPackage === "PRO") {
+            select.innerHTML = '<option value="BASIC">BASIC - 10 devices (Downgrade)</option>';
+        } else {
+            select.innerHTML = '<option value="BASIC">BASIC - 10 devices</option><option value="PRO">PRO - Unlimited devices (Upgrade)</option>';
+        }
+        document.getElementById("upgradeModal").classList.add("active");
+    }
+
+    async function confirmUpgrade() {
+        const newPackage = document.getElementById("upgradePackage").value;
+        const maxDevices = document.getElementById("upgradeMaxDevices").value;
+        const notes = document.getElementById("upgradeNotes").value;
+        
+        const data = await apiCall("/update-package", {
+            method: "POST",
+            body: JSON.stringify({
+                companyId: currentUpgradeCompanyId,
+                newPackage,
+                customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
+                notes
+            })
+        });
+        
+        if (data && data.ok) {
+            showToast(`Package upgraded to ${newPackage}`, "success");
+            closeModal("upgradeModal");
+            loadCompanies();
+        } else {
+            showToast(data?.error || "Upgrade failed", "error");
+        }
+    }
+
+    async function viewCompanyDetails(companyId) {
+        const data = await apiCall(`/admin/company/${companyId}`);
+        if (data) {
+            const content = document.getElementById("companyDetailContent");
+            content.innerHTML = `
+                <div class="grid-2" style="gap: 16px;">
+                    <div><strong>Company Name:</strong><br>${escapeHtml(data.companyName)}</div>
+                    <div><strong>License Key:</strong><br><code>${data.licenseKey}</code></div>
+                    <div><strong>PIC:</strong><br>${escapeHtml(data.pic)}</div>
+                    <div><strong>Phone:</strong><br>${escapeHtml(data.phone)}</div>
+                    <div><strong>Email:</strong><br>${escapeHtml(data.email)}</div>
+                    <div><strong>Package:</strong><br><span class="badge ${data.package === 'PRO' ? 'badge-pro' : 'badge-basic'}">${data.package}</span></div>
+                    <div><strong>Devices:</strong><br>${data.stats?.totalDevices || 0} / ${data.maxDevices}</div>
+                    <div><strong>Expiry:</strong><br class="${data.expiredAt < Date.now() ? 'text-danger' : ''}">${formatDate(data.expiredAt)}</div>
+                    <div><strong>Status:</strong><br><span class="badge ${data.expiredAt < Date.now() ? 'badge-expired' : 'badge-active'}">${data.expiredAt < Date.now() ? 'EXPIRED' : 'ACTIVE'}</span></div>
+                    <div><strong>Created:</strong><br>${formatDate(data.createdAt)}</div>
+                </div>
+                <hr style="border-color: var(--border); margin: 16px 0;">
+                <h4 style="margin-bottom: 12px;">📱 Devices (${data.devices?.length || 0})</h4>
+                <div class="table-wrapper">
+                    <table style="font-size: 0.75rem;">
+                        <thead><tr><th>Device ID</th><th>Name</th><th>Status</th><th>Last Seen</th></tr></thead>
+                        <tbody>
+                            ${(data.devices || []).map(d => `
+                                <tr>
+                                    <td><code>${d.deviceId.substring(0, 12)}...</code></td>
+                                    <td>${escapeHtml(d.deviceName || '-')}</span></td>
+                                    <td><span class="badge ${d.status === 'ACTIVE' ? 'badge-active' : 'badge-pending'}">${d.status}</span></span></span></td>
+                                    <td>${formatDateTime(d.lastSeen)}</span></td>
+                                </tr>
+                            `).join('') || '<tr><td colspan="4" class="text-muted">No devices</span></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            document.getElementById("companyDetailModal").classList.add("active");
+        }
+    }
+
+    function viewDeviceDetails(deviceId) {
+        const device = devicesData.find(d => d.deviceId === deviceId);
+        if (!device) return;
+        
+        const content = document.getElementById("deviceDetailContent");
+        content.innerHTML = `
+            <div class="grid-2" style="gap: 16px;">
+                <div><strong>Device ID:</strong><br><code>${device.deviceId}</code></div>
+                <div><strong>Device Name:</strong><br>${escapeHtml(device.deviceName || '-')}</div>
+                <div><strong>Company:</strong><br>${escapeHtml(device.companyName)}</div>
+                <div><strong>License Key:</strong><br><code>${device.licenseKey}</code></div>
+                <div><strong>Status:</strong><br><span class="badge ${device.status === 'ACTIVE' ? 'badge-active' : 'badge-pending'}">${device.status}</span></div>
+                <div><strong>First Seen:</strong><br>${formatDateTime(device.firstSeen)}</div>
+                <div><strong>Last Seen:</strong><br>${formatDateTime(device.lastSeen)}</div>
+                <div><strong>Violations:</strong><br>${device.violations?.length || 0}</div>
+            </div>
+            <hr style="border-color: var(--border); margin: 16px 0;">
+            <h4 style="margin-bottom: 12px;">⚠️ Violation History</h4>
+            <div class="table-wrapper">
+                <table style="font-size: 0.75rem;">
+                    <thead><tr><th>Type</th><th>Details</th><th>Time</th></tr></thead>
+                    <tbody>
+                        ${(device.violations || []).slice(0, 10).map(v => `
+                            <tr>
+                                <td><span class="badge badge-danger">${v.violationType}</span></span></td>
+                                <td>${escapeHtml(v.details || '-')}</span></td>
+                                <td>${formatDateTime(v.timestamp)}</span></span></td>
+                            </tr>
+                        `).join('') || '<tr><td colspan="3" class="text-muted">No violations</span></tr>'}
+                    </tbody>
+                </table>
+            </div>
+        `;
+        document.getElementById("deviceDetailModal").classList.add("active");
+    }
+
+    async function addAdminUser() {
+        const username = document.getElementById("newAdminUser").value;
+        const password = document.getElementById("newAdminPass").value;
+        const role = document.getElementById("newAdminRole").value;
+        
+        if (!username || !password) {
+            showToast("Username and password required", "error");
+            return;
+        }
+        
+        const data = await apiCall("/admin/add-user", {
+            method: "POST",
+            body: JSON.stringify({ username, password, role })
+        });
+        
+        if (data && data.ok) {
+            showToast("Admin user added", "success");
+            document.getElementById("newAdminUser").value = "";
+            document.getElementById("newAdminPass").value = "";
+            loadAdminUsers();
+        }
+    }
+
+    async function loadAdminUsers() {
+        const data = await apiCall("/admin/users");
+        if (data && Array.isArray(data)) {
+            const container = document.getElementById("adminUsersList");
+            container.innerHTML = data.map(u => `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);">
+                    <div>
+                        <strong>${escapeHtml(u.username)}</strong><br>
+                        <small class="text-muted">${u.role}</small>
+                    </div>
+                    ${u.username !== 'admin' ? `<button class="btn btn-danger btn-sm" onclick="deleteAdminUser('${u.username}')">Delete</button>` : '<span class="text-muted">Default</span>'}
+                </div>
+            `).join('');
+        }
+    }
+
+    async function deleteAdminUser(username) {
+        if (!confirm(`Delete user ${username}?`)) return;
+        const data = await apiCall("/admin/delete-user", {
+            method: "POST",
+            body: JSON.stringify({ username })
+        });
+        if (data && data.ok) {
+            showToast("User deleted", "success");
+            loadAdminUsers();
+        }
+    }
+
+    async function savePricing() {
+        const pricing = {
+            BASIC: { price: parseInt(document.getElementById("priceBasic").value), maxDevices: 10, extraDeviceFee: parseInt(document.getElementById("extraDeviceFee").value) },
+            PRO: { price: parseInt(document.getElementById("pricePro").value), maxDevices: 999, extraDeviceFee: 0 }
+        };
+        const tax = parseInt(document.getElementById("taxRate").value);
+        
+        const data = await apiCall("/admin/settings", {
+            method: "POST",
+            body: JSON.stringify({ pricing, general: { tax } })
+        });
+        
+        if (data && data.ok) {
+            showToast("Pricing saved", "success");
+        }
+    }
+
+    async function markInvoicePaid(invoiceId) {
+        if (!confirm("Mark this invoice as paid?")) return;
+        const data = await apiCall("/mark-invoice-paid", {
+            method: "POST",
+            body: JSON.stringify({ invoiceId, paymentMethod: "MANUAL" })
+        });
+        if (data && data.ok) {
+            showToast("Invoice marked as paid", "success");
+            loadInvoices();
+            loadCompanies();
+        }
+    }
+
+    async function checkExpiredNow() {
+        showToast("Checking expired licenses...", "info");
+        const data = await apiCall("/cron/check-expired");
+        if (data && data.ok) {
+            showToast(`Expired check completed. Updated: ${data.updated ? 'Yes' : 'No'}`, data.updated ? "warning" : "success");
+            loadCompanies();
+            loadDevices();
+        }
+    }
+
+    async function backupData() {
+        const data = {
+            companies: companiesData,
+            devices: devicesData,
+            activity: activityData,
+            invoices: invoicesData,
+            exportedAt: Date.now()
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `vms_backup_${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast("Backup downloaded", "success");
+    }
+
+    function exportCompaniesToExcel() {
+        const wsData = companiesData.map(c => ({
+            "Company Name": c.companyName,
+            "License Key": c.licenseKey,
+            "Package": c.package,
+            "PIC": c.pic,
+            "Phone": c.phone,
+            "Email": c.email,
+            "Max Devices": c.maxDevices,
+            "Current Devices": c.currentDevices || 0,
+            "Expiry Date": formatDate(c.expiredAt),
+            "Status": c.expiredAt < Date.now() ? "EXPIRED" : "ACTIVE",
+            "Created At": formatDate(c.createdAt)
+        }));
+        const ws = XLSX.utils.json_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Companies");
+        XLSX.writeFile(wb, `vms_companies_${Date.now()}.xlsx`);
+        showToast("Export completed", "success");
+    }
+
+    function exportDevicesToExcel() {
+        const wsData = devicesData.map(d => ({
+            "Device ID": d.deviceId,
+            "Device Name": d.deviceName,
+            "Company": d.companyName,
+            "License Key": d.licenseKey,
+            "Status": d.status,
+            "First Seen": formatDateTime(d.firstSeen),
+            "Last Seen": formatDateTime(d.lastSeen),
+            "Violations": d.violations?.length || 0
+        }));
+        const ws = XLSX.utils.json_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Devices");
+        XLSX.writeFile(wb, `vms_devices_${Date.now()}.xlsx`);
+        showToast("Export completed", "success");
+    }
+
+    function exportInvoicesToExcel() {
+        const wsData = invoicesData.map(i => ({
+            "Invoice #": i.id,
+            "Company": i.companyName,
+            "Amount": i.amount,
+            "Months": i.months,
+            "Status": i.status,
+            "Created": formatDate(i.createdAt),
+            "Paid At": i.paidAt ? formatDate(i.paidAt) : "-"
+        }));
+        const ws = XLSX.utils.json_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Invoices");
+        XLSX.writeFile(wb, `vms_invoices_${Date.now()}.xlsx`);
+        showToast("Export completed", "success");
+    }
+
+    function clearViolationsConfirm() {
+        if (!confirm("⚠️ Clear all violation logs? This action cannot be undone.")) return;
+        showToast("Violations cleared", "success");
+    }
+
+    function resetSystem() {
+        if (!confirm("⚠️ DANGER: This will delete ALL data! Are you ABSOLUTELY sure? Type 'RESET' to confirm.")) return;
+        const confirmText = prompt("Type 'RESET' to confirm:");
+        if (confirmText === "RESET") {
+            showToast("System reset requested", "warning");
+        }
+    }
+
+    function openGenerateLicenseModal() {
+        document.querySelector('.nav-item[data-tab="license"]').click();
+    }
+
+    function refreshData() {
+        loadAllData();
+        showToast("Data refreshed", "success");
+    }
+
+    function closeModal(modalId) {
+        document.getElementById(modalId).classList.remove("active");
+    }
+
+    async function loadDeviceRequests() {
+        const statusFilter = document.getElementById("requestStatusFilter")?.value || "";
+        const url = "/admin/device-requests" + (statusFilter ? `?status=${statusFilter}` : "");
+        const data = await apiCall(url);
+        if (data && Array.isArray(data)) {
+            renderDeviceRequestsTable(data);
+        }
+    }
+
+    function renderDeviceRequestsTable(requests) {
+        const tbody = document.querySelector("#deviceRequestsTable tbody");
+        if (!tbody) return;
+        
+        tbody.innerHTML = "";
+        
+        for (const req of requests) {
+            const row = tbody.insertRow();
+            let statusClass = "badge-pending";
+            if (req.status === "WAITING_PAYMENT") statusClass = "badge-warning";
+            if (req.status === "PAID") statusClass = "badge-active";
+            if (req.status === "REJECTED") statusClass = "badge-expired";
+            
+            row.innerHTML = `
+                <td><strong>${escapeHtml(req.companyName)}</strong></td>
+                <td>${escapeHtml(req.deviceName)}</span></td>
+                <td>Rp ${(req.fee || 0).toLocaleString()}</span></td>
+                <td><span class="badge ${statusClass}">${req.status}</span></span></td>
+                <td>${formatDate(req.requestedAt)}</span></td>
+                <td>
+                    ${req.status === "PENDING" ? `
+                        <button class="btn btn-success btn-sm" onclick="approveDeviceRequestFee('${req.id}')">✅ Approve & Invoice</button>
+                        <button class="btn btn-danger btn-sm" onclick="rejectDeviceRequest('${req.id}')">❌ Reject</button>
+                    ` : (req.status === "WAITING_PAYMENT" ? `
+                        <span class="text-muted">Waiting client payment</span>
+                    ` : (req.status === "PAID" ? `
+                        <span class="text-success">Device activated</span>
+                    ` : "-"))}
+                </span>
+            `;
+        }
+    }
+
+    async function approveDeviceRequestFee(requestId) {
+        if (!confirm("Approve this device request? An invoice will be generated for the client.")) return;
+        
+        const data = await apiCall("/approve-device-request", {
+            method: "POST",
+            body: JSON.stringify({ requestId, approve: true })
+        });
+        
+        if (data && data.ok) {
+            showToast(`Request approved. Invoice: ${data.invoiceId} - Amount: Rp ${data.amount.toLocaleString()}`, "success");
+            loadDeviceRequests();
+            loadInvoices();
+        } else {
+            showToast(data?.error || "Approval failed", "error");
+        }
+    }
+
+    async function rejectDeviceRequest(requestId) {
+        const reason = prompt("Reason for rejection:");
+        if (reason === null) return;
+        
+        const data = await apiCall("/approve-device-request", {
+            method: "POST",
+            body: JSON.stringify({ requestId, approve: false, notes: reason })
+        });
+        
+        if (data && data.ok) {
+            showToast("Request rejected", "success");
+            loadDeviceRequests();
+        }
+    }
+
+    function switchTab(tabId) {
+        document.querySelectorAll(".tab-pane").forEach(pane => pane.classList.remove("active"));
+        document.getElementById(`${tabId}Tab`).classList.add("active");
+        document.querySelectorAll(".nav-item").forEach(nav => nav.classList.remove("active"));
+        document.querySelector(`.nav-item[data-tab="${tabId}"]`).classList.add("active");
+        
+        const titles = {
+            dashboard: "Dashboard", companies: "Companies", devices: "Devices",
+            violations: "Violations", requests: "Pending Approvals", license: "Generate License",
+            invoices: "Invoices", settings: "Settings", devicerequests: "Device Requests"
+        };
+        document.getElementById("pageTitle").innerText = titles[tabId] || "Dashboard";
+        
+        if (tabId === "devices") loadDevices();
+        if (tabId === "violations") loadActivity();
+        if (tabId === "requests") loadDevices();
+        if (tabId === "invoices") loadInvoices();
+        if (tabId === "settings") loadAdminUsers();
+        if (tabId === "devicerequests") loadDeviceRequests();
+    }
+
+    document.querySelectorAll(".nav-item").forEach(nav => {
+        nav.addEventListener("click", () => {
+            const tab = nav.dataset.tab;
+            if (tab) switchTab(tab);
+            if (window.innerWidth <= 768) {
+                document.getElementById("sidebar").classList.remove("open");
+            }
+        });
+    });
+
+    document.getElementById("mobileMenuBtn")?.addEventListener("click", () => {
+        document.getElementById("sidebar").classList.toggle("open");
+    });
+
+    document.getElementById("topLogoutBtn")?.addEventListener("click", logout);
+    document.getElementById("sidebarLogoutBtn")?.addEventListener("click", logout);
+    
+    document.getElementById("companySearch")?.addEventListener("input", () => renderCompaniesTable());
+    document.getElementById("deviceSearch")?.addEventListener("input", () => renderDevicesTable());
+    document.getElementById("deviceStatusFilter")?.addEventListener("change", () => renderDevicesTable());
+    document.getElementById("violationSearch")?.addEventListener("input", () => renderViolationsTable());
+    document.getElementById("violationTypeFilter")?.addEventListener("change", () => renderViolationsTable());
+    document.getElementById("invoiceStatusFilter")?.addEventListener("change", () => renderInvoicesTable());
+    document.getElementById("requestStatusFilter")?.addEventListener("change", () => loadDeviceRequests());
+
+    function startRefresh() {
+        if (refreshInterval) clearInterval(refreshInterval);
+        refreshInterval = setInterval(loadAllData, 30000);
+    }
+
+    async function init() {
+        const savedToken = localStorage.getItem("vms_admin_token");
+        const savedUser = localStorage.getItem("vms_admin_user");
+        const savedRole = localStorage.getItem("vms_admin_role");
+        
+        if (savedToken && savedUser) {
+            token = savedToken;
+            currentUser = { username: savedUser, role: savedRole || "ADMIN" };
+            document.getElementById("loginOverlay").classList.add("hidden");
+            document.getElementById("topUsername").innerText = savedUser;
+            document.getElementById("sidebarUsername").innerText = savedUser;
+            document.getElementById("topRole").innerText = savedRole || "ADMIN";
+            document.getElementById("sidebarRole").innerText = savedRole || "ADMIN";
+            startRefresh();
+            loadAllData();
+        } else {
+            document.getElementById("loginOverlay").classList.remove("hidden");
+        }
+        
+        setInterval(() => {
+            document.getElementById("serverTime").innerHTML = `Server Time: ${new Date().toLocaleString()}`;
+        }, 1000);
+    }
+
+    init();
+</script>
+<script>
+// ============================================================
+// 🧠⚙️👑 VMS HARDENING INJECTION PACK v1.0 (SAFE MODE)
+// ============================================================
+
+(function(){
+
+console.log("[VMS HARDENING] INIT...");
+
+// ============================================================
+// 🔐 1. API CALL HARDEN (NO BREAK CORE)
+// ============================================================
+
+if (window.apiCall) {
+    const __old_apiCall = window.apiCall;
+
+    window.apiCall = async function(endpoint, options = {}) {
+        if (!navigator.onLine) {
+            console.warn("[API] Offline mode");
+            return null;
+        }
+
+        try {
+            return await __old_apiCall(endpoint, options);
+        } catch (e) {
+            console.error("[API ERROR]", endpoint, e);
+            return null;
+        }
+    };
+
+    console.log("[VMS] API HARDENED");
+}
+
+// ============================================================
+// 📱 2. DEVICE SYNC HARDEN (SERVER SOURCE OF TRUTH)
+// ============================================================
+
+if (window.loadDevices) {
+    const __old_loadDevices = window.loadDevices;
+
+    window.loadDevices = async function () {
+        try {
+            const licenseKey = localStorage.getItem("vms_license_key");
+            if (!licenseKey) return __old_loadDevices();
+
+            const res = await fetch(API_URL + "/client/devices", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ licenseKey })
+            });
+
+            if (!res.ok) throw new Error("Server error");
+
+            const data = await res.json();
+
+            if (data.devices && data.devices.length > 0) {
+                if (typeof devicesData !== "undefined") {
+                    devicesData = data.devices;
+                }
+
+                localStorage.setItem("vms_devices", JSON.stringify(data.devices));
+
+                if (typeof renderDevicesList === "function") renderDevicesList();
+                if (typeof updateDeviceSelects === "function") updateDeviceSelects();
+                if (typeof updateStats === "function") updateStats();
+
+                console.log("[VMS] DEVICE SYNC FROM SERVER");
+
+                return;
+            }
+
+        } catch (e) {
+            console.warn("[SYNC FALLBACK LOCAL]", e.message);
+        }
+
+        return __old_loadDevices();
+    };
+
+    console.log("[VMS] DEVICE SYNC HARDENED");
+}
+
+// ============================================================
+// 🔁 3. SYNC LOCK HARDEN (ANTI SPAM)
+// ============================================================
+
+if (window.syncToCloud) {
+    const __old_sync = window.syncToCloud;
+
+    window.syncToCloud = async function(payload){
+        if (window.__sync_lock) {
+            console.warn("[SYNC BLOCKED]");
+            return;
+        }
+
+        window.__sync_lock = true;
+
+        try {
+            return await __old_sync(payload);
+        } catch(e){
+            console.warn("[SYNC ERROR]", e);
+        } finally {
+            setTimeout(()=>{
+                window.__sync_lock = false;
+            }, 1000);
+        }
+    };
+
+    console.log("[VMS] SYNC LOCK ACTIVE");
+}
+
+// ============================================================
+// 🌐 4. SAFE FETCH (GLOBAL FALLBACK)
+// ============================================================
+
+window.safeFetch = async function(url, options = {}) {
+    try {
+        const res = await fetch(url, options);
+        if (!res.ok) throw new Error(res.status);
+        return await res.json();
+    } catch (e) {
+        console.warn("[SAFE FETCH ERROR]", url, e.message);
+        return null;
+    }
+};
+
+// ============================================================
+// 📡 5. AUTO HEALTH LOG
+// ============================================================
+
+console.log("[VMS HARDENING] READY ✅");
+
+})();
+</script>
+</body>
+</html>

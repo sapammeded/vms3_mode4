@@ -529,28 +529,18 @@ function logout(){
 }
 
 function loadUserSession(){
-    if(!isPro()){
-        document.getElementById("loginOverlay").style.display = "none";
-        document.getElementById("appLayout").style.display = "flex";
-        currentUser = { username: "demo", role: "OPERATOR" };
-        updateUserUI();
-        applyRoleVisibility();
-        return true;
-    }
+    document.getElementById("loginOverlay").style.display = "none";
+    document.getElementById("appLayout").style.display = "flex";
     let u = localStorage.getItem("vms_user");
-    if(u){
-        currentUser = JSON.parse(u);
-        if(currentUser){
-            document.getElementById("loginOverlay").style.display = "none";
-            document.getElementById("appLayout").style.display = "flex";
-            updateUserUI();
-            applyRoleVisibility();
-            return true;
-        }
+    currentUser = u ? JSON.parse(u) : { username: "demo", role: "OPERATOR" };
+    if(!currentUser){
+        currentUser = { username: "demo", role: "OPERATOR" };
     }
-    document.getElementById("loginOverlay").style.display = "flex";
-    document.getElementById("appLayout").style.display = "none";
-    return false;
+    localStorage.setItem("vms_user", JSON.stringify(currentUser));
+    localStorage.setItem("vms_role", currentUser.role || "OPERATOR");
+    updateUserUI();
+    applyRoleVisibility();
+    return true;
 }
 
 function isAdmin() { return currentUser?.role === "SUPER_ADMIN" && isPro(); }
@@ -2390,19 +2380,17 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
         }
         
         if (currentMode === "PRO") {
-            const isValid = await validateSession();
-            if (isValid) {
-                if (loginOverlay) loginOverlay.style.display = "none";
-                if (appLayout) appLayout.style.display = "flex";
-                if (window.updateUserUI) window.updateUserUI();
-                if (window.renderDashboard) window.renderDashboard();
-                if (window.renderLogTable) window.renderLogTable();
-                return true;
-            } else {
-                if (loginOverlay) loginOverlay.style.display = "flex";
-                if (appLayout) appLayout.style.display = "none";
-                return false;
+            await validateSession();
+            if (loginOverlay) loginOverlay.style.display = "none";
+            if (appLayout) appLayout.style.display = "flex";
+            if (!localStorage.getItem("vms_user")) {
+                localStorage.setItem("vms_user", JSON.stringify({ username: "pro-user", role: "OPERATOR" }));
+                localStorage.setItem("vms_role", "OPERATOR");
             }
+            if (window.updateUserUI) window.updateUserUI();
+            if (window.renderDashboard) window.renderDashboard();
+            if (window.renderLogTable) window.renderLogTable();
+            return true;
         }
         
         return false;
@@ -2532,16 +2520,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
  window.__LICENSE_SYSTEM__ = true;
 
  function askLicense(){
-  let license = localStorage.getItem("vms_license_key");
-
-  if(!license){
-   license = prompt("Masukkan LICENSE KEY dari ADMIN:");
-   if(license){
-    localStorage.setItem("vms_license_key", license);
-   }
-  }
-
-  return license;
+  return localStorage.getItem("vms_license_key");
  }
 
  const originalFetch = window.fetch;

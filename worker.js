@@ -935,13 +935,14 @@ export default {
                             site: log.site || body.site || 'SITE_A',
                             deviceId: log.deviceId || body.deviceId || null,
                             persistedAt: log.persistedAt,
-                            sequenceId: log.sequenceId
+                            sequenceId: log.sequenceId,
+                            gasReplayId: generateGasReplayId(log)
                         }));
                         const gasOk = await pushLogsToGoogleScript(gasLogs);
                         if (!gasOk) {
                             const pendingQueue = await getData(env, 'pending_gas_queue');
-                            pendingQueue.push(...gasLogs);
-                            await saveData(env, 'pending_gas_queue', pendingQueue.slice(-20000));
+                            const mergedQueue = mergeGasQueueUnique(pendingQueue, gasLogs);
+                            await saveData(env, 'pending_gas_queue', mergedQueue.slice(-20000));
                         }
                     }
                     if (rejectedExpired.length) {
@@ -983,14 +984,26 @@ export default {
                 }
                 const body = await request.json().catch(() => ({}));
                 const batchSize = Math.max(1, Math.min(1000, Number(body?.batchSize || 250)));
-                const batch = pendingQueue.slice(0, batchSize);
+                const normalizedPending = normalizeGasQueueEntries(pendingQueue);
+                const batch = normalizedPending.slice(0, batchSize);
+                const remainingPending = normalizedPending.slice(batch.length);
+                let processingQueue = await getData(env, 'processing_gas_queue');
+                processingQueue = mergeGasQueueUnique(processingQueue, batch);
+                await saveData(env, 'pending_gas_queue', remainingPending);
+                await saveData(env, 'processing_gas_queue', processingQueue.slice(-20000));
                 const gasOk = await pushLogsToGoogleScript(batch);
                 if (!gasOk) {
-                    return new Response(JSON.stringify({ ok: false, replayed: 0, remaining: pendingQueue.length }), { headers: corsHeaders, status: 502 });
+                    processingQueue = await getData(env, 'processing_gas_queue');
+                    const retryQueue = mergeGasQueueUnique(remainingPending, processingQueue);
+                    await saveData(env, 'pending_gas_queue', retryQueue.slice(-20000));
+                    await saveData(env, 'processing_gas_queue', []);
+                    return new Response(JSON.stringify({ ok: false, replayed: 0, remaining: retryQueue.length }), { headers: corsHeaders, status: 502 });
                 }
-                const remainingQueue = pendingQueue.slice(batch.length);
-                await saveData(env, 'pending_gas_queue', remainingQueue);
-                return new Response(JSON.stringify({ ok: true, replayed: batch.length, remaining: remainingQueue.length }), { headers: corsHeaders });
+                processingQueue = await getData(env, 'processing_gas_queue');
+                const processedIds = new Set(batch.map(log => log.gasReplayId).filter(Boolean));
+                const remainingProcessing = normalizeGasQueueEntries(processingQueue).filter(log => !processedIds.has(log.gasReplayId));
+                await saveData(env, 'processing_gas_queue', remainingProcessing.slice(-20000));
+                return new Response(JSON.stringify({ ok: true, replayed: batch.length, remaining: remainingPending.length }), { headers: corsHeaders });
             }
             
             // ==================== SYNC USERS MODULE ====================
@@ -1202,6 +1215,9 @@ async function saveData(env, key, data) {
 }
 
 async function pushLogsToGoogleScript(logs) {
+    const timeoutMs = 9000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
         const payload = {
             source: 'vms-worker',
@@ -1211,8 +1227,10 @@ async function pushLogsToGoogleScript(logs) {
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
         if (!res.ok) {
             globalThis.__vms_metrics.gasFail++;
             globalThis.__vms_metrics.lastGasFailAt = Date.now();
@@ -1221,8 +1239,13 @@ async function pushLogsToGoogleScript(logs) {
         }
         return true;
     } catch (error) {
+        clearTimeout(timeoutId);
         globalThis.__vms_metrics.gasFail++;
         globalThis.__vms_metrics.lastGasFailAt = Date.now();
+        if (error?.name === 'AbortError') {
+            console.error('[GAS] Append timed out after ms:', timeoutMs);
+            return false;
+        }
         console.error('[GAS] Append request error:', error);
         return false;
     }
@@ -1235,6 +1258,43 @@ function generateSequenceId(licenseKey, timestampMs = Date.now()) {
     globalThis.__vms_sequence_counter = (globalThis.__vms_sequence_counter + 1) % 1000000;
     const counter = String(globalThis.__vms_sequence_counter).padStart(6, '0');
     return `${licenseKey}-${timestampMs}-${counter}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function generateGasReplayId(log) {
+    if (log && log.sequenceId) return `gas-${log.sequenceId}`;
+    return `gas-${crypto.randomUUID()}`;
+}
+
+function normalizeGasQueueEntries(queue) {
+    if (!Array.isArray(queue)) return [];
+    const normalized = [];
+    for (const item of queue) {
+        if (!item || typeof item !== 'object') continue;
+        const persistedAt = Number(item.persistedAt || Date.now());
+        const sequenceId = item.sequenceId || generateSequenceId(item.licenseKey || 'unknown', persistedAt);
+        const gasReplayId = item.gasReplayId || generateGasReplayId({ sequenceId });
+        normalized.push({ ...item, persistedAt, sequenceId, gasReplayId });
+    }
+    return dedupGasQueueByReplayId(normalized);
+}
+
+function dedupGasQueueByReplayId(queue) {
+    const seen = new Set();
+    const deduped = [];
+    for (const item of queue) {
+        if (!item?.gasReplayId) continue;
+        if (seen.has(item.gasReplayId)) continue;
+        seen.add(item.gasReplayId);
+        deduped.push(item);
+    }
+    return deduped;
+}
+
+function mergeGasQueueUnique(baseQueue, incomingQueue) {
+    return dedupGasQueueByReplayId([
+        ...normalizeGasQueueEntries(baseQueue),
+        ...normalizeGasQueueEntries(incomingQueue)
+    ]);
 }
 
 // ==================== DEFAULT DATA ====================
@@ -1252,6 +1312,7 @@ function getDefaultData(key) {
         users_from_clients: [],
         processed_replays: [],
         pending_gas_queue: [],
+        processing_gas_queue: [],
         settings: {
             pricing: {
                 BASIC: { price: 500000, maxDevices: 10, extraDeviceFee: 50000 },

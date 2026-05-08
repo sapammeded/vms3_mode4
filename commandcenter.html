@@ -1042,6 +1042,9 @@
     let invoicesData = [];
 
     let syncLock = false;
+    let serverClockTimer = null;
+    let workerHealthHistory = [];
+    let loadCycleId = 0;
 
     function showToast(message, type = "info") {
         const container = document.getElementById("toastContainer");
@@ -1214,6 +1217,7 @@
         // FIX: sync lock to prevent spam requests
         if (syncLock) return;
         syncLock = true;
+        const cycleId = ++loadCycleId;
         
         try {
             await Promise.all([
@@ -1225,9 +1229,47 @@
                 loadRecentLicenses(),
                 loadDeviceRequests()
             ]);
+            await renderOperationalIntel(cycleId);
         } finally {
             setTimeout(() => { syncLock = false; }, 1000);
         }
+    }
+
+    async function renderOperationalIntel(cycleId) {
+        if (cycleId !== loadCycleId) return;
+        let box = document.getElementById("opsIntelBox");
+        if (!box) {
+            box = document.createElement("div");
+            box.id = "opsIntelBox";
+            box.className = "card";
+            const anchor = document.querySelector(".stats-grid");
+            if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(box, anchor.nextSibling);
+        }
+        const healthStart = Date.now();
+        const health = await apiCall("/");
+        if (cycleId !== loadCycleId) return;
+        const healthLatency = Date.now() - healthStart;
+        if (health?.metrics) {
+            workerHealthHistory.push({ t: Date.now(), ...health.metrics });
+            workerHealthHistory = workerHealthHistory.slice(-20);
+        }
+        const onlineDevices = devicesData.filter(d => (Date.now() - (d.lastSeen || 0)) < 5 * 60000).length;
+        const offlineDevices = Math.max(0, devicesData.length - onlineDevices);
+        const checkIn = activityData.filter(a => a.type === "CHECK_IN" || a.action === "IN").length;
+        const checkOut = activityData.filter(a => a.type === "CHECK_OUT" || a.action === "OUT").length;
+        const ratio = checkOut > 0 ? (checkIn / checkOut).toFixed(2) : "N/A";
+        const malformedTrend = workerHealthHistory.reduce((acc, x) => acc + (x.malformedLogs || 0), 0);
+        box.innerHTML = `
+            <div class="card-header"><h3>🧠 Operational Intelligence</h3></div>
+            <div class="stats-grid" style="margin-bottom:0;">
+                <div class="stat-card"><h4>Online Devices</h4><div class="stat-number">${onlineDevices}</div></div>
+                <div class="stat-card"><h4>Offline Devices</h4><div class="stat-number">${offlineDevices}</div></div>
+                <div class="stat-card"><h4>IN/OUT Ratio</h4><div class="stat-number">${ratio}</div></div>
+                <div class="stat-card"><h4>Worker Latency</h4><div class="stat-number">${healthLatency}ms</div></div>
+                <div class="stat-card"><h4>Replay Dedup</h4><div class="stat-number">${health?.metrics?.dedupReplay || 0}</div></div>
+                <div class="stat-card"><h4>Malformed Trend</h4><div class="stat-number">${malformedTrend}</div></div>
+            </div>
+        `;
     }
 
     async function loadStats() {
@@ -1708,6 +1750,14 @@
     async function viewCompanyDetails(companyId) {
         const data = await apiCall(`/admin/company/${companyId}`);
         if (data) {
+            let featureContext = null;
+            if (data.licenseKey) {
+                const ctx = await apiCall("/license-context", {
+                    method: "POST",
+                    body: JSON.stringify({ licenseKey: data.licenseKey })
+                });
+                if (ctx?.ok) featureContext = ctx.features || null;
+            }
             const content = document.getElementById("companyDetailContent");
             content.innerHTML = `
                 <div class="grid-2" style="gap: 16px;">
@@ -1722,6 +1772,18 @@
                     <div><strong>Status:</strong><br><span class="badge ${data.expiredAt < Date.now() ? 'badge-expired' : 'badge-active'}">${data.expiredAt < Date.now() ? 'EXPIRED' : 'ACTIVE'}</span></div>
                     <div><strong>Created:</strong><br>${formatDate(data.createdAt)}</div>
                 </div>
+                ${featureContext ? `
+                <hr style="border-color: var(--border); margin: 16px 0;">
+                <h4 style="margin-bottom: 12px;">🧭 Worker Feature Policy</h4>
+                <div class="grid-2" style="gap: 12px; font-size:0.8rem;">
+                    <div><strong>Package:</strong><br>${featureContext.package}</div>
+                    <div><strong>Device Limit:</strong><br>${featureContext.maxDevices === -1 ? 'Unlimited' : featureContext.maxDevices}</div>
+                    <div><strong>Realtime Sync:</strong><br>${featureContext.realtimeSync ? 'Enabled' : 'Disabled'}</div>
+                    <div><strong>Spreadsheet Sync:</strong><br>${featureContext.spreadsheetAutoSync ? 'Enabled' : 'Disabled'}</div>
+                    <div><strong>Site Policy:</strong><br>${featureContext.unlimitedSites ? 'Dynamic multi-site' : 'Static sites only'}</div>
+                    <div><strong>Site Rename:</strong><br>${featureContext.allowSiteRename ? 'Enabled' : 'Disabled'}</div>
+                </div>
+                ` : ''}
                 <hr style="border-color: var(--border); margin: 16px 0;">
                 <h4 style="margin-bottom: 12px;">📱 Devices (${data.devices?.length || 0})</h4>
                 <div class="table-wrapper">
@@ -2118,12 +2180,20 @@
             document.getElementById("loginOverlay").classList.remove("hidden");
         }
         
-        setInterval(() => {
+        if (serverClockTimer) clearInterval(serverClockTimer);
+        serverClockTimer = setInterval(() => {
+            if (document.hidden) return;
             document.getElementById("serverTime").innerHTML = `Server Time: ${new Date().toLocaleString()}`;
         }, 1000);
 
         document.addEventListener("visibilitychange", () => {
             if (!document.hidden && token) loadAllData();
+        });
+        window.addEventListener("storage", (e) => {
+            if (e.key === "vms_admin_token" && e.newValue !== token) {
+                token = e.newValue || null;
+                if (!token) logout();
+            }
         });
     }
 

@@ -612,6 +612,18 @@
     let devicesData = [];
     let activityData = [];
     let refreshInterval = null;
+    let currentFeatures = null;
+    let lastRefreshRun = 0;
+    const INCIDENT_KEY = "vms_client_incidents";
+
+    function appendIncident(type, message) {
+        try {
+            const incidentsRaw = JSON.parse(localStorage.getItem(INCIDENT_KEY) || "[]");
+            const incidents = Array.isArray(incidentsRaw) ? incidentsRaw : [];
+            incidents.unshift({ type, message, ts: Date.now(), licenseKey: currentLicense || getLicenseKey() || "-" });
+            localStorage.setItem(INCIDENT_KEY, JSON.stringify(incidents.slice(0, 300)));
+        } catch {}
+    }
 
     function getLicenseKey() {
         const urlParams = new URLSearchParams(window.location.search);
@@ -658,12 +670,14 @@
             const data = contentType.includes("application/json") ? await res.json() : { ok: false, message: "Invalid server response" };
 
             if (!res.ok) {
+                appendIncident("API_FAIL", `${endpoint} HTTP ${res.status}`);
                 if (res.status >= 500) showToast("Server unavailable. Please retry.", "warning");
                 return data || { ok: false, message: `HTTP ${res.status}` };
             }
 
             return data;
         } catch (e) {
+            appendIncident("NETWORK_ERROR", e.message);
             showToast("Network error: " + e.message, "error");
             return null;
         }
@@ -716,9 +730,17 @@
         if (data && data.ok) {
             currentLicense = licenseKey;
             currentCompany = data.company;
+            currentFeatures = data.features || null;
             localStorage.setItem("vms_client_license", licenseKey);
-            
+            if (!currentFeatures) {
+                const ctx = await apiCall("/license-context", {
+                    method: "POST",
+                    body: JSON.stringify({ licenseKey })
+                });
+                if (ctx?.ok) currentFeatures = ctx.features || null;
+            }
             updateLicenseUI(data);
+            applyFeaturePolicyUI();
             return true;
         } else {
             showToast(data?.message || "License validation failed", "error");
@@ -745,6 +767,27 @@
         
         if (isExpired) {
             showToast("⚠️ Your license has expired. Please contact admin to renew.", "error");
+        }
+    }
+
+    function applyFeaturePolicyUI() {
+        const features = currentFeatures || {};
+        const isStaticSitesOnly = features.staticSitesOnly === true;
+        const canRealtime = features.realtimeSync !== false;
+        const canAddDevices = features.maxDevices === -1 || (currentCompany?.currentDevices || 0) < (features.maxDevices || 0);
+        const checkinBtn = document.querySelector('button[onclick="performCheckin()"]');
+        const requestBtn = document.querySelector('button[onclick="requestAdditionalDevice()"]');
+        if (checkinBtn) {
+            checkinBtn.disabled = !canRealtime;
+            checkinBtn.title = canRealtime ? "" : "Realtime sync disabled for this license tier";
+        }
+        if (requestBtn) {
+            requestBtn.disabled = !canAddDevices;
+            requestBtn.title = canAddDevices ? "" : "Device quota reached for this tier";
+        }
+        const banner = document.getElementById("licenseStatusText");
+        if (banner && isStaticSitesOnly) {
+            banner.innerHTML = `${banner.textContent} • Static site policy`;
         }
     }
 
@@ -882,6 +925,10 @@
             return;
         }
         
+        if (currentFeatures?.maxDevices !== -1 && (currentCompany?.currentDevices || 0) >= (currentFeatures?.maxDevices || 0)) {
+            showToast("Device limit reached for current license tier", "warning");
+            return;
+        }
         showToast("Registering device...", "info");
         
         const data = await apiCall("/validate-license", {
@@ -1183,6 +1230,8 @@
         if (refreshInterval) clearInterval(refreshInterval);
         refreshInterval = setInterval(() => {
             if (document.hidden || !navigator.onLine) return;
+            if (Date.now() - lastRefreshRun < 20000) return;
+            lastRefreshRun = Date.now();
             validateLicense();
             loadDevices();
         }, 30000);
@@ -1201,6 +1250,8 @@
 
     document.addEventListener("visibilitychange", () => {
         if (!document.hidden) {
+            if (Date.now() - lastRefreshRun < 5000) return;
+            lastRefreshRun = Date.now();
             validateLicense();
             loadDevices();
         }

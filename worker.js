@@ -883,13 +883,30 @@ export default {
                 
                 if (body.logs && body.logs.length > 0) {
                     let allLogs = await getData(env, 'logs');
+                    const allVisitors = await getData(env, 'visitors');
                     const normalizedLogs = body.logs
                         .filter(l => l && l.reg && l.action && l.time)
                         .map(l => ({ ...l, licenseKey, companyId: company.id, companyName: company.companyName }));
                     globalThis.__vms_metrics.malformedLogs += Math.max(0, body.logs.length - normalizedLogs.length);
                     const seen = new Set(allLogs.slice(0, 4000).map(l => `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}`));
                     const appendOnly = [];
+                    const rejectedExpired = [];
                     for (const log of normalizedLogs) {
+                        const site = log.site || body.site || 'SITE_A';
+                        const visitorKey = `${site}_${log.reg}`;
+                        const visitor = allVisitors[visitorKey];
+                        if (visitor && visitor.expDate) {
+                            const exp = new Date(visitor.expDate + 'T23:59:59').getTime();
+                            if (Number.isFinite(exp) && Date.now() > exp) {
+                                rejectedExpired.push({
+                                    reg: log.reg,
+                                    action: log.action,
+                                    site,
+                                    message: "BADGE VISITOR SUDAH EXPIRED. Silakan lakukan registrasi ulang."
+                                });
+                                continue;
+                            }
+                        }
                         const k = `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}`;
                         if (seen.has(k)) continue;
                         seen.add(k);
@@ -897,6 +914,19 @@ export default {
                     }
                     allLogs = [...appendOnly, ...allLogs];
                     await saveData(env, 'logs', allLogs.slice(0, 10000));
+                    if (rejectedExpired.length) {
+                        let reports = await getData(env, 'anti_nakal_reports');
+                        for (const rejected of rejectedExpired) {
+                            reports.unshift({
+                                type: "EXPIRED_VISITOR_BLOCKED",
+                                ...rejected,
+                                licenseKey,
+                                deviceId: body.deviceId,
+                                timestamp: Date.now()
+                            });
+                        }
+                        await saveData(env, 'anti_nakal_reports', reports.slice(0, 5000));
+                    }
                 }
                 
                 if (body.anti) {
@@ -1185,10 +1215,10 @@ function buildFeaturePolicy(pkg, maxDevices) {
     return {
         package: packageName,
         licenseScopedSync: true,
-        realtimeSync: isPro,
-        spreadsheetAutoSync: isPro,
+        realtimeSync: isPro || isBasic,
+        spreadsheetAutoSync: isPro || isBasic,
         unlimitedSites: isPro,
-        allowSiteRename: isPro,
+        allowSiteRename: isPro || isBasic,
         staticSitesOnly: !isPro,
         staticSites: ['SITE_A', 'SITE_B', 'SITE_C'],
         maxDevices: isPro ? -1 : (Number(maxDevices) || (isBasic ? 5 : 5)),

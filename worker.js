@@ -1604,14 +1604,17 @@ function buildFeaturePolicy(pkg, maxDevices) {
     const packageName = String(pkg || 'DEMO').toUpperCase();
     const isPro = packageName === 'PRO' || packageName === 'FULL';
     const isBasic = packageName === 'BASIC';
+    const isDemo = !isPro && !isBasic;
     return {
+        version: "1.0.13",
+        updatedAt: Date.now(),
         package: packageName,
         licenseScopedSync: true,
         realtimeSync: isPro || isBasic,
         spreadsheetAutoSync: isPro || isBasic,
         unlimitedSites: isPro,
         allowSiteRename: isPro || isBasic,
-        staticSitesOnly: !isPro,
+        staticSitesOnly: isDemo,
         staticSites: ['SITE_A', 'SITE_B', 'SITE_C'],
         maxDevices: Number(maxDevices) || (isBasic ? 5 : 5),
         unlimitedDevices: isPro,

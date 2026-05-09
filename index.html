@@ -279,7 +279,15 @@ function restoreLicenseSession(){
         try{
             WORKER_FEATURES = JSON.parse(savedFeatures);
             localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
-            sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+            try{ 
+    sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); 
+}catch(storageErr){ 
+    console.warn("WORKER_FEATURE_SESSION_FAIL", { 
+        module:"Storage Runtime", 
+        reason:storageErr?.message || "session_storage_failed", 
+        action:"ignore_feature_cache" 
+    }); 
+}
         }catch(e){}
     }
 }
@@ -453,7 +461,15 @@ async function applyLicenseKey(key) {
             sessionStorage.setItem("vms_license", LICENSE_MODE);
             sessionStorage.setItem("vms_license_key", key);
             if (WORKER_FEATURES) localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
-            if (WORKER_FEATURES) sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+            if (WORKER_FEATURES) try{ 
+    sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); 
+}catch(storageErr){ 
+    console.warn("WORKER_FEATURE_SESSION_FAIL", { 
+        module:"Storage Runtime", 
+        reason:storageErr?.message || "session_storage_failed", 
+        action:"ignore_feature_cache" 
+    }); 
+}
             
             // Simpan info company
             if (data.company) {
@@ -654,7 +670,15 @@ async function refreshLicenseFeaturesFromWorker(){
         if(data?.ok && data?.features){
             WORKER_FEATURES = data.features;
             localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
-            sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+            try{ 
+    sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); 
+}catch(storageErr){ 
+    console.warn("WORKER_FEATURE_SESSION_FAIL", { 
+        module:"Storage Runtime", 
+        reason:storageErr?.message || "session_storage_failed", 
+        action:"ignore_feature_cache" 
+    }); 
+}
         }
     }catch(e){}
 }
@@ -1944,6 +1968,181 @@ let __lastKnownGoodLogs = null;
 const CLIENT_EPOCH = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
 
 const MAX_QUEUE = 50;
+
+const TAB_ID = (crypto.randomUUID ? crypto.randomUUID() : `tab_${Date.now()}_${Math.random().toString(36).slice(2,8)}`);
+const TAB_STARTED_AT = Date.now();
+const TAB_PRIORITY = `${String(TAB_STARTED_AT).padStart(16,'0')}_${TAB_ID}`;
+const SYNC_CHANNEL = (typeof BroadcastChannel !== "undefined") ? new BroadcastChannel("vms_sync_runtime") : null;
+const OWNER_META_KEY = "__vms_sync_owner";
+const TAKEOVER_LOCK_KEY = "__vms_takeover_lock";
+let OWNER_META = { ownerId: TAB_ID, startedAt: TAB_STARTED_AT, heartbeatTs: Date.now(), epoch: 1 };
+let ownerHeartbeatTs = Date.now();
+let lastSnapshotTs = 0;
+let lastSnapshotChecksum = "";
+
+function cloneSafe(obj){ try { return structuredClone(obj); } catch { return JSON.parse(JSON.stringify(obj)); } }
+function loadOwnerMeta(){
+    try{ const raw = localStorage.getItem(OWNER_META_KEY); if(!raw) return; const parsed = JSON.parse(raw); if(parsed && parsed.ownerId && Number.isFinite(Number(parsed.startedAt)) && Number.isFinite(Number(parsed.epoch))){ OWNER_META = { ownerId:String(parsed.ownerId), startedAt:Number(parsed.startedAt), heartbeatTs:Number(parsed.heartbeatTs||0), epoch:Number(parsed.epoch) }; }}catch{}
+}
+function persistOwnerMeta(){
+    try{
+        localStorage.setItem(OWNER_META_KEY, JSON.stringify(OWNER_META));
+    }catch(storageErr){
+        console.warn("OWNER_META_STORAGE_FAIL", {
+            module:"Storage Runtime",
+            reason:storageErr?.message || "quota_exceeded",
+            action:"fallback_session_storage"
+        });
+
+        try{
+            sessionStorage.setItem(OWNER_META_KEY, JSON.stringify(OWNER_META));
+        }catch(sessionErr){
+            console.warn("OWNER_META_SESSION_FAIL", {
+                module:"Storage Runtime",
+                reason:sessionErr?.message || "session_storage_failed",
+                action:"discard_owner_meta"
+            });
+        }
+    }
+}
+function postSyncMessage(type, payload={}){ if(!SYNC_CHANNEL) return; try{ SYNC_CHANNEL.postMessage({ type, tabId:TAB_ID, ts:Date.now(), epoch:Number(OWNER_META.epoch||0), payload, version:1 }); }catch{} }
+
+function validateTakeoverLock(lock){
+    if(!lock || typeof lock !== "object") return false;
+    const now = Date.now();
+    return Number.isFinite(Number(lock.expiresAt)) && Number(lock.expiresAt) > now;
+}
+function acquireTakeoverLock(){
+    const now = Date.now();
+    const ttl = 4500;
+    const lock = { ownerId: TAB_ID, epoch: Number(OWNER_META.epoch||0), token: (crypto.randomUUID ? crypto.randomUUID() : String(now)), createdAt: now, expiresAt: now + ttl };
+    const serialized = JSON.stringify(lock);
+    try{
+        const curRaw = localStorage.getItem(TAKEOVER_LOCK_KEY);
+        const cur = curRaw ? JSON.parse(curRaw) : null;
+        if(validateTakeoverLock(cur) && cur.ownerId !== TAB_ID) return false;
+        localStorage.setItem(TAKEOVER_LOCK_KEY, serialized);
+        const verifyRaw = localStorage.getItem(TAKEOVER_LOCK_KEY) || "";
+        return verifyRaw === serialized;
+    }catch{ return false; }
+}
+function releaseTakeoverLock(){
+    try{ const cur = JSON.parse(localStorage.getItem(TAKEOVER_LOCK_KEY)||"{}"); if(cur.ownerId===TAB_ID) localStorage.removeItem(TAKEOVER_LOCK_KEY); }catch{}
+}
+function snapshotChecksum(visitors, logs){
+    try{ return checksumSimple(JSON.stringify({v:visitors||{}, l:logs||[]})); }catch{ return "0"; }
+}
+function applySnapshotAtomically(snapshot){
+    const prevVisitors = cloneSafe(window.visitors || {});
+    const prevLogs = cloneSafe(window.logs || []);
+    try{
+        const nextVisitors = cloneSafe(snapshot?.visitors || {});
+        const nextLogs = cloneSafe(snapshot?.logs || []);
+        if(!Array.isArray(nextLogs) || typeof nextVisitors !== "object" || Array.isArray(nextVisitors)) return false;
+        for(const v of Object.values(nextVisitors)){
+            if(!v || !Number.isFinite(Number(v.updatedAt||0)) || !Number.isFinite(Number(v.version||0))) return false;
+        }
+        for(const l of nextLogs){
+            if(!l || !l.sequenceId || !Number.isFinite(Number(l.persistedAt||0)) || !l.action || !l.reg) return false;
+        }
+        window.visitors = nextVisitors;
+        markLogsReplaced(nextLogs);
+        if(window.renderDashboard) window.renderDashboard();
+        if(window.renderLogTable) window.renderLogTable();
+        return true;
+    }catch{
+        window.visitors = prevVisitors;
+        markLogsReplaced(prevLogs);
+        return false;
+    }
+}
+function ownerBootValidation(){
+    const now = Date.now();
+    const stale = (now - Number(OWNER_META.heartbeatTs||0)) > 25000;
+    const badTs = Number(OWNER_META.startedAt||0) > now + 60000;
+    if(stale || badTs || !OWNER_META.ownerId){
+        OWNER_META = { ownerId: TAB_ID, startedAt: TAB_STARTED_AT, heartbeatTs: now, epoch: Math.max(1, Number(OWNER_META.epoch||0)+1) };
+        persistOwnerMeta();
+    }
+}
+
+function compareOwnerCandidate(aStart,aId,bStart,bId){ if(Number(aStart||0)!==Number(bStart||0)) return Number(aStart||0)-Number(bStart||0); return String(aId||"").localeCompare(String(bId||"")); }
+function isAuthoritativeOwner(){ return OWNER_META.ownerId === TAB_ID; }
+function announceOwner(){ persistOwnerMeta(); postSyncMessage("OWNER_ACK", { ownerMeta: OWNER_META }); }
+function maybeTakeOwnership(force=false){
+    const now = Date.now();
+    const age = now - Number(OWNER_META.heartbeatTs||0);
+    if(!force && age <= 25000) return;
+    if(!acquireTakeoverLock()) return;
+    try{
+        if(compareOwnerCandidate(TAB_STARTED_AT, TAB_ID, OWNER_META.startedAt, OWNER_META.ownerId) <= 0){
+            OWNER_META = { ownerId:TAB_ID, startedAt:TAB_STARTED_AT, heartbeatTs:now, epoch:Number(OWNER_META.epoch||0)+1 };
+            ownerHeartbeatTs = now;
+            retryQueue = loadRetryQueueSafe();
+            persistOwnerMeta();
+            announceOwner();
+        }
+    } finally { releaseTakeoverLock(); }
+}
+loadOwnerMeta();
+ownerBootValidation();
+if(SYNC_CHANNEL){
+    SYNC_CHANNEL.onmessage = (evt)=>{
+        const m = evt?.data || {};
+        if(!m || m.tabId === TAB_ID) return;
+        if(Number(m.epoch||0) !== Number(OWNER_META.epoch||0) && m.type !== "OWNER_ACK") return;
+        if(m.type === "HEARTBEAT"){
+            const p = m.payload || {};
+            if(p.ownerId === OWNER_META.ownerId && Number(p.epoch||0) === Number(OWNER_META.epoch||0)){ OWNER_META.heartbeatTs = Number(m.ts||Date.now()); ownerHeartbeatTs = Date.now(); persistOwnerMeta(); }
+            return;
+        }
+        if(m.type === "OWNER_ACK" && m.payload?.ownerMeta){
+            const incoming = m.payload.ownerMeta;
+            if(Number(incoming.epoch||0) < Number(OWNER_META.epoch||0)) return;
+            if(Number(incoming.heartbeatTs||0) < Number(OWNER_META.heartbeatTs||0)) return;
+            if(Number(incoming.epoch||0) === Number(OWNER_META.epoch||0) && compareOwnerCandidate(incoming.startedAt, incoming.ownerId, OWNER_META.startedAt, OWNER_META.ownerId) > 0) return;
+            OWNER_META = { ownerId:String(incoming.ownerId), startedAt:Number(incoming.startedAt), heartbeatTs:Number(incoming.heartbeatTs||Date.now()), epoch:Number(incoming.epoch||0) };
+            ownerHeartbeatTs = Date.now();
+            persistOwnerMeta();
+            return;
+        }
+        if(m.type === "RETRY_QUEUE_UPDATED" && !isAuthoritativeOwner() && Array.isArray(m.payload?.queue)){ retryQueue = cloneSafe(m.payload.queue).slice(-MAX_QUEUE); }
+        if(m.type === "PENDING_PAYLOAD_UPDATED" && !isAuthoritativeOwner()){ pendingSyncPayload = m.payload?.pending ? cloneSafe(m.payload.pending) : pendingSyncPayload; }
+        if(m.type === "PULL_COMPLETED" && !isAuthoritativeOwner()){ if(window.renderDashboard) window.renderDashboard(); if(window.renderLogTable) window.renderLogTable(); }
+        if(m.type === "SNAPSHOT_SYNC" && !isAuthoritativeOwner()){
+            const p = m.payload || {};
+            if(Number(p.epoch||0) !== Number(OWNER_META.epoch||0)) return;
+            if(!Number.isFinite(Number(p.ts||0)) || Number(p.ts) <= lastSnapshotTs) return;
+            const cs = snapshotChecksum(p.visitors, p.logs);
+            if(String(cs)!==String(p.checksum||"")) return;
+            try{
+
+                if(applySnapshotAtomically({
+                    visitors:p.visitors,
+                    logs:p.logs
+                })){
+
+                    lastSnapshotTs = Number(p.ts || 0);
+                    lastSnapshotChecksum = String(p.checksum || "");
+
+                }
+
+            }catch(snapshotErr){
+
+                console.warn("SNAPSHOT_APPLY_FAIL", {
+                    module:"Sync Runtime",
+                    reason:snapshotErr?.message || "snapshot_apply_failed",
+                    action:"discard_snapshot"
+                });
+
+            }
+        }
+        if(m.type === "INVALIDATE_DEVICE"){ enforceDeviceInvalidation("Perangkat dihapus/ditolak admin. Akses dikunci."); }
+    };
+    setInterval(()=>{ if(isAuthoritativeOwner()){ OWNER_META.heartbeatTs = Date.now(); persistOwnerMeta(); postSyncMessage("HEARTBEAT", { ownerId: OWNER_META.ownerId, epoch: OWNER_META.epoch }); const logsNow = cloneSafe(window.logs||[]); const visitorsNow = cloneSafe(window.visitors||{}); const checksum = snapshotChecksum(visitorsNow, logsNow); const snapTs = Date.now(); if(checksum !== lastSnapshotChecksum){ const payload = logsNow.length > 500 ? { visitors: {}, logs: [], checksum, epoch: OWNER_META.epoch, ts: snapTs } : { visitors: visitorsNow, logs: logsNow, checksum, epoch: OWNER_META.epoch, ts: snapTs }; postSyncMessage("SNAPSHOT_SYNC", payload); lastSnapshotChecksum = checksum; lastSnapshotTs = snapTs; } } }, 5000);
+    setInterval(()=>{ if(!isAuthoritativeOwner() && (Date.now()-ownerHeartbeatTs)>25000) maybeTakeOwnership(); }, 4000);
+}
+
 const QUEUE_KEY_PREFIX = "vms_retry_queue_";
 
 function getQueueKey() {
@@ -1967,11 +2166,35 @@ function loadRetryQueueSafe() {
 }
 
 function persistRetryQueueSafe() {
+    if(!isAuthoritativeOwner()) return;
+
+    const queueRaw = JSON.stringify(retryQueue.slice(-MAX_QUEUE));
+
     try {
-        localStorage.setItem(getQueueKey(), JSON.stringify(retryQueue.slice(-MAX_QUEUE)));
-    } catch (e) {
+        localStorage.setItem(getQueueKey(), queueRaw);
+        postSyncMessage("RETRY_QUEUE_UPDATED", { queue: retryQueue.slice(-MAX_QUEUE) });
+
+    } catch (storageErr) {
+
+        console.warn("RETRY_QUEUE_STORAGE_FAIL", {
+            module:"Storage Runtime",
+            reason:storageErr?.message || "quota_exceeded",
+            action:"fallback_session_storage"
+        });
+
         retryQueue = retryQueue.slice(-Math.max(5, Math.floor(MAX_QUEUE / 2)));
-        try { localStorage.setItem(getQueueKey(), JSON.stringify(retryQueue)); } catch {}
+
+        try{
+            sessionStorage.setItem(getQueueKey(), JSON.stringify(retryQueue));
+        }catch(sessionErr){
+
+            console.warn("RETRY_QUEUE_SESSION_FAIL", {
+                module:"Storage Runtime",
+                reason:sessionErr?.message || "session_storage_failed",
+                action:"queue_trimmed"
+            });
+
+        }
     }
 }
 
@@ -2152,6 +2375,7 @@ function normalizeSavePayload(input){
 window.normalizeSavePayload = normalizeSavePayload;
 
 async function requestPullFromCloud(reason="normal"){
+    if(!isAuthoritativeOwner()) { postSyncMessage("SYNC_START", { reason }); return; }
     if (pullPromise) { pendingPull = true; return pullPromise; }
     pullPromise = (async ()=>{
         try{
@@ -2187,8 +2411,8 @@ function acquireLock(name){
     if(ref && (now - Number(ref.createdAt || now)) < Number(ref.timeoutMs || LOCK_TIMEOUT_MS)) return false;
     if(ref){
         console.warn("LOCK_STARVATION_RECOVERY", { module:"Sync Runtime", reason:"lock_timeout", entityId:name, action:"force_release" });
-        if(__lastKnownGoodVisitors) window.visitors = __lastKnownGoodVisitors;
-        if(__lastKnownGoodLogs) markLogsReplaced(__lastKnownGoodLogs);
+        if(__lastKnownGoodVisitors) window.visitors = cloneSafe(__lastKnownGoodVisitors);
+        if(__lastKnownGoodLogs) markLogsReplaced(cloneSafe(__lastKnownGoodLogs));
     }
     const lock = { createdAt: now, timeoutMs: LOCK_TIMEOUT_MS };
     if(name === "pull") pullLock = lock; else if(name === "save") saveLock = lock; else mergeLock = lock;
@@ -2274,13 +2498,42 @@ function markLogsReplaced(nextLogs){
 }
 
 async function persistPendingSyncPayloadAtomic(payload){
+    if(!isAuthoritativeOwner()) { postSyncMessage("PENDING_PAYLOAD_UPDATED", { pending: payload }); return; }
     const FINAL_KEY = "vms_pending_sync_payload";
     const TMP_KEY = "__tmp_pending_sync";
     try{
         const raw = await encodePendingSyncPayload(payload);
         localStorage.setItem(TMP_KEY, raw);
-        localStorage.setItem(FINAL_KEY, raw);
-        localStorage.removeItem(TMP_KEY);
+        try{
+            localStorage.setItem(FINAL_KEY, raw);
+        }catch(storageErr){
+            console.warn("LOCALSTORAGE_QUOTA", {
+                module:"Storage Runtime",
+                reason:storageErr?.message || "quota_exceeded",
+                action:"fallback_session_storage"
+            });
+
+            try{
+                sessionStorage.setItem(FINAL_KEY, raw);
+            }catch(sessionErr){
+                console.warn("SESSIONSTORAGE_FAIL", {
+                    module:"Storage Runtime",
+                    reason:sessionErr?.message || "session_storage_failed",
+                    action:"discard_pending_payload"
+                });
+            }
+        }
+        try{
+            localStorage.removeItem(TMP_KEY);
+        }catch(storageCleanupErr){
+
+            console.warn("TMP_STORAGE_CLEANUP_FAIL", {
+                module:"Storage Runtime",
+                reason:storageCleanupErr?.message || "cleanup_failed",
+                action:"ignore_cleanup_failure"
+            });
+
+        }
     }catch(e){
         console.warn("PENDING_PAYLOAD_PERSIST_FAIL", { module:"Storage Runtime", reason:e?.message||"persist_failed", action:"pending_payload_commit" });
     }
@@ -2306,6 +2559,7 @@ function filterPendingPayloadAgainstCurrent(next){
 }
 
 async function pullFromCloud(){
+    if(!isAuthoritativeOwner()) return;
     const licenseKey = localStorage.getItem("vms_license_key");
     if(!licenseKey || !navigator.onLine) return;
     if(isPulling || isLockActive(pullLock) || isLockActive(mergeLock)) return;
@@ -2326,8 +2580,8 @@ async function pullFromCloud(){
             const baseLogs = Array.isArray(window.logs) ? window.logs : [];
             const nextVisitors = { ...baseVisitors };
             let nextLogs = baseLogs.slice();
-            __lastKnownGoodVisitors = baseVisitors;
-            __lastKnownGoodLogs = baseLogs;
+            __lastKnownGoodVisitors = cloneSafe(baseVisitors);
+            __lastKnownGoodLogs = cloneSafe(baseLogs);
 
             Object.entries(incomingVisitors).forEach(([k,v]) => {
                 if(!k || !v || typeof v !== "object") return;
@@ -2369,8 +2623,8 @@ async function pullFromCloud(){
             console.log("AUTHORITATIVE_COMMIT", { module:"Sync Runtime", visitors:Object.keys(nextVisitors).length, logs:nextLogs.length, action:"atomic_replace" });
         } catch (mergeErr) {
             console.warn("SYNC_COMMIT_ROLLBACK", { module:"Sync Runtime", reason:mergeErr?.message||"merge_failed", action:"rollback" });
-            if(__lastKnownGoodVisitors) window.visitors = __lastKnownGoodVisitors;
-            if(__lastKnownGoodLogs) markLogsReplaced(__lastKnownGoodLogs);
+            if(__lastKnownGoodVisitors) window.visitors = cloneSafe(__lastKnownGoodVisitors);
+            if(__lastKnownGoodLogs) markLogsReplaced(cloneSafe(__lastKnownGoodLogs));
         } finally {
             releaseLock("merge");
         }
@@ -2378,8 +2632,10 @@ async function pullFromCloud(){
         hardPruneMemory();
         if(window.renderDashboard) window.renderDashboard();
         if(window.renderLogTable) window.renderLogTable();
+        postSyncMessage("PULL_COMPLETED", { ts:lastPullTs });
     }catch(e){
         console.warn("pullFromCloud failed:", e.message);
+        postSyncMessage("SYNC_DONE", { ok:false, reason:e?.message||"pull_failed" });
     } finally {
         isPulling = false;
         releaseLock("pull");
@@ -2388,6 +2644,7 @@ async function pullFromCloud(){
 
 // ================== SAFE SYNC ==================
 async function saveToCloudSafe(payload){
+    if(!isAuthoritativeOwner()) { postSyncMessage("SYNC_START", { reason:"save_request" }); return; }
 
     if(
     !payload ||
@@ -2432,8 +2689,8 @@ async function saveToCloudSafe(payload){
         return;
     }
 
-    isSyncing = true;
     if(!acquireLock("save")) return;
+    isSyncing = true;
 
     try{
 const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
@@ -2451,6 +2708,7 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
             lastPayloadHash = hash + "::" + fingerprint;
             syncFailStreak = 0;
             setTimeout(() => { requestPullFromCloud("post-save"); }, 250);
+            postSyncMessage("SYNC_DONE", { ok:true });
             hardPruneMemory();
             if(pendingSyncPayload){
                 const next = filterPendingPayloadAgainstCurrent(pendingSyncPayload);
@@ -2564,12 +2822,14 @@ if(window.processScan){
 
 // ================== ONLINE ==================
 window.addEventListener("online", ()=>{
+    if(!isAuthoritativeOwner()) { maybeTakeOwnership(); return; }
     smartSync();
 });
 
 // ================== CLOSE APP ==================
 window.addEventListener("visibilitychange", async ()=>{
     if(document.visibilityState === "hidden"){
+        if(!isAuthoritativeOwner()) return;
         if(isBeaconSending) return;
         isBeaconSending = true;
 
@@ -2580,12 +2840,12 @@ window.addEventListener("visibilitychange", async ()=>{
                 const raw = JSON.stringify(payload);
                 if(raw.length >= 30000){
                     pendingSyncPayload = payload;
-                    await persistPendingSyncPayloadAtomic(payload);
+                    persistPendingSyncPayloadAtomic(payload).catch(()=>{});
                 } else {
                     const ok = navigator.sendBeacon(WORKER_BASE_URL + "/save", raw);
                     if(!ok){
                         pendingSyncPayload = payload;
-                        await persistPendingSyncPayloadAtomic(payload);
+                        persistPendingSyncPayloadAtomic(payload).catch(()=>{});
                     }
                 }
             }
@@ -2624,7 +2884,7 @@ window.addEventListener("load", async ()=>{
         const rawPending = localStorage.getItem("vms_pending_sync_payload");
         if(rawPending){
             const decoded = await decodePendingSyncPayload(rawPending);
-            if(decoded) pendingSyncPayload = decoded;
+            if(decoded) { pendingSyncPayload = decoded; persistPendingSyncPayloadAtomic(decoded).catch(()=>{}); }
             else localStorage.setItem("vms_pending_sync_payload_quarantine", rawPending);
         }
     }catch(e){}
@@ -2654,6 +2914,7 @@ window.addEventListener("load", async ()=>{
             if (["DELETED", "REJECTED", "BANNED"].includes(hbStatus)) {
                 const now = Date.now();
                 if(__invalidateState.status === hbStatus && (now - __invalidateState.ts) < 15000){
+                    postSyncMessage("INVALIDATE_DEVICE", { status: hbStatus });
                     enforceDeviceInvalidation("Perangkat dihapus/ditolak admin. Akses dikunci.");
                     return;
                 }
@@ -2662,7 +2923,30 @@ window.addEventListener("load", async ()=>{
         }catch(e){}
     }, 20000);
 });
-window.addEventListener("visibilitychange", ()=>{ if(!document.hidden) requestPullFromCloud("visible"); });
+window.addEventListener("visibilitychange", ()=>{
+
+    if(document.hidden) return;
+
+    const nowTs = Date.now();
+
+    ownerHeartbeatTs = nowTs;
+
+    if(isAuthoritativeOwner()){
+
+        OWNER_META.heartbeatTs = nowTs;
+
+        persistOwnerMeta();
+
+        postSyncMessage("HEARTBEAT", {
+            ownerId: OWNER_META.ownerId,
+            epoch: OWNER_META.epoch
+        });
+    }
+
+    maybeTakeOwnership(true);
+
+    requestPullFromCloud("visible");
+});
 
 console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 

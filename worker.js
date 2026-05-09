@@ -987,7 +987,19 @@ export default {
                         });
                     globalThis.__vms_metrics.malformedLogs += Math.max(0, body.logs.length - normalizedLogs.length);
                     const seen = new Set(allLogs.slice(0, 7000).map(l => l.sequenceId || `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}|${l.deviceId || ''}`));
-                    const logicalSeen = new Set(allLogs.slice(0, 7000).map(l => `${l.reg}|${l.action}|${String(l.time||'').slice(0,19)}|${l.site||''}`));
+                    const logicalSeen = new Set(
+    allLogs.slice(0, 7000).map(l => {
+
+        const canonicalTs = (
+            l?.time
+            ? new Date(l.time).toISOString().slice(0,19)
+            : ''
+        );
+
+        return `${l.reg}|${l.action}|${canonicalTs}|${l.site||''}`;
+
+    })
+);
                     const appendOnly = [];
                     const rejectedExpired = [];
                     for (const log of normalizedLogs) {
@@ -1007,7 +1019,13 @@ export default {
                             }
                         }
                         const k = log.sequenceId || `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}|${log.deviceId || body.deviceId || ''}`;
-                        const lk = `${log.reg}|${log.action}|${String(log.time||'').slice(0,19)}|${log.site||''}`;
+                        const canonicalLogTs = (
+    log?.time
+    ? new Date(log.time).toISOString().slice(0,19)
+    : ''
+);
+
+const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                         if (seen.has(k)) continue;
                         if (logicalSeen.has(lk)) continue;
                         seen.add(k);
@@ -1103,7 +1121,20 @@ export default {
                     .sort((a,b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
                     .map(l => ({ ...l, sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) }));
                 const dedupeMap = new Map();
-                logs.forEach(l => dedupeMap.set(l.sequenceId || `${l.reg}|${l.action}|${String(l.time||'').slice(0,19)}|${l.site||''}`, l));
+                logs.forEach(l => {
+
+    const canonicalTs = (
+        l?.time
+        ? new Date(l.time).toISOString().slice(0,19)
+        : ''
+    );
+
+    dedupeMap.set(
+        l.sequenceId || `${l.reg}|${l.action}|${canonicalTs}|${l.site||''}`,
+        l
+    );
+
+});
                 const dedupedLogs = Array.from(dedupeMap.values()).slice(-MAX_PULL_LOGS);
                 console.log("AUTHORITATIVE LOG SORT", { total: dedupedLogs.length });
                 console.log('PULL DEDUPE', { before: logs.length, after: dedupedLogs.length });
@@ -1428,7 +1459,6 @@ async function reconcileDeviceState(env) {
     }
     globalThis.__reconcileInFlight = true;
     try {
-    globalThis.__lastReconcile = nowTs;
     const now = Date.now();
     const stalePendingMs = 24 * 60 * 60 * 1000;
     const staleDeletedMs = 30 * 86400000;
@@ -1477,6 +1507,7 @@ async function reconcileDeviceState(env) {
     await saveData(env, 'invoices', invoices);
     console.log('DEVICE RECONCILE', { devices: devices.length, companies: companies.length, requests: requests.length, invoices: invoices.length });
     } finally {
+        globalThis.__lastReconcile = Date.now();
         globalThis.__reconcileInFlight = false;
     }
 }

@@ -258,9 +258,116 @@ localStorage.setItem("vms_device_id",
 // ============================================================
 let LICENSE_MODE = localStorage.getItem("vms_license") || "DEMO";
 let WORKER_FEATURES = JSON.parse(localStorage.getItem("vms_worker_features") || "null");
+let CURRENT_LICENSE = { mode: LICENSE_MODE, features: WORKER_FEATURES || {}, key: localStorage.getItem("vms_license_key") || "" };
+window.CURRENT_LICENSE = CURRENT_LICENSE;
 let currentUser = null;
 let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
 let lastScanTime = {};
+
+function safeParseJSON(raw, fallback = null){
+    if(!raw) return fallback;
+    try { return JSON.parse(raw); } catch(e) { return fallback; }
+}
+
+function normalizeLicenseMode(mode){
+    const clean = String(mode || "DEMO").toUpperCase();
+    return ["PRO", "BASIC", "DEMO"].includes(clean) ? clean : "DEMO";
+}
+
+function persistWorkerFeatures(features){
+    if(!features || typeof features !== "object") return;
+    WORKER_FEATURES = { ...(WORKER_FEATURES || {}), ...features };
+    CURRENT_LICENSE.features = WORKER_FEATURES;
+    try { localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); } catch(e){}
+    try { sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); } catch(storageErr){
+        console.warn("WORKER_FEATURE_SESSION_FAIL", {
+            module:"Storage Runtime",
+            reason:storageErr?.message || "session_storage_failed",
+            action:"ignore_feature_cache"
+        });
+    }
+}
+
+function syncRuntimeLicenseContext(next = {}){
+    const storedMode = next.mode || next.license || next.package || localStorage.getItem("vms_license") || sessionStorage.getItem("vms_license") || LICENSE_MODE;
+    LICENSE_MODE = normalizeLicenseMode(storedMode);
+    CURRENT_LICENSE.mode = LICENSE_MODE;
+    CURRENT_LICENSE.key = next.key || localStorage.getItem("vms_license_key") || sessionStorage.getItem("vms_license_key") || CURRENT_LICENSE.key || "";
+    try { localStorage.setItem("vms_license", LICENSE_MODE); } catch(e){}
+    try { sessionStorage.setItem("vms_license", LICENSE_MODE); } catch(e){}
+
+    const storedFeatures = next.features || safeParseJSON(localStorage.getItem("vms_worker_features"), null) || safeParseJSON(sessionStorage.getItem("vms_worker_features"), null);
+    if(storedFeatures) persistWorkerFeatures(storedFeatures);
+    window.CURRENT_LICENSE = CURRENT_LICENSE;
+    return CURRENT_LICENSE;
+}
+
+function getRuntimeFeatures(){
+    if(!WORKER_FEATURES){
+        const stored = safeParseJSON(localStorage.getItem("vms_worker_features"), null) || safeParseJSON(sessionStorage.getItem("vms_worker_features"), null);
+        if(stored) persistWorkerFeatures(stored);
+    }
+    return WORKER_FEATURES || CURRENT_LICENSE.features || {};
+}
+
+function canUseDynamicSites(){
+    const features = getRuntimeFeatures();
+
+    return (
+        features?.allowSiteRename === true &&
+        features?.staticSitesOnly !== true
+    );
+}
+
+function getDefaultSites(){ return ["SITE_A", "SITE_B", "SITE_C"]; }
+function getDynamicSites(){ return safeParseJSON(localStorage.getItem("vms_dynamic_sites"), []) || []; }
+
+function buildSiteLabel(site){
+    const icon = site === "SITE_A" ? "🏭" : (site === "SITE_B" ? "🏢" : (site === "SITE_C" ? "🏬" : "🌐"));
+    return `${icon} ${site.replace(/_/g, " ")}`;
+}
+
+function renderSiteSelectors(){
+    const dynamicEnabled = canUseDynamicSites();
+    const sites = [...new Set([...getDefaultSites(), ...getDynamicSites(), SITE_ID].filter(Boolean))];
+    document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel => {
+        if(!sel) return;
+        const previous = SITE_ID || sel.value || "SITE_A";
+        sel.innerHTML = "";
+        sites.forEach(site => {
+            const opt = document.createElement("option");
+            opt.value = site;
+            opt.text = buildSiteLabel(site);
+            sel.appendChild(opt);
+        });
+        if(dynamicEnabled){
+            const createOpt = document.createElement("option");
+            createOpt.value = "__CREATE_SITE__";
+            createOpt.text = "➕ Rename / Create site...";
+            sel.appendChild(createOpt);
+        }
+        sel.disabled = false;
+        sel.style.pointerEvents = "auto";
+        sel.title = dynamicEnabled ? "Site dinamis aktif dari license Worker" : "Static site mode";
+        sel.value = sites.includes(previous) ? previous : "SITE_A";
+    });
+}
+
+function handleSiteSelectorChange(e){
+    const selected = e?.target?.value;
+    if(selected === "__CREATE_SITE__"){
+        if(!canUseDynamicSites()){
+            toast("Rename/create site terkunci oleh license saat ini", "error");
+            renderSiteSelectors();
+            return;
+        }
+        const proposed = prompt("Masukkan nama site baru / rename site:", SITE_ID || "");
+        if(proposed && proposed.trim()) setSite(proposed);
+        else renderSiteSelectors();
+        return;
+    }
+    setSite(selected);
+}
 
 function restoreLicenseSession(){
     const savedLicenseKey = localStorage.getItem("vms_license_key") || sessionStorage.getItem("vms_license_key");
@@ -277,19 +384,10 @@ function restoreLicenseSession(){
     }
     if(savedFeatures){
         try{
-            WORKER_FEATURES = JSON.parse(savedFeatures);
-            localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
-            try{ 
-    sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); 
-}catch(storageErr){ 
-    console.warn("WORKER_FEATURE_SESSION_FAIL", { 
-        module:"Storage Runtime", 
-        reason:storageErr?.message || "session_storage_failed", 
-        action:"ignore_feature_cache" 
-    }); 
-}
+            persistWorkerFeatures(JSON.parse(savedFeatures));
         }catch(e){}
     }
+    syncRuntimeLicenseContext();
 }
 restoreLicenseSession();
 
@@ -416,9 +514,9 @@ function isCloudAllowed(){
     return !isDemo();
 }
 
-function isDemo(){ return LICENSE_MODE === "DEMO"; }
-function isBasic(){ return LICENSE_MODE === "BASIC"; }
-function isPro(){ return LICENSE_MODE === "PRO"; }
+function isDemo(){ syncRuntimeLicenseContext(); return LICENSE_MODE === "DEMO"; }
+function isBasic(){ syncRuntimeLicenseContext(); return LICENSE_MODE === "BASIC"; }
+function isPro(){ syncRuntimeLicenseContext(); return LICENSE_MODE === "PRO"; }
 
 async function hashKey(key){
     const enc = new TextEncoder().encode(key);
@@ -454,22 +552,9 @@ async function applyLicenseKey(key) {
         
         if (data && data.ok) {
             // License valid dari Worker
-            LICENSE_MODE = data.company?.package || "PRO";
-            WORKER_FEATURES = data.features || WORKER_FEATURES;
-            localStorage.setItem("vms_license", LICENSE_MODE);
+            syncRuntimeLicenseContext({ mode: data.company?.package || "PRO", features: data.features || WORKER_FEATURES, key });
             localStorage.setItem("vms_license_key", key);
-            sessionStorage.setItem("vms_license", LICENSE_MODE);
             sessionStorage.setItem("vms_license_key", key);
-            if (WORKER_FEATURES) localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
-            if (WORKER_FEATURES) try{ 
-    sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); 
-}catch(storageErr){ 
-    console.warn("WORKER_FEATURE_SESSION_FAIL", { 
-        module:"Storage Runtime", 
-        reason:storageErr?.message || "session_storage_failed", 
-        action:"ignore_feature_cache" 
-    }); 
-}
             
             // Simpan info company
             if (data.company) {
@@ -480,10 +565,11 @@ async function applyLicenseKey(key) {
             toast(`✅ License aktif: ${LICENSE_MODE}`, "success");
             applyLicenseUI();
             
-            // Reload dashboard biar limit berubah
+            // Refresh runtime langsung tanpa reload agar UI unlock mengikuti fitur Worker
+            await refreshLicenseFeaturesFromWorker();
+            renderSiteSelectors();
+            updateMonetizationUI();
             if (window.renderDashboard) window.renderDashboard();
-            if (window.updateMonetizationUI) window.updateMonetizationUI();
-            refreshLicenseFeaturesFromWorker();
         } else {
             toast(data?.message || "License tidak valid", "error");
         }
@@ -619,35 +705,31 @@ function setSite(site){
         .replace(/[^A-Z0-9_ ]/g, "")
         .replace(/\s+/g, "_");
 
-    SITE_ID = clean;
+    const previousSite = SITE_ID;
 
-    localStorage.setItem("vms_site", SITE_ID);
-
-    const defaultSites = ["SITE_A", "SITE_B", "SITE_C"];
+    const defaultSites = getDefaultSites();
     const isExistingDefault = defaultSites.includes(clean);
-    let dynamicSites = JSON.parse(localStorage.getItem("vms_dynamic_sites") || "[]");
-    const workerMaxDynamicSites = Number(WORKER_FEATURES?.maxDynamicSites || 0);
+    let dynamicSites = getDynamicSites();
+    const features = getRuntimeFeatures();
+    const workerMaxDynamicSites = Number(features?.maxDynamicSites || 0);
     if(!isExistingDefault){
+        if(!canUseDynamicSites()){
+            SITE_ID = previousSite;
+            toast("Rename/create site terkunci oleh license saat ini", "error");
+            renderSiteSelectors();
+            return;
+        }
         if(!dynamicSites.includes(clean)){
-            if(isBasic()){
-                if(dynamicSites.length >= 2){ toast("BASIC hanya max 2 dynamic site rename slot", "error"); return; }
-            } else if(!isPro()){
-                if(workerMaxDynamicSites > 0 && dynamicSites.length >= workerMaxDynamicSites){ toast("Limit dynamic site tercapai", "error"); return; }
-            }
+            if(workerMaxDynamicSites > 0 && dynamicSites.length >= workerMaxDynamicSites){ SITE_ID = previousSite; toast("Limit dynamic site tercapai", "error"); renderSiteSelectors(); return; }
             dynamicSites.push(clean);
             localStorage.setItem("vms_dynamic_sites", JSON.stringify(dynamicSites));
         }
     }
 
-    document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel=>{
-        if(![...sel.options].find(o=>o.value===clean)){
-            let opt = document.createElement("option");
-            opt.value = clean;
-            opt.text = clean;
-            sel.appendChild(opt);
-        }
-        sel.value = clean;
-    });
+    SITE_ID = clean;
+    localStorage.setItem("vms_site", SITE_ID);
+
+    renderSiteSelectors();
 
     toast(`Site aktif: ${SITE_ID}`, "success");
 
@@ -668,17 +750,14 @@ async function refreshLicenseFeaturesFromWorker(){
         if(!res.ok) return;
         const data = await res.json();
         if(data?.ok && data?.features){
-            WORKER_FEATURES = data.features;
-            localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
-            try{ 
-    sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); 
-}catch(storageErr){ 
-    console.warn("WORKER_FEATURE_SESSION_FAIL", { 
-        module:"Storage Runtime", 
-        reason:storageErr?.message || "session_storage_failed", 
-        action:"ignore_feature_cache" 
-    }); 
-}
+            syncRuntimeLicenseContext({
+                mode: data.company?.package || data.package || data.license || LICENSE_MODE,
+                features: data.features,
+                key: licenseKey
+            });
+            renderSiteSelectors();
+            if(window.renderDashboard) window.renderDashboard();
+            if(window.updateMonetizationUI) window.updateMonetizationUI();
         }
     }catch(e){}
 }
@@ -688,6 +767,7 @@ function lockLicense(){
 }
 
 function applyLicenseUI(){
+    syncRuntimeLicenseContext();
     const adminOnly = document.querySelectorAll(".admin-only");
     if(isPro()){
         adminOnly.forEach(el => el.style.display = "inline-flex");
@@ -697,6 +777,7 @@ function applyLicenseUI(){
     const badge = document.getElementById("licenseStatusBadge");
     if(badge) badge.innerText = LICENSE_MODE + " MODE";
     applyDemoLock();
+    renderSiteSelectors();
     if(window.updateMonetizationUI) window.updateMonetizationUI();
 }
 
@@ -799,6 +880,8 @@ function canScan() {
 }
 
 function updateMonetizationUI() {
+    syncRuntimeLicenseContext();
+    renderSiteSelectors();
     const progressCard = document.getElementById("monetizationProgressCard");
     if(!progressCard) return;
     
@@ -1806,29 +1889,17 @@ window.onunhandledrejection = function(e) {
         if(input) applyLicenseKey(input.value);
         input.value = "";
     };
-    document.getElementById('siteSelector').onchange = (e) => setSite(e.target.value);
-document.getElementById('siteSelectorTop').onchange = (e) => setSite(e.target.value);
+    document.getElementById('siteSelector').onchange = handleSiteSelectorChange;
+document.getElementById('siteSelectorTop').onchange = handleSiteSelectorChange;
 const cameraSelectorEl = document.getElementById('cameraSelector');
 if(cameraSelectorEl){
     cameraSelectorEl.addEventListener('change', (e) => localStorage.setItem(CAMERA_PREF_KEY, e.target.value));
     cameraSelectorEl.value = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
 }
 
+renderSiteSelectors();
 setSite(SITE_ID);
 refreshLicenseFeaturesFromWorker();
-try{
-    const dynamicSites = JSON.parse(localStorage.getItem("vms_dynamic_sites") || "[]");
-    dynamicSites.forEach(s => {
-        document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel=>{
-            if(![...sel.options].find(o=>o.value===s)){
-                let opt = document.createElement("option");
-                opt.value = s;
-                opt.text = s;
-                sel.appendChild(opt);
-            }
-        });
-    });
-}catch(e){}
 
 renderDashboard(); 
 renderLogTable();
@@ -1918,6 +1989,10 @@ window.buildQR = buildQR;
 window.parseQR = parseQR;
 window.generateQRImage = generateQRImage;
 window.updateMonetizationUI = updateMonetizationUI;
+window.activateLicense = applyLicenseKey;
+window.applyLicenseKey = applyLicenseKey;
+window.refreshLicenseFeaturesFromWorker = refreshLicenseFeaturesFromWorker;
+window.renderSiteSelectors = renderSiteSelectors;
 window.canRegister = canRegister;
 window.canScan = canScan;
 window.canRegisterSilent = canRegisterSilent;
@@ -2866,6 +2941,8 @@ function enforceDeviceInvalidation(reason){
     sessionStorage.removeItem("vms_license_key");
     sessionStorage.removeItem("vms_license");
     WORKER_FEATURES = null;
+    CURRENT_LICENSE = { mode: "DEMO", features: {}, key: "" };
+    window.CURRENT_LICENSE = CURRENT_LICENSE;
     localStorage.removeItem("vms_worker_features");
     sessionStorage.removeItem("vms_worker_features");
     toast(reason || "Perangkat dinonaktifkan oleh server", "error");

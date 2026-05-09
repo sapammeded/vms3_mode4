@@ -282,8 +282,8 @@ export default {
                     device.lastSeen = Date.now();
                     device.deviceName = deviceName || device.deviceName;
                     device.meta = meta || device.meta;
-                    if (device.status === 'PENDING_APPROVAL' && (Date.now() - Number(device.firstSeen || Date.now())) > 7 * 86400000) {
-                        device.status = 'REJECTED';
+                    if (device.status === 'PENDING_APPROVAL' && (Date.now() - Number(device.firstSeen || Date.now())) > 30 * 86400000) {
+                        device.status = 'SUSPENDED';
                     }
                     await saveData(env, 'devices', devices);
                 }
@@ -931,7 +931,7 @@ export default {
                         return new Response(JSON.stringify({ ok: true, dedup: true }), { headers: corsHeaders });
                     }
                     normalizedReplay.push({ id: replayId, ts: nowTs });
-                    await saveData(env, 'processed_replays', normalizedReplay.slice(-1500));
+                    await saveData(env, 'processed_replays', normalizedReplay.slice(-5000));
                 }
                 if (company.expiredAt < Date.now()) {
                     globalThis.__vms_metrics.saveFail++;
@@ -959,7 +959,7 @@ export default {
                         const incomingUpdated = Number(normalizedVisitor?.updatedAt || 0);
                         const prevVersion = Number(prev.version || 0);
                         const incomingVersion = Number(normalizedVisitor?.version || 0);
-                        const accepted = !(incomingUpdated < prevUpdated || incomingVersion < prevVersion);
+                        const accepted = incomingVersion > prevVersion || (incomingVersion === prevVersion && incomingUpdated >= prevUpdated);
                         console.log("VISITOR CONFLICT", { key, prevUpdated, incomingUpdated, prevVersion, incomingVersion, accepted });
                         if (!accepted) continue;
                         allVisitors[key] = { ...prev, ...normalizedVisitor, licenseKey, lastSync: Date.now() };
@@ -987,7 +987,19 @@ export default {
                         });
                     globalThis.__vms_metrics.malformedLogs += Math.max(0, body.logs.length - normalizedLogs.length);
                     const seen = new Set(allLogs.slice(0, 7000).map(l => l.sequenceId || `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}|${l.deviceId || ''}`));
-                    const logicalSeen = new Set(allLogs.slice(0, 7000).map(l => `${l.reg}|${l.action}|${String(l.time||'').slice(0,16)}|${l.site||''}`));
+                    const logicalSeen = new Set(
+    allLogs.slice(0, 7000).map(l => {
+
+        const canonicalTs = (
+            l?.time
+            ? new Date(l.time).toISOString().slice(0,19)
+            : ''
+        );
+
+        return `${l.reg}|${l.action}|${canonicalTs}|${l.site||''}`;
+
+    })
+);
                     const appendOnly = [];
                     const rejectedExpired = [];
                     for (const log of normalizedLogs) {
@@ -1007,7 +1019,13 @@ export default {
                             }
                         }
                         const k = log.sequenceId || `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}|${log.deviceId || body.deviceId || ''}`;
-                        const lk = `${log.reg}|${log.action}|${String(log.time||'').slice(0,16)}|${log.site||''}`;
+                        const canonicalLogTs = (
+    log?.time
+    ? new Date(log.time).toISOString().slice(0,19)
+    : ''
+);
+
+const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                         if (seen.has(k)) continue;
                         if (logicalSeen.has(lk)) continue;
                         seen.add(k);
@@ -1103,7 +1121,20 @@ export default {
                     .sort((a,b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
                     .map(l => ({ ...l, sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) }));
                 const dedupeMap = new Map();
-                logs.forEach(l => dedupeMap.set(l.sequenceId || `${l.reg}|${l.action}|${String(l.time||'').slice(0,16)}|${l.site||''}`, l));
+                logs.forEach(l => {
+
+    const canonicalTs = (
+        l?.time
+        ? new Date(l.time).toISOString().slice(0,19)
+        : ''
+    );
+
+    dedupeMap.set(
+        l.sequenceId || `${l.reg}|${l.action}|${canonicalTs}|${l.site||''}`,
+        l
+    );
+
+});
                 const dedupedLogs = Array.from(dedupeMap.values()).slice(-MAX_PULL_LOGS);
                 console.log("AUTHORITATIVE LOG SORT", { total: dedupedLogs.length });
                 console.log('PULL DEDUPE', { before: logs.length, after: dedupedLogs.length });
@@ -1420,10 +1451,14 @@ function generateGasReplayId(log) {
 
 async function reconcileDeviceState(env) {
     const nowTs = Date.now();
+    if(globalThis.__reconcileInFlight){
+        return;
+    }
     if(globalThis.__lastReconcile && (nowTs - globalThis.__lastReconcile) < 300000){
         return;
     }
-    globalThis.__lastReconcile = nowTs;
+    globalThis.__reconcileInFlight = true;
+    try {
     const now = Date.now();
     const stalePendingMs = 24 * 60 * 60 * 1000;
     const staleDeletedMs = 30 * 86400000;
@@ -1462,7 +1497,8 @@ async function reconcileDeviceState(env) {
         company.pendingDevices = companyDevices.filter(d => d.status === 'PENDING_APPROVAL').length;
         company.suspendedDevices = companyDevices.filter(d => d.status === 'SUSPENDED').length;
         company.deletedDevices = companyDevices.filter(d => d.status === 'DELETED').length;
-        company.currentDevices = company.activeDevices;
+        company.currentDevices = companyDevices.filter(d => d.status === 'ACTIVE').length;
+        company.onlineDevices = company.activeDevices;
     }
 
     await saveData(env, 'devices', devices);
@@ -1470,6 +1506,10 @@ async function reconcileDeviceState(env) {
     await saveData(env, 'device_requests', requests);
     await saveData(env, 'invoices', invoices);
     console.log('DEVICE RECONCILE', { devices: devices.length, companies: companies.length, requests: requests.length, invoices: invoices.length });
+    } finally {
+        globalThis.__lastReconcile = Date.now();
+        globalThis.__reconcileInFlight = false;
+    }
 }
 
 function normalizeGasQueueEntries(queue) {

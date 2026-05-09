@@ -642,7 +642,7 @@ function setSite(site){
 
 async function refreshLicenseFeaturesFromWorker(){
     const licenseKey = localStorage.getItem("vms_license_key");
-    if(!licenseKey) return;
+    if(!licenseKey || !WORKER_BASE_URL) return;
     try{
         const res = await fetch(WORKER_BASE_URL + "/license-context", {
             method: "POST",
@@ -654,6 +654,7 @@ async function refreshLicenseFeaturesFromWorker(){
         if(data?.ok && data?.features){
             WORKER_FEATURES = data.features;
             localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
+            sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES));
         }
     }catch(e){}
 }
@@ -1783,8 +1784,11 @@ window.onunhandledrejection = function(e) {
     };
     document.getElementById('siteSelector').onchange = (e) => setSite(e.target.value);
 document.getElementById('siteSelectorTop').onchange = (e) => setSite(e.target.value);
-document.getElementById('cameraSelector').onchange = (e) => localStorage.setItem(CAMERA_PREF_KEY, e.target.value);
-document.getElementById('cameraSelector').value = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
+const cameraSelectorEl = document.getElementById('cameraSelector');
+if(cameraSelectorEl){
+    cameraSelectorEl.addEventListener('change', (e) => localStorage.setItem(CAMERA_PREF_KEY, e.target.value));
+    cameraSelectorEl.value = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
+}
 
 setSite(SITE_ID);
 refreshLicenseFeaturesFromWorker();
@@ -1924,8 +1928,19 @@ let lastSaveTs = 0;
 let syncDebounceTimer = null;
 const MIN_SYNC_INTERVAL = 3000;
 let pendingSyncPayload = null;
-let syncLock = false;
+let pullPromise = null;
+let lastPullStartTs = 0;
+let pullLock = null;
+let saveLock = null;
+let mergeLock = null;
+let pendingPull = false;
+const LOCK_TIMEOUT_MS = 20000;
 let logsSortedDirty = true;
+let __logFingerprintCacheRef = null;
+let __logFingerprintCacheSize = 0;
+let __logFingerprintSet = null;
+let __lastKnownGoodVisitors = null;
+let __lastKnownGoodLogs = null;
 const CLIENT_EPOCH = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
 
 const MAX_QUEUE = 50;
@@ -2136,54 +2151,228 @@ function normalizeSavePayload(input){
 }
 window.normalizeSavePayload = normalizeSavePayload;
 
+async function requestPullFromCloud(reason="normal"){
+    if (pullPromise) { pendingPull = true; return pullPromise; }
+    pullPromise = (async ()=>{
+        try{
+            lastPullStartTs = Date.now();
+            await pullFromCloud();
+        } finally {
+            pullPromise = null;
+            if(pendingPull){ pendingPull = false; setTimeout(()=>requestPullFromCloud("queued"), 0); }
+        }
+    })();
+    return pullPromise;
+}
+
+
+
+
+
+
+function checksumSimple(str){
+    let h = 0;
+    for(let i=0;i<str.length;i++){ h = ((h<<5)-h) + str.charCodeAt(i); h |= 0; }
+    return String(h >>> 0);
+}
+
+async function sha256Hex(str){
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+function acquireLock(name){
+    const now = Date.now();
+    const ref = name === "pull" ? pullLock : (name === "save" ? saveLock : mergeLock);
+    if(ref && (now - Number(ref.createdAt || now)) < Number(ref.timeoutMs || LOCK_TIMEOUT_MS)) return false;
+    if(ref){
+        console.warn("LOCK_STARVATION_RECOVERY", { module:"Sync Runtime", reason:"lock_timeout", entityId:name, action:"force_release" });
+        if(__lastKnownGoodVisitors) window.visitors = __lastKnownGoodVisitors;
+        if(__lastKnownGoodLogs) markLogsReplaced(__lastKnownGoodLogs);
+    }
+    const lock = { createdAt: now, timeoutMs: LOCK_TIMEOUT_MS };
+    if(name === "pull") pullLock = lock; else if(name === "save") saveLock = lock; else mergeLock = lock;
+    return true;
+}
+function releaseLock(name){
+    if(name === "pull") pullLock = null; else if(name === "save") saveLock = null; else mergeLock = null;
+}
+function isLockActive(lock){
+    if(!lock) return false;
+    const now = Date.now();
+    return (now - Number(lock.createdAt || now)) < Number(lock.timeoutMs || LOCK_TIMEOUT_MS);
+}
+
+function validateEntityMetadata(entity, type){
+    if(!entity || typeof entity !== "object") return false;
+    const v = Number(entity.version);
+    const u = Number(entity.updatedAt);
+    if(type === "visitor") return Number.isFinite(v) && Number.isFinite(u);
+    if(type === "log"){
+        const pAt = Number(entity.persistedAt || 0);
+        return Number.isFinite(v) && Number.isFinite(u) && Number.isFinite(pAt) && typeof entity.sequenceId === "string" && entity.sequenceId.length > 0;
+    }
+    return false;
+}
+
+async function encodePendingSyncPayload(payload){
+    const payloadVersion = 1;
+    const raw = JSON.stringify(payload);
+    return JSON.stringify({ payloadVersion, checksum: await sha256Hex(raw), raw });
+}
+async function decodePendingSyncPayload(rawEnvelope){
+    const env = JSON.parse(rawEnvelope);
+    if(!env || Number(env.payloadVersion)!==1 || typeof env.raw !== "string") return null;
+    const expected = String(env.checksum||"");
+    const strong = await sha256Hex(env.raw);
+    if(strong !== expected && checksumSimple(env.raw) !== expected) return null;
+    return JSON.parse(env.raw);
+}
+
+function getLogEventKey(log){
+    if(!log || typeof log !== "object") return "";
+    if(!log.sequenceId) return "";
+    return String(log.sequenceId);
+}
+
+function validateSavePayload(payload){
+    if(!payload || typeof payload !== "object") return { ok:false, reason:"payload_not_object" };
+    if(!payload.licenseKey) return { ok:false, reason:"license_missing" };
+    if(payload.logs && !Array.isArray(payload.logs)) return { ok:false, reason:"logs_not_array" };
+    if(payload.visitors && (typeof payload.visitors !== "object" || Array.isArray(payload.visitors))) return { ok:false, reason:"visitors_not_object" };
+    const visitorCount = Object.keys(payload.visitors || {}).length;
+    const logCount = Array.isArray(payload.logs) ? payload.logs.length : 0;
+    if(visitorCount + logCount <= 0) return { ok:false, reason:"empty_payload" };
+    const malformedLog = (payload.logs || []).find(l => !l || typeof l !== "object" || !l.reg || !l.action || !validateEntityMetadata(l, "log"));
+    if(malformedLog) return { ok:false, reason:"malformed_log" };
+    if(payload.replayId && typeof payload.replayId !== "string") return { ok:false, reason:"corrupted_replay" };
+    const malformedVisitor = Object.values(payload.visitors || {}).find(v => !validateEntityMetadata(v, "visitor"));
+    if(malformedVisitor) return { ok:false, reason:"malformed_visitor_metadata" };
+    try{
+        const raw = JSON.stringify(payload);
+        if(raw.length > 2_000_000) return { ok:false, reason:"payload_too_large" };
+    }catch(_){ return { ok:false, reason:"payload_stringify_fail" }; }
+    return { ok:true };
+}
+
+function getCachedLogFingerprintSet(){
+    const logsRef = window.logs || [];
+    if (__logFingerprintSet && __logFingerprintCacheRef === logsRef && __logFingerprintCacheSize === logsRef.length) {
+        return __logFingerprintSet;
+    }
+    __logFingerprintCacheRef = logsRef;
+    __logFingerprintCacheSize = logsRef.length;
+    __logFingerprintSet = new Set(logsRef.map(getLogEventKey).filter(Boolean));
+    return __logFingerprintSet;
+}
+
+function markLogsReplaced(nextLogs){
+    window.logs = nextLogs;
+    __logFingerprintCacheRef = null;
+    __logFingerprintCacheSize = 0;
+    __logFingerprintSet = null;
+}
+
+async function persistPendingSyncPayloadAtomic(payload){
+    const FINAL_KEY = "vms_pending_sync_payload";
+    const TMP_KEY = "__tmp_pending_sync";
+    try{
+        const raw = await encodePendingSyncPayload(payload);
+        localStorage.setItem(TMP_KEY, raw);
+        localStorage.setItem(FINAL_KEY, raw);
+        localStorage.removeItem(TMP_KEY);
+    }catch(e){
+        console.warn("PENDING_PAYLOAD_PERSIST_FAIL", { module:"Storage Runtime", reason:e?.message||"persist_failed", action:"pending_payload_commit" });
+    }
+}
+
+function filterPendingPayloadAgainstCurrent(next){
+    if(!next || typeof next !== "object") return null;
+    const currentVisitors = window.visitors || {};
+    const currentLogs = window.logs || [];
+    const filteredVisitors = {};
+    Object.entries(next.visitors || {}).forEach(([k,v])=>{
+        if(!k || !v || typeof v !== "object") return;
+        const cur = currentVisitors[k] || null;
+        if(!cur || shouldAcceptIncoming(cur, v)) filteredVisitors[k] = v;
+    });
+    const logSeen = getCachedLogFingerprintSet();
+    const filteredLogs = (next.logs || []).filter(l=>{
+        const k = getLogEventKey(l);
+        return !!(l && l.reg && l.action && !logSeen.has(k));
+    });
+    if(!Object.keys(filteredVisitors).length && !filteredLogs.length) return null;
+    return { ...next, visitors: filteredVisitors, logs: filteredLogs };
+}
+
 async function pullFromCloud(){
     const licenseKey = localStorage.getItem("vms_license_key");
     if(!licenseKey || !navigator.onLine) return;
-    if(isPulling || syncLock) return;
+    if(isPulling || isLockActive(pullLock) || isLockActive(mergeLock)) return;
     try{
-        syncLock = true;
+        if(!acquireLock("pull")) return;
         isPulling = true;
         const res = await fetch(WORKER_BASE_URL + `/pull?licenseKey=${encodeURIComponent(licenseKey)}&since=${lastPullTs}&site=${encodeURIComponent(SITE_ID)}`);
         if(!res.ok) return;
         const data = await res.json();
         const serverTs = Number(data?.serverTs || 0);
-        if(serverTs > lastPullTs) lastPullTs = serverTs;
+        lastPullTs = Math.max(lastPullTs, serverTs);
         console.log("SYNC PULL", { since: lastPullTs, inLogs: (data?.logs || []).length });
         const incomingVisitors = data?.visitors || {};
         const incomingLogs = Array.isArray(data?.logs) ? data.logs : [];
-        Object.entries(incomingVisitors).forEach(([k,v]) => {
-            if(!k || !v || typeof v !== "object") return;
-            if(!(v.reg || k.includes("_"))) return;
-            const local = (window.visitors || {})[k];
-            if(shouldAcceptIncoming(local, v)){
-                window.visitors[k] = v;
-            }
-        });
-        if(incomingLogs.length){
-            const map = new Map((window.logs || []).map(l => [l.sequenceId || `${l.reg}|${l.action}|${l.time}|${l.site}`, l]));
-            incomingLogs.forEach(l => {
-                const key = l.sequenceId || `${l.reg}|${l.action}|${l.time}|${l.site}`;
-                const existing = map.get(key);
-                if(!existing){
-                    window.logs.push(l);
-                    map.set(key, l);
-                } else if(shouldAcceptIncoming(existing, l)) {
-                    const idx = window.logs.indexOf(existing);
-                    if(idx >= 0) window.logs[idx] = l;
-                    map.set(key, l);
+        if(!acquireLock("merge")) return;
+        try {
+            const baseVisitors = (window.visitors && typeof window.visitors === "object") ? window.visitors : {};
+            const baseLogs = Array.isArray(window.logs) ? window.logs : [];
+            const nextVisitors = { ...baseVisitors };
+            let nextLogs = baseLogs.slice();
+            __lastKnownGoodVisitors = baseVisitors;
+            __lastKnownGoodLogs = baseLogs;
+
+            Object.entries(incomingVisitors).forEach(([k,v]) => {
+                if(!k || !v || typeof v !== "object") return;
+                if(!(v.reg || k.includes("_"))) return;
+                const local = nextVisitors[k];
+                if(shouldAcceptIncoming(local, v)){
+                    nextVisitors[k] = { ...local, ...v };
+                } else {
+                    console.warn("VISITOR_MERGE_REJECT", { module:"Sync Runtime", reason:"incoming_older", entityId:k, localVersion:Number(local?.version||0), incomingVersion:Number(v?.version||0), persistedAt:Number(v?.persistedAt||0), action:"discard" });
                 }
             });
-            logsSortedDirty = true;
-            if(logsSortedDirty){
-                window.logs = (window.logs || []).sort((a,b)=>{
+
+            if(incomingLogs.length){
+                const map = new Map(nextLogs.map(l => [getLogEventKey(l), l]).filter(([k])=>!!k));
+                incomingLogs.forEach(l => {
+                    const key = getLogEventKey(l);
+                    if(!key){
+                        console.warn("LOG_MERGE_REJECT", { module:"Sync Runtime", reason:"missing_sequence_or_persistedAt", entityId:"", localVersion:0, incomingVersion:Number(l?.version||0), persistedAt:Number(l?.persistedAt||0), action:"discard" });
+                        return;
+                    }
+                    const existing = map.get(key);
+                    if(!existing){
+                        nextLogs.push(l);
+                        map.set(key, l);
+                    } else {
+                        console.warn("LOG_MERGE_REJECT", { module:"Sync Runtime", reason:"append_only_existing", entityId:key, localVersion:Number(existing?.version||0), incomingVersion:Number(l?.version||0), persistedAt:Number(l?.persistedAt||0), action:"discard" });
+                    }
+                });
+                nextLogs = nextLogs.sort((a,b)=>{
                     const diff = getLogSortTs(b)-getLogSortTs(a);
                     if(diff !== 0) return diff;
                     return String(b.sequenceId||"").localeCompare(String(a.sequenceId||""));
                 }).slice(0, 2000);
-                logsSortedDirty = false;
             }
-            console.log("ISO SORT FIX", { sorted: window.logs.length });
-            console.log("AUTHORITATIVE LOG SORT", { total: window.logs.length });
+
+            window.visitors = nextVisitors;
+            markLogsReplaced(nextLogs);
+            logsSortedDirty = false;
+            console.log("AUTHORITATIVE_COMMIT", { module:"Sync Runtime", visitors:Object.keys(nextVisitors).length, logs:nextLogs.length, action:"atomic_replace" });
+        } catch (mergeErr) {
+            console.warn("SYNC_COMMIT_ROLLBACK", { module:"Sync Runtime", reason:mergeErr?.message||"merge_failed", action:"rollback" });
+            if(__lastKnownGoodVisitors) window.visitors = __lastKnownGoodVisitors;
+            if(__lastKnownGoodLogs) markLogsReplaced(__lastKnownGoodLogs);
+        } finally {
+            releaseLock("merge");
         }
         console.log("PULL MERGED", { visitors: Object.keys(incomingVisitors).length, logs: incomingLogs.length, serverTs: lastPullTs });
         hardPruneMemory();
@@ -2193,7 +2382,7 @@ async function pullFromCloud(){
         console.warn("pullFromCloud failed:", e.message);
     } finally {
         isPulling = false;
-        syncLock = false;
+        releaseLock("pull");
     }
 }
 
@@ -2211,14 +2400,30 @@ async function saveToCloudSafe(payload){
 }
 
     if (!payload.licenseKey) return;
+
+    if(isSyncing || !navigator.onLine || isLockActive(saveLock) || isLockActive(mergeLock)) return;
+
+    const pullStale = !lastPullTs || (Date.now() - lastPullStartTs > 5000 && Date.now() - lastPullTs > 15000);
+    if (pullStale && !isPulling) {
+        await requestPullFromCloud("pre-save");
+        payload = filterPendingPayloadAgainstCurrent(payload) || payload;
+    }
+
+    payload = normalizeSavePayload(payload);
+    const validation = validateSavePayload(payload);
+    if(!validation.ok){
+        console.error("SAVE_VALIDATION_FAIL", { module:"Sync Runtime", reason:validation.reason, entityId:payload?.licenseKey||"", action:"abort_save" });
+        pendingSyncPayload = payload;
+        await persistPendingSyncPayloadAtomic(payload);
+        return;
+    }
+
     const hash = hashPayload(payload) + "_" + payload.licenseKey;
     const fingerprint = deterministicFingerprint(payload);
 
     if(hash === lastPayloadHash && lastSyncTime > 0){
         return;
     }
-
-    if(isSyncing || !navigator.onLine || syncLock) return;
     const nowTs = Date.now();
     const delta = nowTs - lastSaveTs;
     if(delta < MIN_SYNC_INTERVAL){
@@ -2228,12 +2433,11 @@ async function saveToCloudSafe(payload){
     }
 
     isSyncing = true;
-    syncLock = true;
+    if(!acquireLock("save")) return;
 
     try{
 const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
 payload.meta = meta;
-payload = normalizeSavePayload(payload);
 console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.keys(payload.visitors || {}).length });
         const res = await fetch(WORKER_BASE_URL + "/save",{
             method:"POST",
@@ -2246,12 +2450,12 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
             lastSaveTs = Date.now();
             lastPayloadHash = hash + "::" + fingerprint;
             syncFailStreak = 0;
-            setTimeout(() => { pullFromCloud(); }, 250);
+            setTimeout(() => { requestPullFromCloud("post-save"); }, 250);
             hardPruneMemory();
             if(pendingSyncPayload){
-                const next = pendingSyncPayload;
+                const next = filterPendingPayloadAgainstCurrent(pendingSyncPayload);
                 pendingSyncPayload = null;
-                setTimeout(()=>saveToCloudSafe(next), MIN_SYNC_INTERVAL);
+                if(next) setTimeout(()=>saveToCloudSafe(next), MIN_SYNC_INTERVAL);
             }
 
             if(retryQueue.length && retryQueue[0]?.payload?.ts === payload.ts){
@@ -2286,7 +2490,7 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
 
     } finally {
         isSyncing = false;
-        syncLock = false;
+        releaseLock("save");
     }
 }
 
@@ -2364,7 +2568,7 @@ window.addEventListener("online", ()=>{
 });
 
 // ================== CLOSE APP ==================
-window.addEventListener("visibilitychange", ()=>{
+window.addEventListener("visibilitychange", async ()=>{
     if(document.visibilityState === "hidden"){
         if(isBeaconSending) return;
         isBeaconSending = true;
@@ -2376,12 +2580,12 @@ window.addEventListener("visibilitychange", ()=>{
                 const raw = JSON.stringify(payload);
                 if(raw.length >= 30000){
                     pendingSyncPayload = payload;
-                    localStorage.setItem("vms_pending_sync_payload", JSON.stringify(payload));
+                    await persistPendingSyncPayloadAtomic(payload);
                 } else {
                     const ok = navigator.sendBeacon(WORKER_BASE_URL + "/save", raw);
                     if(!ok){
                         pendingSyncPayload = payload;
-                        localStorage.setItem("vms_pending_sync_payload", JSON.stringify(payload));
+                        await persistPendingSyncPayloadAtomic(payload);
                     }
                 }
             }
@@ -2394,7 +2598,21 @@ window.addEventListener("visibilitychange", ()=>{
 });
 
 // ================== INIT ==================
-window.addEventListener("load", ()=>{
+
+let __invalidateState = { status:"", ts:0 };
+function enforceDeviceInvalidation(reason){
+    localStorage.removeItem("vms_license_key");
+    localStorage.removeItem("vms_license");
+    sessionStorage.removeItem("vms_license_key");
+    sessionStorage.removeItem("vms_license");
+    WORKER_FEATURES = null;
+    localStorage.removeItem("vms_worker_features");
+    sessionStorage.removeItem("vms_worker_features");
+    toast(reason || "Perangkat dinonaktifkan oleh server", "error");
+    setTimeout(()=>window.location.reload(), 300);
+}
+
+window.addEventListener("load", async ()=>{
     if (navigator.storage && navigator.storage.estimate) {
         navigator.storage.estimate().then(est => {
             const used = Number(est.usage || 0), quota = Number(est.quota || 1);
@@ -2404,20 +2622,24 @@ window.addEventListener("load", ()=>{
     }
     try{
         const rawPending = localStorage.getItem("vms_pending_sync_payload");
-        if(rawPending) pendingSyncPayload = JSON.parse(rawPending);
+        if(rawPending){
+            const decoded = await decodePendingSyncPayload(rawPending);
+            if(decoded) pendingSyncPayload = decoded;
+            else localStorage.setItem("vms_pending_sync_payload_quarantine", rawPending);
+        }
     }catch(e){}
     retryQueue = loadRetryQueueSafe();
     smartSync();
-    pullFromCloud();
+    requestPullFromCloud("startup");
     (function schedulePull(){
         const delay = document.hidden ? 60000 : 7000;
-        setTimeout(async ()=>{ await pullFromCloud(); schedulePull(); }, delay);
+        setTimeout(async ()=>{ await requestPullFromCloud("scheduled"); schedulePull(); }, delay);
     })();
     setInterval(async ()=>{
         const licenseKey = localStorage.getItem("vms_license_key");
         if(!licenseKey || !navigator.onLine) return;
         try{
-            await fetch(WORKER_BASE_URL + "/device-heartbeat", {
+            const hb = await fetch(WORKER_BASE_URL + "/device-heartbeat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -2427,10 +2649,20 @@ window.addEventListener("load", ()=>{
                     meta: window.getDeviceMeta ? window.getDeviceMeta() : {}
                 })
             });
+            const hbData = await hb.json().catch(()=>null);
+            const hbStatus = hbData?.device?.status || "";
+            if (["DELETED", "REJECTED", "BANNED"].includes(hbStatus)) {
+                const now = Date.now();
+                if(__invalidateState.status === hbStatus && (now - __invalidateState.ts) < 15000){
+                    enforceDeviceInvalidation("Perangkat dihapus/ditolak admin. Akses dikunci.");
+                    return;
+                }
+                __invalidateState = { status: hbStatus, ts: now };
+            }
         }catch(e){}
     }, 20000);
 });
-window.addEventListener("visibilitychange", ()=>{ if(!document.hidden) pullFromCloud(); });
+window.addEventListener("visibilitychange", ()=>{ if(!document.hidden) requestPullFromCloud("visible"); });
 
 console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 

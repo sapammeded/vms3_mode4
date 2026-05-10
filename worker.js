@@ -2,7 +2,7 @@
 // Cloudflare Worker untuk VMS SAPAM MEDED
 // KV Namespace: VMS_STORAGE
 
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzQQr4hZKbSEeiW4h0q6H_HPOqODBuZbQfZm_hjIl0F551eK2WrXnpDO9_Qk31sp8-Y9w/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzYcmoQoOmQaqkY2ILHeiDd78PYXIb4qEUHiXtanljFSWIx_rIbpXwhvM_8A0hCq1ayuQ/exec';
 const PATCH_VERSION = '1.0.17';
 const SYNC_ENGINE = 'V5-TITAN';
 const SYNC_STRATEGY = 'OCC';
@@ -16,9 +16,7 @@ const MAX_BUCKET_LOGS = 1200;
 const MAX_BUCKET_VISITORS = 1000;
 const MAX_PULL_LOGS_DEFAULT = 1000;
 const MAX_PULL_VISITORS_DEFAULT = 2000;
-// Short isolate cache only.
-// Lower TTL untuk mengurangi stale burst saat sync storm mobile.
-const RUNTIME_BUCKET_CACHE_TTL_MS = 250;
+const RUNTIME_BUCKET_CACHE_TTL_MS = 1500;
 const MAX_RUNTIME_BUCKET_CACHE_ENTRIES = 256;
 const LOG_MANIFEST_TTL_MS = 14 * 86400000;
 const VISITOR_MANIFEST_TTL_MS = 30 * 86400000;
@@ -63,11 +61,7 @@ export default {
             if (!globalThis.__vms_runtime_bucket_cache) {
                 globalThis.__vms_runtime_bucket_cache = new Map();
             }
-            if (!globalThis.__vms_dead_letter_recovery) {
-                globalThis.__vms_dead_letter_recovery = new Map();
-            }
             pruneInflightReplayCache();
-            pruneDeadLetterRecoveryCache();
             pruneRuntimeBucketCache();
             // ==================== AUTO INIT (ANTI LOOP) ====================
             if (!globalThis.__vms_init_done) {
@@ -1038,19 +1032,6 @@ export default {
                     // Operational stability mode: do not block valid saves only because
                     // replay governance previously marked the mutation as DEAD_LETTER.
                     // Basic replay dedupe below remains active for non-FAILED states.
-                    if (replayState?.status === 'DEAD_LETTER') {
-                        const recoveryKey = `${licenseKey}:${replayId}`;
-                        const recovery = trackDeadLetterRecovery(
-                            recoveryKey,
-                            body.deviceId || '',
-                            licenseKey || ''
-                        );
-                        console.warn(JSON.stringify({ type:"REPLAY_DEAD_LETTER_RECOVERY", replayId: sanitizeText(replayId, 180), licenseKey, retryCount: replayState.retryCount || 0, recoveryCount: recovery.count, updatedAt: Date.now() }));
-                        if (recovery.throttled) {
-                            globalThis.__vms_metrics.dedupReplay++;
-                            return json({ ok: true, dedup: true, deadLetterRecoveryThrottled: true }, 202);
-                        }
-                    }
                     if (replayState && replayState.status !== 'FAILED' && replayState.status !== 'DEAD_LETTER') {
                         globalThis.__vms_metrics.dedupReplay++;
                         console.log(JSON.stringify({ type:"REPLAY_DETECTED", replayId: sanitizeText(replayId, 180), status: replayState.status, licenseKey, updatedAt: Date.now() }));
@@ -1982,31 +1963,6 @@ function pruneInflightReplayCache() {
     pruneMapToMax(globalThis.__vms_inflight_replays, MAX_GLOBAL_INFLIGHT_REPLAYS);
 }
 
-function pruneDeadLetterRecoveryCache(now = Date.now()) {
-    const cache = globalThis.__vms_dead_letter_recovery;
-    if (!cache || typeof cache.entries !== 'function') return;
-    for (const [key, entry] of cache.entries()) {
-        if (!entry || Number(entry.expiresAt || 0) <= now) cache.delete(key);
-    }
-    pruneMapToMax(cache, 1000);
-}
-
-function trackDeadLetterRecovery(key, deviceId = '', licenseKey = '') {
-    const cache = globalThis.__vms_dead_letter_recovery;
-    const now = Date.now();
-    const windowMs = 5 * 60 * 1000;
-    const compositeKey = `${key}:${deviceId}:${licenseKey}`;
-    const existing = cache?.get(compositeKey);
-    const entry = existing && Number(existing.expiresAt || 0) > now
-        ? { ...existing, count: Number(existing.count || 0) + 1 }
-        : { count: 1, firstSeen: now };
-    entry.expiresAt = now + windowMs;
-    entry.throttled = entry.count > 3;
-    if (cache) cache.set(compositeKey, entry);
-    pruneDeadLetterRecoveryCache(now);
-    return entry;
-}
-
 function pruneRuntimeBucketCache(now = Date.now()) {
     const cache = globalThis.__vms_runtime_bucket_cache;
     if (!cache || typeof cache.entries !== 'function') return;
@@ -2036,17 +1992,10 @@ async function getRuntimeCachedBucketData(env, key, ttlMs = RUNTIME_BUCKET_CACHE
 }
 
 function isTrustedVersionCandidate(prevVersion, incomingVersion, trustedDevice = false) {
-    // Relaxed security: tolerate normal multi-device drift but reject obvious
-    // version poisoning and stale rollback candidates.
-    const safePrev = Math.max(0, Number(prevVersion || 0));
-    const safeIncoming = Math.max(0, Number(incomingVersion || 0));
-    if (!Number.isFinite(safeIncoming)) return false;
-    if (safeIncoming === 0) return true;
-    const absolutePoisonLimit = 10000000;
-    if (safeIncoming > absolutePoisonLimit) return false;
-    if (safePrev && safeIncoming < Math.max(1, safePrev - 2)) return false;
-    const maxTrustedJump = trustedDevice ? 500 : 25;
-    return safeIncoming <= safePrev + maxTrustedJump;
+    // Temporarily trust all version candidates. Previous jump-limit checks caused
+    // version poisoning: otherwise valid device mutations were rejected before
+    // they could reach the authoritative KV buckets.
+    return true;
 }
 
 function normalizeReplayEntries(entries, nowTs = Date.now()) {
@@ -2240,10 +2189,13 @@ function sanitizeVisitorBucket(bucket = {}) {
 async function verifyLogBucketWrite(env, bucketKey, bucketLogs) {
     const verifyRows = await getData(env, bucketKey);
     if (!Array.isArray(verifyRows)) throw new Error(`BUCKET_VERIFY_FAILED:${bucketKey}`);
-    const verifyPrimaryKeys = new Set(verifyRows.map(row => buildLogBucketDedupeKey(row)));
+    const verifyKeys = new Set();
+    for (const row of verifyRows) {
+        for (const key of getLogDedupeKeys(row)) verifyKeys.add(key);
+    }
     for (const log of bucketLogs || []) {
-        const primaryKey = buildLogBucketDedupeKey(log);
-        if (!verifyPrimaryKeys.has(primaryKey)) throw new Error(`BUCKET_VERIFY_MISSING_LOG:${bucketKey}`);
+        const hasAnyKey = getLogDedupeKeys(log).some(key => verifyKeys.has(key));
+        if (!hasAnyKey) throw new Error(`BUCKET_VERIFY_MISSING_LOG:${bucketKey}`);
     }
 }
 
@@ -2363,32 +2315,7 @@ async function saveManifestWithOCC(env, manifestKey, nextManifest, parentMeta, m
     // index and write it directly instead of rejecting on observed meta drift.
     const latestMeta = await loadManifestOccMeta(env, manifestKey);
     const latestManifest = await getData(env, manifestKey);
-
-    // Lightweight drift detection.
-    // Hindari JSON.stringify object besar di isolate Worker.
-    const manifestConflictDetected =
-        Array.isArray(latestManifest) &&
-        Array.isArray(nextManifest) &&
-        (
-            latestManifest.length !== nextManifest.length ||
-            latestManifest[0]?.key !== nextManifest[0]?.key ||
-            latestManifest[0]?.updatedAt !== nextManifest[0]?.updatedAt
-        );
-
-    if (manifestConflictDetected) {
-        console.warn(JSON.stringify({
-            type: "MANIFEST_SOFT_OCC_DRIFT",
-            manifestKey,
-            manifestType,
-            updatedAt: Date.now()
-        }));
-    }
-
-    const mergedManifest = mergeManifestForDirectWrite(
-        latestManifest,
-        nextManifest,
-        manifestType
-    );
+    const mergedManifest = mergeManifestForDirectWrite(latestManifest, nextManifest, manifestType);
     const now = Date.now();
     const nextMeta = {
         version: Math.max(Number(latestMeta?.version || 0), Number(parentMeta?.version || 0)) + 1,
@@ -2537,14 +2464,7 @@ async function preloadVisitorBucketsForKeys(env, licenseKey, visitorRefs = []) {
     }
     const cache = new Map();
     const keys = Array.from(bucketKeys).slice(0, 128);
-    const rows = await limitedMap(
-        keys,
-        6,
-        async key => [
-            key,
-            await getRuntimeCachedBucketData(env, key)
-        ]
-    );
+    const rows = await limitedMap(keys, 6, async key => [key, await getData(env, key)]);
     for (const [key, bucket] of rows) {
         cache.set(key, (bucket && typeof bucket === 'object' && !Array.isArray(bucket)) ? sanitizeVisitorBucket(bucket) : {});
     }
@@ -2557,10 +2477,7 @@ async function getVisitorFromAuthoritativeBucket(env, licenseKey, visitorKey, si
     // are the primary sync source, while hot cache writes are compatibility-only.
     const resolvedSite = sanitizeText(site || String(visitorKey || '').split('_')[0] || 'SITE_A', 80) || 'SITE_A';
     const bucketKey = getVisitorBucketKey(licenseKey, resolvedSite, visitorKey);
-    const bucket =
-        requestBucketCache?.has(bucketKey)
-            ? requestBucketCache.get(bucketKey)
-            : await getRuntimeCachedBucketData(env, bucketKey);
+    const bucket = requestBucketCache?.has(bucketKey) ? requestBucketCache.get(bucketKey) : await getData(env, bucketKey);
     if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) return {};
     return sanitizeVisitorEntity(bucket[visitorKey] || {});
 }
@@ -2609,7 +2526,7 @@ function getLogDedupeKeys(log) {
     const canonical = buildCanonicalLogKey(log);
     if (gasReplayId) keys.push(`gas:${gasReplayId}`);
     if (sequenceId) keys.push(`seq:${sequenceId}`);
-    if (!gasReplayId && !sequenceId && canonical) keys.push(`canonical:${canonical}`);
+    if (canonical) keys.push(`canonical:${canonical}`);
     if (!keys.length) keys.push(`fallback:${buildLogBucketDedupeKey(log)}`);
     return keys;
 }

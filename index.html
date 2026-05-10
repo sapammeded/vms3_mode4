@@ -1361,19 +1361,26 @@ window.onunhandledrejection = function(e) {
             const cleanText = (value, fallback = "-") => String(value || fallback).replace(/\s+/g, " ").trim();
             const wrapFitText = (value, maxWidth, maxLines, maxFont, minFont = 4.8) => {
                 const text = cleanText(value);
+                const safeLines = (lines, clipped = false) => {
+                    lines = lines.slice(0, maxLines).map(line => {
+                        while(doc.getTextWidth(line) > maxWidth && line.length > 1) line = line.slice(0, -1);
+                        return line;
+                    });
+                    if(clipped && lines.length){
+                        let last = lines[lines.length - 1];
+                        while(doc.getTextWidth(last + "…") > maxWidth && last.length > 1) last = last.slice(0, -1);
+                        lines[lines.length - 1] = last + "…";
+                    }
+                    return lines;
+                };
                 for(let size = maxFont; size >= minFont; size -= 0.2){
                     doc.setFontSize(size);
                     const lines = doc.splitTextToSize(text, maxWidth);
-                    if(lines.length <= maxLines) return { lines, size };
+                    if(lines.length <= maxLines) return { lines: safeLines(lines), size };
                 }
                 doc.setFontSize(minFont);
-                const lines = doc.splitTextToSize(text, maxWidth).slice(0, maxLines);
-                if(lines.length){
-                    let last = lines[lines.length - 1];
-                    while(doc.getTextWidth(last + "…") > maxWidth && last.length > 1) last = last.slice(0, -1);
-                    lines[lines.length - 1] = last + "…";
-                }
-                return { lines, size: minFont };
+                const lines = doc.splitTextToSize(text, maxWidth);
+                return { lines: safeLines(lines, lines.length > maxLines), size: minFont };
             };
             const drawWrapped = (value, x, y, maxWidth, maxLines, maxFont, opts = {}) => {
                 const fit = wrapFitText(value, maxWidth, maxLines, maxFont, opts.minFont || 4.8);

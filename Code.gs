@@ -298,21 +298,9 @@ function toDateOrNull_(value) {
 }
 
 function buildAppendRow_(payload, logTime) {
-  const normalizedAction = String(payload.action || '')
-    .replace(/_/g, '-')
-    .toUpperCase();
-
-  const action = normalizedAction;
-
-  const checkin =
-    action === 'CHECK-IN'
-      ? logTime.toISOString()
-      : '';
-
-  const checkout =
-    action === 'CHECK-OUT'
-      ? logTime.toISOString()
-      : '';
+  const action = payload.action;
+  const checkin = action === 'CHECK-IN' ? logTime.toISOString() : '';
+  const checkout = action === 'CHECK-OUT' ? logTime.toISOString() : '';
 
   return [
     String(payload.nama || ''),

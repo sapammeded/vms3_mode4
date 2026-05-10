@@ -2259,7 +2259,7 @@ async function appendLogsToBuckets(env, licenseKey, logs) {
     if (!Array.isArray(logs) || logs.length === 0) return true;
     const grouped = new Map();
     for (const log of logs) {
-        const bucketKey = getLogBucketKey(licenseKey, Number(log.persistedAt || Date.now()), log.sequenceId || buildCanonicalLogKey(log));
+        const bucketKey = getLogBucketKey(licenseKey, Number(log.persistedAt || Date.now()), buildCanonicalLogKey(log));
         if (!grouped.has(bucketKey)) grouped.set(bucketKey, []);
         grouped.get(bucketKey).push(sanitizeLogEntity({ ...log, source: 'bucket_authoritative', bucketKey }));
     }
@@ -3056,7 +3056,7 @@ function buildCanonicalLogKey(log) {
     const reg = sanitizeText(log?.reg, 80);
     const action = sanitizeText(log?.action, 40);
     const site = sanitizeText(log?.site, 80);
-    const ts = Math.floor((Number(log?.persistedAt || 0) || Date.parse(log?.time || log?.logTime || 0) || 0) / 1000);
+    const ts = Math.floor((Date.parse(log?.time || log?.logTime || 0) || Number(log?.persistedAt || 0) || 0) / 1000);
     return `${reg}|${action}|${ts}|${site}`;
 }
 

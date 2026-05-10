@@ -343,6 +343,7 @@ export default {
             if (path === '/sheet-append' && request.method === 'POST') {
                 const body = await request.json();
                 const rows = Array.isArray(body.logs) ? body.logs : [];
+                console.log(JSON.stringify({ type:"SHEET_APPEND_ACTION_DEBUG", rows: rows.map(log => ({ reg: log?.reg || '', action: log?.action || '' })).slice(0, 10), updatedAt: Date.now() }));
                 const gasLogs = rows
                     .filter(log => log && log.reg && (log.action === 'CHECK_IN' || log.action === 'CHECK_OUT'))
                     .map(log => ({

@@ -263,6 +263,112 @@ window.CURRENT_LICENSE = CURRENT_LICENSE;
 let currentUser = null;
 let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
 let lastScanTime = {};
+const VMS_RUNTIME_VERSION = "1.0.13";
+
+function safeParseJSON(raw, fallback = null){
+    if(!raw) return fallback;
+    try { return JSON.parse(raw); } catch(e) { return fallback; }
+}
+
+function normalizeLicenseMode(mode){
+    const clean = String(mode || "DEMO").toUpperCase();
+    return ["PRO", "BASIC", "DEMO"].includes(clean) ? clean : "DEMO";
+}
+
+function persistWorkerFeatures(features){
+    if(!features || typeof features !== "object") return;
+    WORKER_FEATURES = { ...(WORKER_FEATURES || {}), ...features };
+    CURRENT_LICENSE.features = WORKER_FEATURES;
+    try { localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); } catch(e){}
+    try { sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); } catch(storageErr){
+        console.warn("WORKER_FEATURE_SESSION_FAIL", {
+            module:"Storage Runtime",
+            reason:storageErr?.message || "session_storage_failed",
+            action:"ignore_feature_cache"
+        });
+    }
+}
+
+function syncRuntimeLicenseContext(next = {}){
+    const storedMode = next.mode || next.license || next.package || localStorage.getItem("vms_license") || sessionStorage.getItem("vms_license") || LICENSE_MODE;
+    LICENSE_MODE = normalizeLicenseMode(storedMode);
+    CURRENT_LICENSE.mode = LICENSE_MODE;
+    CURRENT_LICENSE.key = next.key || localStorage.getItem("vms_license_key") || sessionStorage.getItem("vms_license_key") || CURRENT_LICENSE.key || "";
+    try { localStorage.setItem("vms_license", LICENSE_MODE); } catch(e){}
+    try { sessionStorage.setItem("vms_license", LICENSE_MODE); } catch(e){}
+
+    const storedFeatures = next.features || safeParseJSON(localStorage.getItem("vms_worker_features"), null) || safeParseJSON(sessionStorage.getItem("vms_worker_features"), null);
+    if(storedFeatures) persistWorkerFeatures(storedFeatures);
+    window.CURRENT_LICENSE = CURRENT_LICENSE;
+    return CURRENT_LICENSE;
+}
+
+function getRuntimeFeatures(){
+    if(!WORKER_FEATURES){
+        const stored = safeParseJSON(localStorage.getItem("vms_worker_features"), null) || safeParseJSON(sessionStorage.getItem("vms_worker_features"), null);
+        if(stored) persistWorkerFeatures(stored);
+    }
+    return WORKER_FEATURES || CURRENT_LICENSE.features || {};
+}
+
+function canUseDynamicSites(){
+    const features = getRuntimeFeatures();
+
+    return (
+        features?.allowSiteRename === true &&
+        features?.staticSitesOnly !== true
+    );
+}
+
+function getDefaultSites(){ return ["SITE_A", "SITE_B", "SITE_C"]; }
+function getDynamicSites(){ return safeParseJSON(localStorage.getItem("vms_dynamic_sites"), []) || []; }
+
+function buildSiteLabel(site){
+    const icon = site === "SITE_A" ? "🏭" : (site === "SITE_B" ? "🏢" : (site === "SITE_C" ? "🏬" : "🌐"));
+    return `${icon} ${site.replace(/_/g, " ")}`;
+}
+
+function renderSiteSelectors(){
+    const dynamicEnabled = canUseDynamicSites();
+    const sites = [...new Set([...getDefaultSites(), ...getDynamicSites(), SITE_ID].filter(Boolean))];
+    document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel => {
+        if(!sel) return;
+        const previous = SITE_ID || sel.value || "SITE_A";
+        sel.innerHTML = "";
+        sites.forEach(site => {
+            const opt = document.createElement("option");
+            opt.value = site;
+            opt.text = buildSiteLabel(site);
+            sel.appendChild(opt);
+        });
+        if(dynamicEnabled){
+            const createOpt = document.createElement("option");
+            createOpt.value = "__CREATE_SITE__";
+            createOpt.text = "➕ Rename / Create site...";
+            sel.appendChild(createOpt);
+        }
+        sel.disabled = false;
+        sel.style.pointerEvents = "auto";
+        sel.title = dynamicEnabled ? "Site dinamis aktif dari license Worker" : "Static site mode";
+        sel.value = sites.includes(previous) ? previous : "SITE_A";
+    });
+}
+
+function handleSiteSelectorChange(e){
+    const selected = e?.target?.value;
+    if(selected === "__CREATE_SITE__"){
+        if(!canUseDynamicSites()){
+            toast("Rename/create site terkunci oleh license saat ini", "error");
+            renderSiteSelectors();
+            return;
+        }
+        const proposed = prompt("Masukkan nama site baru / rename site:", SITE_ID || "");
+        if(proposed && proposed.trim()) setSite(proposed);
+        else renderSiteSelectors();
+        return;
+    }
+    setSite(selected);
+}
 
 function safeParseJSON(raw, fallback = null){
     if(!raw) return fallback;
@@ -1203,41 +1309,96 @@ window.onunhandledrejection = function(e) {
             const ready = await ensureJsPDFReady();
             if(!ready){ toast("PDF engine gagal dimuat. Coba refresh.", "error"); return false; }
             const { jsPDF } = window.jspdf;
-            const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
-            let headerColor = [31,78,74];
-            if(data.kategori === "VVIP") headerColor = [217,119,6];
-            else if(data.kategori === "VIP") headerColor = [100,116,139];
-            doc.setFillColor(...headerColor);
-            doc.rect(0,0,210,40,'F');
+            const doc = new jsPDF({
+                orientation: 'landscape',
+                unit: 'mm',
+                format: [86, 54]
+            });
+
+            const badgeW = 86;
+            const badgeH = 54;
+            let accentColor = [31,78,74];
+            if(data.kategori === "VVIP") accentColor = [217,119,6];
+            else if(data.kategori === "VIP") accentColor = [100,116,139];
+
+            const cleanText = (value, fallback = "-") => String(value || fallback).replace(/\s+/g, " ").trim();
+            const fitText = (value, max = 24) => {
+                const text = cleanText(value);
+                return text.length > max ? text.slice(0, max - 1) + "…" : text;
+            };
+
+            doc.setFillColor(248,250,252);
+            doc.rect(0, 0, badgeW, badgeH, 'F');
+            doc.setFillColor(...accentColor);
+            doc.roundedRect(0, 0, badgeW, 10, 2, 2, 'F');
             doc.setTextColor(255,255,255);
-            doc.setFontSize(22);
-            doc.text("INVITATION LETTER",105,20,{align:"center"});
-            doc.setFontSize(10);
-            doc.text("Corporate Access System",105,32,{align:"center"});
-            doc.setTextColor(0,0,0);
-            doc.setFontSize(12);
-            doc.setFont(undefined,'bold');
-            doc.text("VISITOR INFORMATION",20,60);
-            doc.setFontSize(10);
-            doc.setFont(undefined,'normal');
-            let y=75;
-            doc.text(`Name : ${data.nama||"-"}`,20,y); y+=8;
-            doc.text(`Company : ${data.perusahaan||"-"}`,20,y); y+=8;
-            doc.text(`Purpose : ${data.tujuan||"-"}`,20,y); y+=8;
-            doc.text(`PIC : ${data.pic||"-"}`,20,y); y+=8;
-            doc.text(`Dept : ${data.dept||"-"}`,20,y); y+=8;
-            doc.text(`Validity : ${data.startDate||"-"} → ${data.expDate||"-"}`,20,y);
-            if(data.foto && data.foto.startsWith('data')){ try{ doc.addImage(data.foto,'JPEG',20,y+10,30,30); }catch(e){} }
+            doc.setFont(undefined, 'bold');
+            doc.setFontSize(8);
+            doc.text("VISITOR BADGE", badgeW / 2, 6.5, { align:"center" });
+
+            doc.setDrawColor(...accentColor);
+            doc.setLineWidth(0.5);
+            doc.roundedRect(2, 2, badgeW - 4, badgeH - 4, 3, 3, 'S');
+
+            const photoX = 5;
+            const photoY = 14;
+            const photoSize = 22;
+            if(data.foto && data.foto.startsWith('data')){
+                try{
+                    doc.addImage(data.foto, 'JPEG', photoX, photoY, photoSize, photoSize);
+                }catch(e){
+                    try{ doc.addImage(data.foto, 'PNG', photoX, photoY, photoSize, photoSize); }catch(imgErr){}
+                }
+            } else {
+                doc.setFillColor(226,232,240);
+                doc.roundedRect(photoX, photoY, photoSize, photoSize, 2, 2, 'F');
+                doc.setTextColor(100,116,139);
+                doc.setFontSize(5.5);
+                doc.text("NO PHOTO", photoX + photoSize / 2, photoY + 12, { align:"center" });
+            }
+
+            let y = 17;
+            doc.setTextColor(15,23,42);
+            doc.setFont(undefined, 'bold');
+            doc.setFontSize(8.5);
+            doc.text(fitText(data.nama, 24).toUpperCase(), 31, y);
+            y += 5;
+            doc.setFont(undefined, 'normal');
+            doc.setFontSize(6.2);
+            doc.text(fitText(data.perusahaan, 28), 31, y);
+            y += 4;
+            doc.text(`Tujuan: ${fitText(data.tujuan, 18)}`, 31, y);
+            y += 4;
+            doc.text(`Site: ${fitText(SITE_ID, 16)}`, 31, y);
+            y += 4;
+            doc.setTextColor(...accentColor);
+            doc.setFont(undefined, 'bold');
+            doc.text(`Valid Until: ${fitText(data.expDate, 14)}`, 31, y);
+
             const qrPayload = await buildQR(reg, data);
             const qrBase64 = await generateQRImage(qrPayload);
-            if(qrBase64 && qrBase64.startsWith("data:image")){ try{ doc.addImage(qrBase64, 'PNG', 140, 70, 50, 50); }catch(e){ doc.setFontSize(9); doc.text("QR ERROR",150,90); } }
-            else{ doc.setFontSize(9); doc.text("QR FAILED",150,90); }
-            const success = forceDownloadPDF(doc, `INVITATION_${reg}.pdf`);
+            if(qrBase64 && qrBase64.startsWith("data:image")){
+                try{ doc.addImage(qrBase64, 'PNG', 62, 18, 19, 19); }
+                catch(e){ doc.setTextColor(239,68,68); doc.setFontSize(6); doc.text("QR ERROR", 71.5, 29, { align:"center" }); }
+            } else {
+                doc.setTextColor(239,68,68);
+                doc.setFontSize(6);
+                doc.text("QR FAILED", 71.5, 29, { align:"center" });
+            }
+
+            doc.setTextColor(71,85,105);
+            doc.setFont(undefined, 'normal');
+            doc.setFontSize(5.5);
+            doc.text(`REG ${reg}`, 71.5, 40, { align:"center" });
+            doc.text("Mobile Thermal Ready", badgeW / 2, 50, { align:"center" });
+
+            const success = forceDownloadPDF(doc, `BADGE_${reg}.pdf`);
             if(!success){ toast("Download gagal. Gunakan browser Chrome.", "error"); return false; }
-            toast(`PDF ${reg} berhasil didownload`, "success");
+            toast(`Badge ID ${reg} berhasil didownload`, "success");
             return true;
-        }catch(err){ console.error("PDF ERROR:", err); toast("Terjadi error saat generate PDF", "error"); return false; }
+        }catch(err){ console.error("BADGE PDF ERROR:", err); toast("Terjadi error saat generate Badge ID", "error"); return false; }
     }
+
 
     let previewData = null;
     let isDownloading = false;
@@ -1250,7 +1411,7 @@ window.onunhandledrejection = function(e) {
             const qrBase64 = await generateQRImage(qrPayload);
             modal.innerHTML = `
                 <div class="modal-card">
-                    <h3 style="margin-bottom:16px;">📄 Preview Invitation</h3>
+                    <h3 style="margin-bottom:16px;">🪪 Preview Visitor Badge</h3>
                     <div style="background:#f8fafc; padding:14px; border-radius:20px; margin-bottom:16px;">
                         <p><strong>Name</strong> : ${data.nama}</p>
                         <p><strong>Company</strong> : ${data.perusahaan}</p>
@@ -1261,7 +1422,7 @@ window.onunhandledrejection = function(e) {
                     </div>
                     ${qrBase64 ? `<img class="qr-preview" src="${qrBase64}">` : '<div style="color:red; text-align:center;">QR gagal dimuat</div>'}
                     <div class="flex-btns">
-                        <button id="confirmDownloadBtn">Download PDF</button>
+                        <button id="confirmDownloadBtn">Download Badge ID</button>
                         <button id="closePreviewBtn" class="btn-outline">Close</button>
                     </div>
                 </div>
@@ -2020,6 +2181,10 @@ let syncTimer = null;
 let lastSyncTime = 0;
 let lastPayloadHash = "";
 let isBeaconSending = false;
+window.VMS_SYNC_MUTEX = window.VMS_SYNC_MUTEX || { active:false, owner:null, startedAt:0 };
+function isMutexStale() {
+    return (window.VMS_SYNC_MUTEX?.active && (Date.now() - window.VMS_SYNC_MUTEX.startedAt > 15000));
+}
 let syncFailStreak = 0;
 let lastPullTs = 0;
 let isPulling = false;
@@ -2377,6 +2542,8 @@ function buildPayload(){
         deviceId: localStorage.getItem('vms_device_id') || 'unknown',
         site: localStorage.getItem('vms_site') || 'SITE_A',
         licenseKey,
+        version: VMS_RUNTIME_VERSION,
+        updatedAt: now,
         replayId: `${licenseKey}_${localStorage.getItem('vms_device_id') || 'unknown'}_${now}_${replayCounter}`,
         ts: now,
 
@@ -2386,6 +2553,8 @@ function buildPayload(){
             deviceId: localStorage.getItem("vms_device_id"),
             license: localStorage.getItem("vms_license"),
             licenseKey,
+            version: VMS_RUNTIME_VERSION,
+            updatedAt: now,
             site: localStorage.getItem("vms_site"),
             ts: now
         }
@@ -2433,7 +2602,9 @@ function normalizeSavePayload(input){
         sortTs: Number(l?.sortTs || 0) || Date.parse(l?.time || l?.logTime || 0) || Date.now(),
         sequenceId: l?.sequenceId || null,
         site: l?.site || localStorage.getItem("vms_site") || "SITE_A",
-        deviceId: l?.deviceId || localStorage.getItem("vms_device_id") || "unknown"
+        deviceId: l?.deviceId || localStorage.getItem("vms_device_id") || "unknown",
+        version: l?.version || VMS_RUNTIME_VERSION,
+        updatedAt: Number(l?.updatedAt || Date.now())
     })).filter(l => l.reg && l.action);
     console.log("PAYLOAD NORMALIZED", { visitors: Object.keys(normalizedVisitors).length, logs: normalizedLogs.length });
     return {
@@ -2444,6 +2615,8 @@ function normalizeSavePayload(input){
         license: p.license || localStorage.getItem("vms_license") || "DEMO",
         site: p.site || localStorage.getItem("vms_site") || "SITE_A",
         deviceId: p.deviceId || localStorage.getItem("vms_device_id") || "unknown",
+        version: p.version || VMS_RUNTIME_VERSION,
+        updatedAt: Number(p.updatedAt || Date.now()),
         ts: Number(p.ts || Date.now())
     };
 }
@@ -2764,7 +2937,19 @@ async function saveToCloudSafe(payload){
         return;
     }
 
-    if(!acquireLock("save")) return;
+    if (isMutexStale()) {
+        window.VMS_SYNC_MUTEX = { active:false, owner:null, startedAt:0 };
+    }
+    if(window.VMS_SYNC_MUTEX?.active) {
+        pendingSyncPayload = payload;
+        return;
+    }
+    window.VMS_SYNC_MUTEX = { active:true, owner:"saveToCloudSafe", startedAt:Date.now() };
+
+    if(!acquireLock("save")) {
+        window.VMS_SYNC_MUTEX = { active:false, owner:null, startedAt:0 };
+        return;
+    }
     isSyncing = true;
 
     try{
@@ -2823,6 +3008,7 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
 
     } finally {
         isSyncing = false;
+        window.VMS_SYNC_MUTEX = { active:false, owner:null, startedAt:0 };
         releaseLock("save");
     }
 }
@@ -2905,8 +3091,17 @@ window.addEventListener("online", ()=>{
 window.addEventListener("visibilitychange", async ()=>{
     if(document.visibilityState === "hidden"){
         if(!isAuthoritativeOwner()) return;
+        if (isMutexStale()) {
+            window.VMS_SYNC_MUTEX = { active:false, owner:null, startedAt:0 };
+        }
+        if(window.VMS_SYNC_MUTEX?.active) {
+            const pending = normalizeSavePayload(buildPayload());
+            if(pending.licenseKey) persistPendingSyncPayloadAtomic(pending).catch(()=>{});
+            return;
+        }
         if(isBeaconSending) return;
         isBeaconSending = true;
+        window.VMS_SYNC_MUTEX = { active:true, owner:"sendBeacon", startedAt:Date.now() };
 
         try{
             let payload = buildPayload();
@@ -2927,7 +3122,10 @@ window.addEventListener("visibilitychange", async ()=>{
         }catch(e){
             console.warn("Beacon error:", e);
         } finally {
-            setTimeout(()=> isBeaconSending=false, 1000);
+            setTimeout(()=> {
+                isBeaconSending=false;
+                if(window.VMS_SYNC_MUTEX?.owner === "sendBeacon") window.VMS_SYNC_MUTEX = { active:false, owner:null, startedAt:0 };
+            }, 1000);
         }
     }
 });

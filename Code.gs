@@ -5,6 +5,7 @@
 
 const SHEET_ID = '1ohvC84wtT4EP-rcrDbWZ1tKKMIWGjvxSu_JTTDIfvkA';
 const SHEET_NAME = 'Log';
+const GAS_VERSION = '1.0.13';
 
 const HEADERS = [
   'Nama',
@@ -28,19 +29,17 @@ const HEADERS = [
 
 /**
  * HTTP POST entrypoint.
- * Strict append-only gateway: every accepted event appends one new row.
+ * Compatibility gateway: supports legacy, append-only, and visitor-snapshot payloads.
  */
 function doPost(e) {
-  const lock = LockService.getScriptLock();
-
   try {
-    lock.waitLock(30000);
-
     const parsed = parseAndValidatePayload_(e);
     const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
     const sheet = ensureTargetSheetAndHeader_(spreadsheet);
 
-    validateExpiredVisitor_(parsed.basePayload);
+    if (parsed.validateExpiry !== false) {
+      validateExpiredVisitor_(parsed.basePayload);
+    }
 
     const now = new Date();
     const rows = parsed.logs.map(function (log) {
@@ -67,58 +66,111 @@ function doPost(e) {
     });
   } catch (err) {
     return handleError_(err);
-  } finally {
-    try {
-      lock.releaseLock();
-    } catch (_) {
-      // no-op
-    }
   }
 }
 
 function parseAndValidatePayload_(e) {
-  if (!e || !e.postData || !e.postData.contents) {
-    throw createHttpError_(400, 'Request body kosong atau tidak valid.');
-  }
+  const raw = e && e.postData && e.postData.contents ? e.postData.contents : '{}';
 
   let payload;
   try {
-    payload = JSON.parse(e.postData.contents);
+    payload = JSON.parse(raw || '{}');
   } catch (_) {
     throw createHttpError_(400, 'Body harus JSON valid.');
   }
 
-  const hasLogsArray = payload && Object.prototype.hasOwnProperty.call(payload, 'logs');
+  payload = clonePayload_(payload || {});
+  const mode = String(payload.mode || '').trim().toLowerCase();
 
-  if (hasLogsArray) {
-    if (!Array.isArray(payload.logs) || payload.logs.length === 0) {
-      throw createHttpError_(400, 'Field logs harus array dan tidak boleh kosong.');
-    }
-
-    const normalizedLogs = payload.logs.map(function (item) {
-      const log = normalizeWorkerLog_(item, payload);
-      validateRequiredFields_(log, ['nama', 'perusahaan', 'tujuan', 'pic', 'start', 'exp', 'reg', 'action', 'site']);
-      log.action = normalizeAction_(log.action);
-      log.status = log.status ? String(log.status) : log.action;
-      return log;
+  if (mode === 'visitor-snapshot') {
+    const visitors = payload.visitors && typeof payload.visitors === 'object' ? payload.visitors : {};
+    const visitorLogs = Object.keys(visitors).map(function (key) {
+      return normalizeVisitorSnapshot_(key, visitors[key], payload);
+    }).filter(function (log) {
+      return String(log.reg || '').trim() !== '';
     });
 
     return {
-      basePayload: normalizedLogs[0],
-      logs: normalizedLogs
+      basePayload: visitorLogs[0] || {},
+      logs: visitorLogs,
+      validateExpiry: false
     };
   }
 
-  const legacyPayload = payload || {};
-  validateRequiredFields_(legacyPayload, ['nama', 'perusahaan', 'tujuan', 'pic', 'start', 'exp', 'reg', 'action', 'site']);
+  if (mode === 'append-only' || Object.prototype.hasOwnProperty.call(payload, 'logs')) {
+    const sourceLogs = Array.isArray(payload.logs) ? payload.logs : [];
+    const normalizedLogs = sourceLogs.map(function (item) {
+      const log = normalizeWorkerLog_(item, payload);
+      log.action = normalizeAction_(log.action);
+      log.status = log.status ? String(log.status) : log.action;
+      return log;
+    }).filter(function (log) {
+      return String(log.reg || '').trim() !== '' && String(log.action || '').trim() !== '';
+    });
 
+    return {
+      basePayload: normalizedLogs[0] || {},
+      logs: normalizedLogs,
+      validateExpiry: normalizedLogs.length > 0
+    };
+  }
+
+  const legacyPayload = normalizeWorkerLog_(payload || {}, payload || {});
+  if (!String(legacyPayload.reg || '').trim() && !String(legacyPayload.action || '').trim()) {
+    return {
+      basePayload: {},
+      logs: [],
+      validateExpiry: false
+    };
+  }
   legacyPayload.action = normalizeAction_(legacyPayload.action);
   legacyPayload.status = legacyPayload.status ? String(legacyPayload.status) : legacyPayload.action;
 
   return {
     basePayload: legacyPayload,
-    logs: [legacyPayload]
+    logs: String(legacyPayload.reg || '').trim() ? [legacyPayload] : [],
+    validateExpiry: true
   };
+}
+
+function normalizeVisitorSnapshot_(key, visitor, envelope) {
+  const data = visitor || {};
+  const root = envelope || {};
+  const parts = String(key || '').split('_');
+  const siteFromKey = parts.length > 1 ? parts[0] : '';
+  const regFromKey = parts.length > 1 ? parts.slice(1).join('_') : key;
+
+  return {
+    nama: firstNonEmpty_(data.nama, data.name, root.nama, ''),
+    perusahaan: firstNonEmpty_(data.perusahaan, data.company, root.perusahaan, ''),
+    tujuan: firstNonEmpty_(data.tujuan, data.purpose, root.tujuan, ''),
+    pic: firstNonEmpty_(data.pic, root.pic, ''),
+    start: firstNonEmpty_(data.start, data.startDate, root.start, ''),
+    exp: firstNonEmpty_(data.exp, data.expDate, root.exp, ''),
+    reg: firstNonEmpty_(data.reg, regFromKey, root.reg, ''),
+    action: 'VISITOR-SNAPSHOT',
+    site: firstNonEmpty_(data.site, root.site, siteFromKey, ''),
+    logTime: new Date(Number(data.updatedAt || root.updatedAt || Date.now())).toISOString(),
+    status: firstNonEmpty_(data.currentStatus, data.status, 'VISITOR-SNAPSHOT'),
+    duration: '',
+    kategori: firstNonEmpty_(data.kategori, data.category, root.kategori, ''),
+    dept: firstNonEmpty_(data.dept, root.dept, ''),
+    keterangan: firstNonEmpty_(data.keterangan, data.note, root.keterangan, ''),
+    companyId: firstNonEmpty_(data.companyId, root.companyId, ''),
+    licenseKey: firstNonEmpty_(data.licenseKey, root.licenseKey, ''),
+    sequenceId: firstNonEmpty_(data.sequenceId, root.sequenceId, ''),
+    deviceId: firstNonEmpty_(data.deviceId, root.deviceId, ''),
+    persistedAt: firstNonEmpty_(data.persistedAt, data.updatedAt, root.updatedAt, '')
+  };
+}
+
+function clonePayload_(payload) {
+  try {
+    if (typeof structuredClone === 'function') {
+      return structuredClone(payload);
+    }
+  } catch (_) {}
+  return JSON.parse(JSON.stringify(payload || {}));
 }
 
 function normalizeWorkerLog_(logItem, envelope) {
@@ -172,9 +224,12 @@ function validateRequiredFields_(payload, required) {
 }
 
 function normalizeAction_(action) {
-  const normalized = String(action || '').trim().toUpperCase();
+  const normalized = String(action || '').trim().toUpperCase().replace(/_/g, '-');
+  if (normalized === 'VISITOR-SNAPSHOT') {
+    return normalized;
+  }
   if (normalized !== 'CHECK-IN' && normalized !== 'CHECK-OUT') {
-    throw createHttpError_(400, 'action harus CHECK-IN atau CHECK-OUT.');
+    throw createHttpError_(400, 'action harus CHECK-IN, CHECK-OUT, atau VISITOR-SNAPSHOT.');
   }
   return normalized;
 }
@@ -203,7 +258,6 @@ function ensureTargetSheetAndHeader_(spreadsheet) {
   });
 
   if (isHeaderDifferent) {
-    sheet.insertRowBefore(1);
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   }
 
@@ -211,9 +265,12 @@ function ensureTargetSheetAndHeader_(spreadsheet) {
 }
 
 function validateExpiredVisitor_(payload) {
+  if (!payload || !payload.exp) {
+    return;
+  }
   const expDate = toDateOrNull_(payload.exp);
   if (!expDate) {
-    throw createHttpError_(400, 'Field exp tidak dapat diparsing sebagai tanggal.');
+    return;
   }
 
   const now = new Date();
@@ -268,19 +325,30 @@ function buildAppendRow_(payload, logTime) {
 
 function appendRowsSafely_(sheet, rowsValues) {
   if (!rowsValues || rowsValues.length === 0) {
-    throw createHttpError_(400, 'Tidak ada data log untuk di-append.');
+    return { firstRow: 0, count: 0 };
   }
 
-  if (rowsValues.length === 1) {
-    const onlyRow = appendRowSafely_(sheet, rowsValues[0]);
-    return { firstRow: onlyRow, count: 1 };
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+
+    if (rowsValues.length === 1) {
+      const onlyRow = appendRowSafely_(sheet, rowsValues[0]);
+      return { firstRow: onlyRow, count: 1 };
+    }
+
+    const nextRow = Math.max(sheet.getLastRow() + 1, 2);
+    sheet.getRange(nextRow, 1, rowsValues.length, HEADERS.length).setValues(rowsValues);
+    SpreadsheetApp.flush();
+
+    return { firstRow: nextRow, count: rowsValues.length };
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (_) {
+      // no-op
+    }
   }
-
-  const nextRow = Math.max(sheet.getLastRow() + 1, 2);
-  sheet.getRange(nextRow, 1, rowsValues.length, HEADERS.length).setValues(rowsValues);
-  SpreadsheetApp.flush();
-
-  return { firstRow: nextRow, count: rowsValues.length };
 }
 
 function appendRowSafely_(sheet, rowValues) {
@@ -308,7 +376,15 @@ function handleError_(err) {
 }
 
 function jsonResponse_(status, payload) {
+  const result = {
+    ok: payload && Object.prototype.hasOwnProperty.call(payload, 'ok') ? payload.ok : status < 400,
+    status: status,
+    version: GAS_VERSION,
+    updatedAt: Date.now(),
+    data: payload || {}
+  };
+
   return ContentService
-    .createTextOutput(JSON.stringify({ status: status, data: payload }))
+    .createTextOutput(JSON.stringify(result))
     .setMimeType(ContentService.MimeType.JSON);
 }

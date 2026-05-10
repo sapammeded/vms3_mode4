@@ -3,6 +3,7 @@
 // KV Namespace: VMS_STORAGE
 
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzQQr4hZKbSEeiW4h0q6H_HPOqODBuZbQfZm_hjIl0F551eK2WrXnpDO9_Qk31sp8-Y9w/exec';
+const PATCH_VERSION = '1.0.13';
 
 // ==================== MAIN HANDLER ====================
 export default {
@@ -17,6 +18,11 @@ export default {
             'Access-Control-Allow-Headers': 'Content-Type, x-token, authorization, Authorization',
             'Content-Type': 'application/json'
         };
+        const json = (payload = {}, status = 200) => new Response(JSON.stringify({
+            ...payload,
+            version: PATCH_VERSION,
+            updatedAt: Date.now()
+        }), { headers: corsHeaders, status });
         
         // ==================== OPTIONS HANDLER (SAFE CORS) ====================
         if (request.method === 'OPTIONS') {
@@ -161,23 +167,23 @@ export default {
                 const { licenseKey, deviceId, deviceName, meta } = body;
                 
                 if (!licenseKey) {
-                    return new Response(JSON.stringify({ ok: false, message: 'License key required' }), { headers: corsHeaders });
+                    return json({ ok: false, message: 'License key required' });
                 }
                 
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.licenseKey === licenseKey);
                 
                 if (!company) {
-                    return new Response(JSON.stringify({ ok: false, message: 'Invalid license key' }), { headers: corsHeaders });
+                    return json({ ok: false, message: 'Invalid license key' });
                 }
                 
                 const isExpired = company.expiredAt < Date.now();
                 if (isExpired) {
-                    return new Response(JSON.stringify({ 
+                    return json({ 
                         ok: false, 
                         message: 'License expired',
                         company: { ...company, status: 'EXPIRED' }
-                    }), { headers: corsHeaders });
+                    });
                 }
                 
                 const devices = await getData(env, 'devices');
@@ -200,7 +206,7 @@ export default {
                         deviceName: deviceName || deviceId,
                         licenseKey: licenseKey,
                         companyId: company.id,
-                        companyName: company.companyName,
+                        companyName: sanitizeText(company.companyName, 120),
                         status: status,
                         firstSeen: Date.now(),
                         lastSeen: Date.now(),
@@ -217,7 +223,7 @@ export default {
                 await saveData(env, 'companies', companies);
                 
                 const featurePolicy = buildFeaturePolicy(company.package, company.maxDevices);
-                return new Response(JSON.stringify({
+                return json({
                     ok: true,
                     status: status,
                     company: {
@@ -230,27 +236,27 @@ export default {
                     },
                     device: device,
                     features: featurePolicy
-                }), { headers: corsHeaders });
+                });
             }
 
             if (path === '/license-context' && request.method === 'POST') {
                 const body = await request.json();
                 const { licenseKey } = body || {};
                 if (!licenseKey) {
-                    return new Response(JSON.stringify({ ok: false, message: 'License key required' }), { headers: corsHeaders });
+                    return json({ ok: false, message: 'License key required' });
                 }
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.licenseKey === licenseKey);
                 if (!company) {
-                    return new Response(JSON.stringify({ ok: false, message: 'Invalid license key' }), { headers: corsHeaders });
+                    return json({ ok: false, message: 'Invalid license key' });
                 }
                 const features = buildFeaturePolicy(company.package, company.maxDevices);
-                return new Response(JSON.stringify({
+                return json({
                     ok: true,
                     licenseKey,
                     package: company.package,
                     features
-                }), { headers: corsHeaders });
+                });
             }
             
             // ==================== CLIENT DEVICES SYNC ENDPOINT ====================
@@ -316,7 +322,7 @@ export default {
                     deviceName: device.deviceName,
                     licenseKey: licenseKey,
                     companyId: company.id,
-                    companyName: company.companyName,
+                    companyName: sanitizeText(company.companyName, 120),
                     action: normalizedAction,
                     location: location || null,
                     timestamp: Date.now(),
@@ -354,7 +360,7 @@ export default {
                     deviceName: device.deviceName,
                     licenseKey: licenseKey,
                     companyId: company.id,
-                    companyName: company.companyName,
+                    companyName: sanitizeText(company.companyName, 120),
                     violationType: violationType,
                     details: details,
                     location: location,
@@ -414,7 +420,7 @@ export default {
                     id: generateId(),
                     licenseKey: licenseKey,
                     companyId: company.id,
-                    companyName: company.companyName,
+                    companyName: sanitizeText(company.companyName, 120),
                     deviceName: deviceName,
                     reason: reason,
                     fee: fee,
@@ -655,7 +661,7 @@ export default {
                 const invoice = {
                     id: generateId(),
                     companyId: company.id,
-                    companyName: company.companyName,
+                    companyName: sanitizeText(company.companyName, 120),
                     type: 'RENEWAL',
                     amount: amount,
                     months: months,
@@ -748,7 +754,12 @@ export default {
                 await saveData(env, 'devices', devices);
                 await reconcileDeviceState(env);
                 
-                return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+                return json({
+                    ok: true,
+                    device: devices[index],
+                    deletedDeviceId: deviceId,
+                    action: 'DELETE_DEVICE'
+                });
             }
             
             // ==================== DELETE COMPANY MODULE ====================
@@ -827,7 +838,7 @@ export default {
                                 deviceName: request.deviceName,
                                 licenseKey: request.licenseKey,
                                 companyId: company.id,
-                                companyName: company.companyName,
+                                companyName: sanitizeText(company.companyName, 120),
                                 status: 'ACTIVE',
                                 firstSeen: Date.now(),
                                 lastSeen: Date.now(),
@@ -908,19 +919,66 @@ export default {
             
             // ==================== SYNC MODULE (FIELD DEVICE) ====================
             if (path === '/save' && request.method === 'POST') {
+                const rawBody = await request.text();
+
                 let body = {};
-                try { body = await request.json(); } catch { body = {}; }
-                const licenseKey = body.licenseKey;
+
+                try{
+                    body = rawBody ? JSON.parse(rawBody) : {};
+                }catch(parseErr){
+                    globalThis.__vms_metrics.saveFail++;
+                    console.log(JSON.stringify({ type:"INVALID_PAYLOAD", endpoint:"/save", reason:"invalid_json", updatedAt: Date.now() }));
+                    return json({
+                        ok:false,
+                        error:"INVALID_JSON",
+                        message:"Payload JSON tidak valid"
+                    },400);
+                }
+
+                const visitors = (
+                    body &&
+                    typeof body.visitors === "object" &&
+                    body.visitors !== null
+                )
+                ? clonePayloadSafe(body.visitors)
+                : {};
+
+                const logs = Array.isArray(body.logs)
+                ? clonePayloadSafe(body.logs)
+                : [];
+
+                const meta = (
+                    body &&
+                    typeof body.meta === "object" &&
+                    body.meta !== null
+                )
+                ? clonePayloadSafe(body.meta)
+                : {};
+
+                const anti = (
+                    body &&
+                    typeof body.anti === "object" &&
+                    body.anti !== null
+                )
+                ? clonePayloadSafe(body.anti)
+                : {};
+
+                const licenseKey = body.licenseKey || body.license_key || meta.licenseKey || anti.licenseKey || url.searchParams.get('licenseKey') || "";
+                body.replayId = sanitizeText(body.replayId, 180);
+                body.deviceId = sanitizeText(body.deviceId || meta.deviceId || anti.deviceId, 120);
+                body.site = sanitizeText(body.site || meta.site || anti.site || 'SITE_A', 80);
                 if (!licenseKey) {
                     globalThis.__vms_metrics.saveFail++;
-                    return new Response(JSON.stringify({ ok: false, message: 'licenseKey required' }), { headers: corsHeaders, status: 400 });
+                    console.log(JSON.stringify({ type:"INVALID_PAYLOAD", endpoint:"/save", reason:"licenseKey_required", hasMeta: !!Object.keys(meta).length, hasAnti: !!Object.keys(anti).length, updatedAt: Date.now() }));
+                    return json({ ok: false, accepted: false, warning: 'licenseKey required', saved: { visitors: 0, logs: 0, anti: false, meta: !!Object.keys(meta).length } }, 202);
                 }
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.licenseKey === licenseKey);
                 if (!company) {
                     globalThis.__vms_metrics.saveFail++;
-                    return new Response(JSON.stringify({ ok: false, message: 'Invalid licenseKey' }), { headers: corsHeaders, status: 403 });
+                    return json({ ok: false, message: 'Invalid licenseKey' }, 403);
                 }
+                console.log(JSON.stringify({ type:"SYNC_SAVE", licenseKey, deviceId: body.deviceId || meta.deviceId || anti.deviceId || null, visitors: Object.keys(visitors || {}).length, logs: Array.isArray(logs) ? logs.length : 0, hasAnti: !!Object.keys(anti).length, updatedAt: Date.now() }));
                 const replayId = body.replayId || null;
                 if (replayId) {
                     const replayKeys = await getData(env, 'processed_replays');
@@ -928,19 +986,21 @@ export default {
                     const normalizedReplay = (replayKeys || []).map(x => typeof x === "string" ? { id:x, ts:nowTs } : x).filter(x => (nowTs - Number(x.ts || nowTs)) < 3 * 86400000);
                     if (normalizedReplay.some(x => x.id === replayId)) {
                         globalThis.__vms_metrics.dedupReplay++;
-                        return new Response(JSON.stringify({ ok: true, dedup: true }), { headers: corsHeaders });
+                        console.log(JSON.stringify({ type:"REPLAY_DETECTED", replayId: sanitizeText(replayId, 180), licenseKey, updatedAt: Date.now() }));
+                        return json({ ok: true, dedup: true });
                     }
                     normalizedReplay.push({ id: replayId, ts: nowTs });
                     await saveData(env, 'processed_replays', normalizedReplay.slice(-5000));
                 }
                 if (company.expiredAt < Date.now()) {
                     globalThis.__vms_metrics.saveFail++;
-                    return new Response(JSON.stringify({ ok: false, message: 'License expired' }), { headers: corsHeaders, status: 403 });
+                    return json({ ok: false, message: 'License expired' }, 403);
                 }
                 
-                if (body.visitors && Object.keys(body.visitors).length > 0) {
+                const acceptedVisitors = {};
+                if (visitors && Object.keys(visitors).length > 0) {
                     let allVisitors = await getData(env, 'visitors');
-                    for (const [key, value] of Object.entries(body.visitors)) {
+                    for (const [key, value] of Object.entries(visitors)) {
                         if (!value || typeof value !== 'object') continue;
                         const normalizedVisitor = {
                             ...value,
@@ -963,14 +1023,15 @@ export default {
                         console.log("VISITOR CONFLICT", { key, prevUpdated, incomingUpdated, prevVersion, incomingVersion, accepted });
                         if (!accepted) continue;
                         allVisitors[key] = { ...prev, ...normalizedVisitor, licenseKey, lastSync: Date.now() };
+                        acceptedVisitors[key] = { ...allVisitors[key] };
                     }
                     await saveData(env, 'visitors', allVisitors);
                 }
                 
-                if (body.logs && body.logs.length > 0) {
+                if (Array.isArray(logs) && logs.length > 0) {
                     let allLogs = await getData(env, 'logs');
                     const allVisitors = await getData(env, 'visitors');
-                    const normalizedLogs = body.logs
+                    const normalizedLogs = logs
                         .filter(l => l && l.reg && l.action && (l.time || l.logTime))
                         .map(l => {
                             const logTime = l.time || l.logTime;
@@ -982,33 +1043,24 @@ export default {
                                 sequenceId: l.sequenceId || null,
                                 licenseKey,
                                 companyId: company.id,
-                                companyName: company.companyName
+                                companyName: sanitizeText(company.companyName, 120)
                             };
                         });
-                    globalThis.__vms_metrics.malformedLogs += Math.max(0, body.logs.length - normalizedLogs.length);
+                    globalThis.__vms_metrics.malformedLogs += Math.max(0, logs.length - normalizedLogs.length);
                     const seen = new Set(allLogs.slice(0, 7000).map(l => l.sequenceId || `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}|${l.deviceId || ''}`));
-                    const logicalSeen = new Set(
-    allLogs.slice(0, 7000).map(l => {
-
-        const canonicalTs = (
-            l?.time
-            ? new Date(l.time).toISOString().slice(0,19)
-            : ''
-        );
-
-        return `${l.reg}|${l.action}|${canonicalTs}|${l.site||''}`;
-
-    })
-);
+                    const logicalSeen = new Set(allLogs.slice(0, 7000).map(l => buildCanonicalLogKey(l)));
                     const appendOnly = [];
                     const rejectedExpired = [];
                     for (const log of normalizedLogs) {
                         const site = log.site || body.site || 'SITE_A';
                         const visitorKey = `${site}_${log.reg}`;
                         const visitor = allVisitors[visitorKey];
-                        if (visitor && visitor.expDate) {
-                            const exp = new Date(visitor.expDate + 'T23:59:59').getTime();
+                        const expValue = visitor?.exp || visitor?.expDate;
+                        if (expValue) {
+                            const expText = String(expValue);
+                            const exp = new Date(expText.length <= 10 ? expText + 'T23:59:59' : expText).getTime();
                             if (Number.isFinite(exp) && Date.now() > exp) {
+                                console.log(JSON.stringify({ type:"EXPIRED_VISITOR_REJECT", licenseKey, reg: log.reg, action: log.action, site, expValue, updatedAt: Date.now() }));
                                 rejectedExpired.push({
                                     reg: log.reg,
                                     action: log.action,
@@ -1019,13 +1071,7 @@ export default {
                             }
                         }
                         const k = log.sequenceId || `${log.licenseKey}|${log.reg}|${log.action}|${log.time}|${log.site || ''}|${log.deviceId || body.deviceId || ''}`;
-                        const canonicalLogTs = (
-    log?.time
-    ? new Date(log.time).toISOString().slice(0,19)
-    : ''
-);
-
-const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
+                        const lk = buildCanonicalLogKey(log);
                         if (seen.has(k)) continue;
                         if (logicalSeen.has(lk)) continue;
                         seen.add(k);
@@ -1034,25 +1080,33 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                         const sequenceId = log.sequenceId || generateSequenceId(licenseKey, persistedAt);
                         appendOnly.push({ ...log, persistedAt, sequenceId });
                     }
-                    allLogs = [...allLogs, ...appendOnly];
-                    await saveData(env, 'logs', allLogs.slice(-10000));
+                    // Avoid array cloning for high-frequency logging
+                    for (const item of appendOnly) {
+                        allLogs.push(item);
+                    }
+                    if (allLogs.length > 10000) {
+                        allLogs = allLogs.slice(-10000);
+                    }
+                    await saveData(env, 'logs', allLogs);
                     if (appendOnly.length) {
                         const gasLogs = appendOnly.map(log => ({
                             ...log,
                             licenseKey,
                             companyId: company.id,
-                            companyName: company.companyName,
-                            site: log.site || body.site || 'SITE_A',
-                            deviceId: log.deviceId || body.deviceId || null,
+                            companyName: sanitizeText(company.companyName, 120),
+                            site: sanitizeText(log.site || body.site || 'SITE_A', 80),
+                            deviceId: sanitizeText(log.deviceId || body.deviceId || '', 120) || null,
                             persistedAt: log.persistedAt,
                             sequenceId: log.sequenceId,
                             gasReplayId: generateGasReplayId(log)
                         }));
-                        const gasOk = await pushLogsToGoogleScript(gasLogs);
+                        const gasOk = await appendLogsToSheet(gasLogs);
                         if (!gasOk) {
                             const pendingQueue = await getData(env, 'pending_gas_queue');
                             const mergedQueue = mergeGasQueueUnique(pendingQueue, gasLogs);
-                            await saveData(env, 'pending_gas_queue', mergedQueue.slice(-20000));
+                            const queueLimit = getPendingQueueLimit(company.package);
+                            if (mergedQueue.length > queueLimit) console.log(JSON.stringify({ type:"QUEUE_OVERFLOW", queue:"pending_gas_queue", package: company.package, before: mergedQueue.length, limit: queueLimit, updatedAt: Date.now() }));
+                            await saveData(env, 'pending_gas_queue', mergedQueue.slice(-queueLimit));
                         }
                     }
                     if (rejectedExpired.length) {
@@ -1062,21 +1116,25 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                                 type: "EXPIRED_VISITOR_BLOCKED",
                                 ...rejected,
                                 licenseKey,
-                                deviceId: body.deviceId,
+                                deviceId: sanitizeText(body.deviceId, 120),
                                 timestamp: Date.now()
                             });
                         }
                         await saveData(env, 'anti_nakal_reports', reports.slice(0, 5000));
                     }
                 }
+
+                if(visitors && Object.keys(acceptedVisitors).length > 0){
+                    await appendVisitorsToSheet(env, licenseKey, acceptedVisitors);
+                }
                 
-                if (body.anti) {
+                if (anti && Object.keys(anti).length > 0) {
                     let reports = await getData(env, 'anti_nakal_reports');
                     reports.unshift({
-                        ...body.anti,
+                        ...anti,
                         licenseKey,
-                        deviceId: body.deviceId,
-                        site: body.site,
+                        deviceId: sanitizeText(body.deviceId, 120),
+                        site: sanitizeText(body.site, 80),
                         timestamp: Date.now()
                     });
                     await saveData(env, 'anti_nakal_reports', reports.slice(0, 5000));
@@ -1084,7 +1142,7 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                 globalThis.__vms_metrics.saveOk++;
                 globalThis.__vms_metrics.lastSaveAt = Date.now();
                 
-                return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+                return json({ ok: true, saved: { visitors: Object.keys(acceptedVisitors).length, logs: Array.isArray(logs) ? logs.length : 0, anti: !!Object.keys(anti).length, meta: !!Object.keys(meta).length } });
             }
 
             if (path === '/pull' && request.method === 'GET') {
@@ -1098,7 +1156,7 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.licenseKey === licenseKey);
                 if (!company) {
-                    return new Response(JSON.stringify({ ok: false, message: 'Invalid licenseKey' }), { headers: corsHeaders, status: 403 });
+                    return json({ ok: false, message: 'Invalid licenseKey' }, 403);
                 }
                 const allVisitors = await getData(env, 'visitors');
                 const visitors = {};
@@ -1107,7 +1165,7 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                 for (const [key, v] of Object.entries(allVisitors || {})) {
                     if (v?.licenseKey !== licenseKey) continue;
                     if (Number(v?.updatedAt || 0) >= since || Number(v?.lastSync || 0) >= since){
-                        visitors[key] = v;
+                        visitors[key] = sanitizeVisitorForPull(v);
                         visitorCount++;
                         if(visitorCount >= MAX_PULL_VISITORS) break;
                     }
@@ -1122,19 +1180,8 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                     .map(l => ({ ...l, sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) }));
                 const dedupeMap = new Map();
                 logs.forEach(l => {
-
-    const canonicalTs = (
-        l?.time
-        ? new Date(l.time).toISOString().slice(0,19)
-        : ''
-    );
-
-    dedupeMap.set(
-        l.sequenceId || `${l.reg}|${l.action}|${canonicalTs}|${l.site||''}`,
-        l
-    );
-
-});
+                    dedupeMap.set(l.sequenceId || buildCanonicalLogKey(l), l);
+                });
                 const dedupedLogs = Array.from(dedupeMap.values()).slice(-MAX_PULL_LOGS);
                 console.log("AUTHORITATIVE LOG SORT", { total: dedupedLogs.length });
                 console.log('PULL DEDUPE', { before: logs.length, after: dedupedLogs.length });
@@ -1142,6 +1189,9 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
             }
 
             if (path === '/retry-gas-sync' && request.method === 'POST') {
+                const body = await request.json().catch(() => ({}));
+                const companyPackage = body?.packageName || body?.package || 'PRO';
+                const queueLimit = getPendingQueueLimit(companyPackage);
                 const now = Date.now();
                 const orphanThresholdMs = 60000;
                 const rawProcessingQueue = await getData(env, 'processing_gas_queue');
@@ -1159,33 +1209,35 @@ const lk = `${log.reg}|${log.action}|${canonicalLogTs}|${log.site||''}`;
                 let pendingQueue = await getData(env, 'pending_gas_queue');
                 const normalizedPendingBase = normalizeGasQueueEntries(pendingQueue);
                 pendingQueue = orphanEntries.length ? mergeGasQueueUnique(normalizedPendingBase, orphanEntries) : normalizedPendingBase;
-                await saveData(env, 'pending_gas_queue', pendingQueue.slice(-20000));
-                await saveData(env, 'processing_gas_queue', activeProcessingEntries.slice(-20000));
+                if (pendingQueue.length > queueLimit) console.log(JSON.stringify({ type:"QUEUE_OVERFLOW", queue:"pending_gas_queue", package: companyPackage, before: pendingQueue.length, limit: queueLimit, updatedAt: Date.now() }));
+                pendingQueue = pendingQueue.slice(-queueLimit);
+                await saveData(env, 'pending_gas_queue', pendingQueue);
+                await saveData(env, 'processing_gas_queue', activeProcessingEntries.slice(-queueLimit));
 
                 if (!Array.isArray(pendingQueue) || pendingQueue.length === 0) {
                     return new Response(JSON.stringify({ ok: true, replayed: 0, remaining: 0, recoveredOrphans: orphanEntries.length }), { headers: corsHeaders });
                 }
-                const body = await request.json().catch(() => ({}));
                 const batchSize = Math.max(1, Math.min(1000, Number(body?.batchSize || 250)));
                 const normalizedPending = normalizeGasQueueEntries(pendingQueue);
                 const batch = normalizedPending.slice(0, batchSize).map(log => ({ ...log, processingStartedAt: Date.now() }));
                 const remainingPending = normalizedPending.slice(batch.length);
                 let processingQueue = await getData(env, 'processing_gas_queue');
                 processingQueue = mergeGasQueueUnique(processingQueue, batch);
-                await saveData(env, 'pending_gas_queue', remainingPending);
-                await saveData(env, 'processing_gas_queue', processingQueue.slice(-20000));
+                await saveData(env, 'pending_gas_queue', remainingPending.slice(-queueLimit));
+                await saveData(env, 'processing_gas_queue', processingQueue.slice(-queueLimit));
                 const gasOk = await pushLogsToGoogleScript(batch);
                 if (!gasOk) {
                     processingQueue = await getData(env, 'processing_gas_queue');
                     const retryQueue = mergeGasQueueUnique(remainingPending, processingQueue);
-                    await saveData(env, 'pending_gas_queue', retryQueue.slice(-20000));
+                    if (retryQueue.length > queueLimit) console.log(JSON.stringify({ type:"QUEUE_OVERFLOW", queue:"pending_gas_queue", package: companyPackage, before: retryQueue.length, limit: queueLimit, updatedAt: Date.now() }));
+                    await saveData(env, 'pending_gas_queue', retryQueue.slice(-queueLimit));
                     await saveData(env, 'processing_gas_queue', []);
                     return new Response(JSON.stringify({ ok: false, replayed: 0, remaining: retryQueue.length }), { headers: corsHeaders, status: 502 });
                 }
                 processingQueue = await getData(env, 'processing_gas_queue');
                 const processedIds = new Set(batch.map(log => log.gasReplayId).filter(Boolean));
                 const remainingProcessing = normalizeGasQueueEntries(processingQueue).filter(log => !processedIds.has(log.gasReplayId));
-                await saveData(env, 'processing_gas_queue', remainingProcessing.slice(-20000));
+                await saveData(env, 'processing_gas_queue', remainingProcessing.slice(-queueLimit));
                 return new Response(JSON.stringify({ ok: true, replayed: batch.length, remaining: remainingPending.length }), { headers: corsHeaders });
             }
             
@@ -1397,6 +1449,107 @@ async function saveData(env, key, data) {
     }
 }
 
+
+function sanitizeText(value, max = 120) {
+    return String(value || '').replace(/[^\w\-.:@ ]/g, '').slice(0, max);
+}
+
+function clonePayloadSafe(value) {
+    try {
+        if (typeof structuredClone === 'function') {
+            return structuredClone(value);
+        }
+    } catch (cloneErr) {
+        console.warn('[CLONE] structuredClone failed, falling back to JSON clone:', cloneErr?.message || cloneErr);
+    }
+    return JSON.parse(JSON.stringify(value || (Array.isArray(value) ? [] : {})));
+}
+
+async function appendLogsToSheet(logs) {
+    if(!Array.isArray(logs) || logs.length === 0) return true;
+    return pushLogsToGoogleScript(clonePayloadSafe(logs));
+}
+
+function visitorSnapshotFingerprint(visitor) {
+    return `${Number(visitor?.updatedAt || 0)}|${Number(visitor?.version || 0)}|${visitor?.mutationSource || ''}`;
+}
+
+async function appendVisitorsToSheet(env, licenseKey, visitors) {
+    if(!visitors || typeof visitors !== 'object' || Object.keys(visitors).length === 0) return true;
+    const stateKey = 'gas_visitor_snapshot_state';
+    const snapshotState = await getData(env, stateKey);
+    const nextState = (snapshotState && typeof snapshotState === 'object' && !Array.isArray(snapshotState)) ? snapshotState : {};
+    const changedVisitors = {};
+
+    for (const [key, visitor] of Object.entries(visitors)) {
+        const stateId = `${licenseKey || visitor?.licenseKey || ''}:${key}`;
+        const fingerprint = visitorSnapshotFingerprint(visitor);
+        if (nextState[stateId]?.fingerprint === fingerprint) continue;
+        changedVisitors[key] = visitor;
+        nextState[stateId] = { fingerprint, updatedAt: Date.now() };
+    }
+
+    if(!Object.keys(changedVisitors).length) {
+        console.log(JSON.stringify({ type:"VISITOR_SNAPSHOT_SKIP", licenseKey, reason:"unchanged", updatedAt: Date.now() }));
+        return true;
+    }
+
+    const ok = await pushVisitorsToGoogleScript(clonePayloadSafe(changedVisitors));
+    if(ok) {
+        // PRUNE STATE: Prevent KV Bloating
+        const MAX_SNAPSHOT_STATE = 50000;
+        const entries = Object.entries(nextState);
+        const prunedState = entries.length > MAX_SNAPSHOT_STATE
+            ? Object.fromEntries(entries.sort((a, b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0)).slice(0, MAX_SNAPSHOT_STATE))
+            : nextState;
+        await saveData(env, stateKey, prunedState);
+    }
+    return ok;
+}
+
+async function pushVisitorsToGoogleScript(visitors) {
+    const timeoutMs = 9000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const payload = {
+            source: 'vms-worker',
+            mode: 'visitor-snapshot',
+            version: PATCH_VERSION,
+            updatedAt: Date.now(),
+            visitors
+        };
+        const res = await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal
+        });
+        const result = await res.json().catch(() => null);
+        if (!res.ok || result?.ok === false) {
+            globalThis.__vms_metrics.gasFail++;
+            globalThis.__vms_metrics.lastGasFailAt = Date.now();
+            console.error('[GAS] Visitor append logical failure:', { status: res.status, result });
+            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"visitor-snapshot", status: res.status, result, updatedAt: Date.now() }));
+            return false;
+        }
+        return true;
+    } catch (error) {
+        globalThis.__vms_metrics.gasFail++;
+        globalThis.__vms_metrics.lastGasFailAt = Date.now();
+        if (error?.name === 'AbortError') {
+            console.error('[GAS] Visitor append timed out after ms:', timeoutMs);
+            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"visitor-snapshot", reason:"timeout", timeoutMs, updatedAt: Date.now() }));
+            return false;
+        }
+        console.error('[GAS] Visitor append request error:', error);
+        console.log(JSON.stringify({ type:"GAS_FAIL", mode:"visitor-snapshot", reason:error?.message || "request_error", updatedAt: Date.now() }));
+        return false;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 async function pushLogsToGoogleScript(logs) {
     const timeoutMs = 9000;
     const controller = new AbortController();
@@ -1405,6 +1558,8 @@ async function pushLogsToGoogleScript(logs) {
         const payload = {
             source: 'vms-worker',
             mode: 'append-only',
+            version: PATCH_VERSION,
+            updatedAt: Date.now(),
             logs
         };
         const res = await fetch(GOOGLE_SCRIPT_URL, {
@@ -1418,6 +1573,7 @@ async function pushLogsToGoogleScript(logs) {
             globalThis.__vms_metrics.gasFail++;
             globalThis.__vms_metrics.lastGasFailAt = Date.now();
             console.error('[GAS] Append logical failure:', { status: res.status, result });
+            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", status: res.status, result, updatedAt: Date.now() }));
             return false;
         }
         return true;
@@ -1426,13 +1582,42 @@ async function pushLogsToGoogleScript(logs) {
         globalThis.__vms_metrics.lastGasFailAt = Date.now();
         if (error?.name === 'AbortError') {
             console.error('[GAS] Append timed out after ms:', timeoutMs);
+            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", reason:"timeout", timeoutMs, updatedAt: Date.now() }));
             return false;
         }
         console.error('[GAS] Append request error:', error);
+        console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", reason:error?.message || "request_error", updatedAt: Date.now() }));
         return false;
     } finally {
         clearTimeout(timeoutId);
     }
+}
+
+function getPendingQueueLimit(packageName) {
+    const pkg = String(packageName || 'DEMO').toUpperCase();
+    if (pkg === 'PRO' || pkg === 'FULL') return 15000;
+    if (pkg === 'BASIC') return 5000;
+    return 1000;
+}
+
+function buildCanonicalLogKey(log) {
+    const reg = sanitizeText(log?.reg, 80);
+    const action = sanitizeText(log?.action, 40);
+    const site = sanitizeText(log?.site, 80);
+    const ts = Math.floor((Number(log?.persistedAt || 0) || Date.parse(log?.time || log?.logTime || 0) || 0) / 1000);
+    return `${reg}|${action}|${ts}|${site}`;
+}
+
+function sanitizeVisitorForPull(visitor) {
+    const safe = clonePayloadSafe(visitor || {});
+    delete safe.foto;
+    delete safe.photo;
+    delete safe.base64;
+    delete safe.blob;
+    delete safe.image;
+    delete safe.thumbnail;
+    delete safe.thumbnailBase64;
+    return safe;
 }
 
 function generateSequenceId(licenseKey, timestampMs = Date.now()) {
@@ -1560,6 +1745,7 @@ function getDefaultData(key) {
         processed_replays: [],
         pending_gas_queue: [],
         processing_gas_queue: [],
+        gas_visitor_snapshot_state: {},
         settings: {
             pricing: {
                 BASIC: { price: 500000, maxDevices: 10, extraDeviceFee: 50000 },
@@ -1606,7 +1792,7 @@ function buildFeaturePolicy(pkg, maxDevices) {
     const isBasic = packageName === 'BASIC';
     const isDemo = !isPro && !isBasic;
     return {
-        version: "1.0.13",
+        version: PATCH_VERSION,
         updatedAt: Date.now(),
         package: packageName,
         licenseScopedSync: true,

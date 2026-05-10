@@ -192,7 +192,6 @@
                     <div class="input-field"><label>Department</label><input type="text" id="regDept" placeholder="IT / HR"></div>
                     <div class="input-field"><label>Start date</label><input type="date" id="regStartDate"></div>
                     <div class="input-field"><label>Expired date</label><input type="date" id="regExpDate"></div>
-                    <div class="input-field"><label>Badge mode</label><select id="badgeMode"><option value="PORTRAIT">PORTRAIT</option><option value="LANDSCAPE">LANDSCAPE</option></select></div>
                     <div class="input-field"><label>Photo (optional)</label><input type="file" id="regPhotoFile" accept="image/*"><img id="previewPhotoThumb" width="50" style="margin-top:8px; border-radius:12px;"></div>
                 </div>
                 <div style="display:flex; gap: 16px; margin-top: 24px; flex-wrap:wrap;">
@@ -1269,43 +1268,8 @@ window.onunhandledrejection = function(e) {
     logs = logs.slice(0,1000);
     window.logs = logs;
     secureSave();
-    return newLog;
 
 }
-
-    async function appendScanLogToGoogleSheet(log, visitor){
-        if(!log || (log.action !== "CHECK_IN" && log.action !== "CHECK_OUT")) return;
-        try{
-            const payload = {
-                logs: [{
-                    reg: log.reg,
-                    nama: visitor?.nama || log.name || log.reg,
-                    perusahaan: visitor?.perusahaan || log.company || "",
-                    action: log.action,
-                    logTime: new Date(log.time || Date.now()).toISOString(),
-                    site: log.site || SITE_ID,
-                    deviceId: log.deviceId || localStorage.getItem("vms_device_id") || "",
-                    kategori: visitor?.kategori || log.category || "",
-                    pic: visitor?.pic || "",
-                    start: visitor?.startDate || "",
-                    exp: visitor?.expDate || "",
-                    status: log.action
-                }]
-            };
-            const controller = new AbortController();
-            setTimeout(() => controller.abort(), 8000);
-            const res = await fetch(WORKER_BASE_URL + "/sheet-append", {
-                method:"POST",
-                headers:{ "Content-Type":"application/json" },
-                body: JSON.stringify(payload),
-                signal: controller.signal
-            });
-            if(!res.ok) console.warn("CHECK_SCAN_SHEET_APPEND_FAIL", res.status);
-        }catch(e){
-            console.warn("CHECK_SCAN_SHEET_APPEND_FAIL", e?.message || e);
-        }
-    }
-
 
     async function ensureJsPDFReady(){
     if(window.jspdf) return true;
@@ -1345,41 +1309,22 @@ window.onunhandledrejection = function(e) {
             const ready = await ensureJsPDFReady();
             if(!ready){ toast("PDF engine gagal dimuat. Coba refresh.", "error"); return false; }
             const { jsPDF } = window.jspdf;
-            const badgeMode = String(data.badgeMode || "PORTRAIT").toUpperCase() === "LANDSCAPE" ? "LANDSCAPE" : "PORTRAIT";
-            const badgeW = badgeMode === "LANDSCAPE" ? 86 : 54;
-            const badgeH = badgeMode === "LANDSCAPE" ? 54 : 86;
             const doc = new jsPDF({
-                orientation: badgeMode === "LANDSCAPE" ? 'landscape' : 'portrait',
+                orientation: 'landscape',
                 unit: 'mm',
-                format: [badgeW, badgeH]
+                format: [86, 54]
             });
 
+            const badgeW = 86;
+            const badgeH = 54;
             let accentColor = [31,78,74];
             if(data.kategori === "VVIP") accentColor = [217,119,6];
             else if(data.kategori === "VIP") accentColor = [100,116,139];
 
             const cleanText = (value, fallback = "-") => String(value || fallback).replace(/\s+/g, " ").trim();
-            const wrapFitText = (value, maxWidth, maxLines, maxFont, minFont = 4.8) => {
+            const fitText = (value, max = 24) => {
                 const text = cleanText(value);
-                for(let size = maxFont; size >= minFont; size -= 0.2){
-                    doc.setFontSize(size);
-                    const lines = doc.splitTextToSize(text, maxWidth);
-                    if(lines.length <= maxLines) return { lines, size };
-                }
-                doc.setFontSize(minFont);
-                const lines = doc.splitTextToSize(text, maxWidth).slice(0, maxLines);
-                if(lines.length){
-                    let last = lines[lines.length - 1];
-                    while(doc.getTextWidth(last + "…") > maxWidth && last.length > 1) last = last.slice(0, -1);
-                    lines[lines.length - 1] = last + "…";
-                }
-                return { lines, size: minFont };
-            };
-            const drawWrapped = (value, x, y, maxWidth, maxLines, maxFont, opts = {}) => {
-                const fit = wrapFitText(value, maxWidth, maxLines, maxFont, opts.minFont || 4.8);
-                doc.setFontSize(fit.size);
-                doc.text(fit.lines, x, y, { align: opts.align || "left", lineHeightFactor: opts.lineHeightFactor || 1.1 });
-                return y + (fit.lines.length * fit.size * 0.36 * (opts.lineHeightFactor || 1.1));
+                return text.length > max ? text.slice(0, max - 1) + "…" : text;
             };
 
             doc.setFillColor(248,250,252);
@@ -1395,72 +1340,59 @@ window.onunhandledrejection = function(e) {
             doc.setLineWidth(0.5);
             doc.roundedRect(2, 2, badgeW - 4, badgeH - 4, 3, 3, 'S');
 
-            const qrPayload = await buildQR(reg, data);
-            const qrBase64 = await generateQRImage(qrPayload);
-            const addPhoto = (x, y, size) => {
-                if(data.foto && data.foto.startsWith('data')){
-                    try{ doc.addImage(data.foto, 'JPEG', x, y, size, size); return; }
-                    catch(e){ try{ doc.addImage(data.foto, 'PNG', x, y, size, size); return; }catch(imgErr){} }
+            const photoX = 5;
+            const photoY = 14;
+            const photoSize = 22;
+            if(data.foto && data.foto.startsWith('data')){
+                try{
+                    doc.addImage(data.foto, 'JPEG', photoX, photoY, photoSize, photoSize);
+                }catch(e){
+                    try{ doc.addImage(data.foto, 'PNG', photoX, photoY, photoSize, photoSize); }catch(imgErr){}
                 }
+            } else {
                 doc.setFillColor(226,232,240);
-                doc.roundedRect(x, y, size, size, 2, 2, 'F');
+                doc.roundedRect(photoX, photoY, photoSize, photoSize, 2, 2, 'F');
                 doc.setTextColor(100,116,139);
                 doc.setFontSize(5.5);
-                doc.text("NO PHOTO", x + size / 2, y + (size / 2) + 1, { align:"center" });
-            };
-            const addQr = (x, y, size) => {
-                if(qrBase64 && qrBase64.startsWith("data:image")){
-                    try{ doc.addImage(qrBase64, 'PNG', x, y, size, size); return; }catch(e){}
-                }
+                doc.text("NO PHOTO", photoX + photoSize / 2, photoY + 12, { align:"center" });
+            }
+
+            let y = 17;
+            doc.setTextColor(15,23,42);
+            doc.setFont(undefined, 'bold');
+            doc.setFontSize(8.5);
+            doc.text(fitText(data.nama, 24).toUpperCase(), 31, y);
+            y += 5;
+            doc.setFont(undefined, 'normal');
+            doc.setFontSize(6.2);
+            doc.text(fitText(data.perusahaan, 28), 31, y);
+            y += 4;
+            doc.text(`Tujuan: ${fitText(data.tujuan, 18)}`, 31, y);
+            y += 4;
+            doc.text(`Site: ${fitText(SITE_ID, 16)}`, 31, y);
+            y += 4;
+            doc.setTextColor(...accentColor);
+            doc.setFont(undefined, 'bold');
+            doc.text(`Valid Until: ${fitText(data.expDate, 14)}`, 31, y);
+
+            const qrPayload = await buildQR(reg, data);
+            const qrBase64 = await generateQRImage(qrPayload);
+            if(qrBase64 && qrBase64.startsWith("data:image")){
+                try{ doc.addImage(qrBase64, 'PNG', 62, 18, 19, 19); }
+                catch(e){ doc.setTextColor(239,68,68); doc.setFontSize(6); doc.text("QR ERROR", 71.5, 29, { align:"center" }); }
+            } else {
                 doc.setTextColor(239,68,68);
                 doc.setFontSize(6);
-                doc.text("QR ERROR", x + size / 2, y + size / 2, { align:"center" });
-            };
-
-            if(badgeMode === "LANDSCAPE"){
-                addPhoto(5, 14, 22);
-                let y = 16;
-                doc.setTextColor(15,23,42);
-                doc.setFont(undefined, 'bold');
-                y = drawWrapped(cleanText(data.nama).toUpperCase(), 31, y, 28, 2, 8.5);
-                doc.setFont(undefined, 'normal');
-                doc.setTextColor(15,23,42);
-                y = drawWrapped(data.perusahaan, 31, y + 1.5, 28, 2, 6.2);
-                y = drawWrapped(`PIC: ${cleanText(data.pic)}`, 31, y + 1, 28, 1, 5.8);
-                doc.setTextColor(...accentColor);
-                doc.setFont(undefined, 'bold');
-                drawWrapped(cleanText(data.kategori), 31, y + 1, 28, 1, 6);
-                addQr(62, 18, 19);
-                doc.setTextColor(71,85,105);
-                doc.setFont(undefined, 'normal');
-                doc.setFontSize(5.2);
-                doc.text(`REG ${reg}`, 71.5, 40, { align:"center" });
-            } else {
-                addPhoto(18, 14, 18);
-                let y = 37;
-                doc.setTextColor(15,23,42);
-                doc.setFont(undefined, 'bold');
-                y = drawWrapped(cleanText(data.nama).toUpperCase(), badgeW / 2, y, 40, 2, 8.2, { align:"center" });
-                doc.setFont(undefined, 'normal');
-                doc.setTextColor(15,23,42);
-                y = drawWrapped(data.perusahaan, badgeW / 2, y + 1.5, 40, 2, 6.2, { align:"center" });
-                y = drawWrapped(`PIC: ${cleanText(data.pic)}`, badgeW / 2, y + 1, 40, 1, 5.8, { align:"center" });
-                doc.setTextColor(...accentColor);
-                doc.setFont(undefined, 'bold');
-                y = drawWrapped(cleanText(data.kategori), badgeW / 2, y + 1, 40, 1, 6, { align:"center" });
-                addQr(16, 55, 18);
-                doc.setTextColor(71,85,105);
-                doc.setFont(undefined, 'normal');
-                doc.setFontSize(5.2);
-                doc.text(`REG ${reg}`, badgeW / 2, 81, { align:"center" });
+                doc.text("QR FAILED", 71.5, 29, { align:"center" });
             }
 
             doc.setTextColor(71,85,105);
             doc.setFont(undefined, 'normal');
-            doc.setFontSize(5);
-            doc.text(`Valid ${cleanText(data.expDate, '-')}`, badgeW / 2, badgeH - 4, { align:"center" });
+            doc.setFontSize(5.5);
+            doc.text(`REG ${reg}`, 71.5, 40, { align:"center" });
+            doc.text("Mobile Thermal Ready", badgeW / 2, 50, { align:"center" });
 
-            const success = forceDownloadPDF(doc, `BADGE_${reg}_${badgeMode}.pdf`);
+            const success = forceDownloadPDF(doc, `BADGE_${reg}.pdf`);
             if(!success){ toast("Download gagal. Gunakan browser Chrome.", "error"); return false; }
             toast(`Badge ID ${reg} berhasil didownload`, "success");
             return true;
@@ -1487,7 +1419,6 @@ window.onunhandledrejection = function(e) {
                         <p><strong>PIC</strong> : ${data.pic}</p>
                         <p><strong>Validity</strong> : ${data.startDate} → ${data.expDate}</p>
                         <p><strong>REG</strong> : ${reg}</p>
-                        <div class="input-field" style="margin-top:12px;"><label>Badge mode</label><select id="previewBadgeMode"><option value="PORTRAIT">PORTRAIT</option><option value="LANDSCAPE">LANDSCAPE</option></select></div>
                     </div>
                     ${qrBase64 ? `<img class="qr-preview" src="${qrBase64}">` : '<div style="color:red; text-align:center;">QR gagal dimuat</div>'}
                     <div class="flex-btns">
@@ -1498,8 +1429,6 @@ window.onunhandledrejection = function(e) {
             `;
             document.body.appendChild(modal);
             setTimeout(()=>modal.classList.add('active'),10);
-            const modeSelect = modal.querySelector('#previewBadgeMode');
-            if(modeSelect) modeSelect.value = String(data.badgeMode || "PORTRAIT").toUpperCase() === "LANDSCAPE" ? "LANDSCAPE" : "PORTRAIT";
             const confirmBtn = modal.querySelector('#confirmDownloadBtn');
             confirmBtn.onclick = async () => {
                 if(isDownloading) return;
@@ -1507,7 +1436,7 @@ window.onunhandledrejection = function(e) {
                 const originalText = confirmBtn.innerText;
                 confirmBtn.innerHTML = `Processing <span class="loader"></span>`;
                 confirmBtn.disabled = true;
-                if(previewData){ previewData.data.badgeMode = modeSelect ? modeSelect.value : previewData.data.badgeMode; await downloadPDFStable(previewData.reg, previewData.data); }
+                if(previewData) await downloadPDFStable(previewData.reg, previewData.data);
                 confirmBtn.innerHTML = originalText;
                 confirmBtn.disabled = false;
                 isDownloading = false;
@@ -1533,7 +1462,6 @@ window.onunhandledrejection = function(e) {
             let dept = document.getElementById('regDept').value;
             let startDate = document.getElementById('regStartDate').value || new Date().toISOString().slice(0,10);
             let expDate = document.getElementById('regExpDate').value;
-            let badgeMode = document.getElementById('badgeMode')?.value || "PORTRAIT";
             if(!nama || !perusahaan || !pic || !dept || !expDate){ toast("Lengkapi semua field wajib","error"); return; }
             let reg = generateReg();
             let foto = "";
@@ -1552,7 +1480,7 @@ window.onunhandledrejection = function(e) {
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 foto = canvas.toDataURL("image/jpeg", 0.4);
             }
-            let data = { nama, perusahaan, kategori, tujuan, pic, dept, startDate, expDate, badgeMode, foto, sessions:[], currentStatus:"OUT", updatedAt: Date.now(), version: 1, deviceId: deviceId, site: SITE_ID };
+            let data = { nama, perusahaan, kategori, tujuan, pic, dept, startDate, expDate, foto, sessions:[], currentStatus:"OUT", updatedAt: Date.now(), version: 1, deviceId: deviceId, site: SITE_ID };
             let siteKey = SITE_ID + "_" + reg;
             visitors[siteKey] = data;
             addLog(reg, "REGISTER");
@@ -1635,7 +1563,6 @@ window.onunhandledrejection = function(e) {
                 dept: "Umum", 
                 startDate: now.toISOString().slice(0,10), 
                 expDate: exp.toISOString().slice(0,10), 
-                badgeMode: document.getElementById('badgeMode')?.value || "PORTRAIT",
                 foto: fotoBase64, 
                 sessions:[], 
                 currentStatus:"OUT",
@@ -1785,8 +1712,7 @@ window.onunhandledrejection = function(e) {
                 if(!visitor.sessions) visitor.sessions = [];
                 visitor.sessions.push({ checkIn: Date.now(), checkOut: null });
                 visitors[siteKey] = { ...visitor, currentStatus: "IN", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_IN");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
+                addLog(reg, "CHECK_IN");
                 toast(`✅ CHECK-IN ${visitor.nama} berhasil`,"success");
             } else {
                 if(!visitor.sessions) visitor.sessions = [];
@@ -1795,8 +1721,7 @@ window.onunhandledrejection = function(e) {
                 if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: Date.now(), checkOut: Date.now() }); }
                 else { openSession.checkOut = Date.now(); }
                 visitors[siteKey] = { ...visitor, currentStatus: "OUT", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_OUT");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
+                addLog(reg, "CHECK_OUT");
                 toast(`✅ CHECK-OUT ${visitor.nama} berhasil`,"success");
             }
             renderDashboard(); 
@@ -1824,8 +1749,7 @@ window.onunhandledrejection = function(e) {
                 if(!visitor.sessions) visitor.sessions = [];
                 visitor.sessions.push({ checkIn: Date.now(), checkOut: null });
                 visitors[siteKey] = { ...visitor, currentStatus: "IN", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_IN");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
+                addLog(reg, "CHECK_IN");
                 toast(`Check-in ${visitor.nama} success`,"success");
             } else {
                 if(!visitor.sessions) visitor.sessions = [];
@@ -1834,8 +1758,7 @@ window.onunhandledrejection = function(e) {
                 if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: Date.now(), checkOut: Date.now() }); }
                 else { openSession.checkOut = Date.now(); }
                 visitors[siteKey] = { ...visitor, currentStatus: "OUT", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_OUT");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
+                addLog(reg, "CHECK_OUT");
                 toast(`Check-out ${visitor.nama} success`,"success");
             }
             renderDashboard(); 

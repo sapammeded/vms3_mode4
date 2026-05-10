@@ -3,7 +3,13 @@
 // KV Namespace: VMS_STORAGE
 
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzQQr4hZKbSEeiW4h0q6H_HPOqODBuZbQfZm_hjIl0F551eK2WrXnpDO9_Qk31sp8-Y9w/exec';
-const PATCH_VERSION = '1.0.14';
+const PATCH_VERSION = '1.0.17';
+const SYNC_ENGINE = 'V5-TITAN';
+const SYNC_STRATEGY = 'OCC';
+const MAX_CLOCK_FUTURE_DRIFT_MS = 10 * 60 * 1000;
+const MAX_SAVE_DEDUPE_KEYS = 2500;
+const MAX_GLOBAL_INFLIGHT_REPLAYS = 2000;
+const MAX_MUTATION_LOCKS = 1000;
 const MAX_HOT_LOGS = 3000;
 const MAX_HOT_VISITORS = 2000;
 const MAX_BUCKET_LOGS = 1200;
@@ -32,6 +38,8 @@ export default {
         const json = (payload = {}, status = 200) => new Response(JSON.stringify({
             ...payload,
             version: PATCH_VERSION,
+            engine: SYNC_ENGINE,
+            syncStrategy: SYNC_STRATEGY,
             updatedAt: Date.now()
         }), { headers: corsHeaders, status });
         
@@ -48,6 +56,7 @@ export default {
             if (!globalThis.__vms_inflight_replays) {
                 globalThis.__vms_inflight_replays = new Set();
             }
+            pruneInflightReplayCache();
             // ==================== AUTO INIT (ANTI LOOP) ====================
             if (!globalThis.__vms_init_done) {
                 let adminsCheck = await getData(env, 'admins');
@@ -69,6 +78,8 @@ export default {
                     status: 'online', 
                     version: 'v3.0 Enterprise',
                     apiCompat: 1,
+                    engine: SYNC_ENGINE,
+                    syncStrategy: SYNC_STRATEGY,
                     timestamp: Date.now(),
                     uptimeMs: Date.now() - (globalThis.__vms_started_at || Date.now()),
                     degraded: (globalThis.__vms_metrics.saveFail > (globalThis.__vms_metrics.saveOk * 2 + 10)),
@@ -201,7 +212,8 @@ export default {
                 }
                 
                 const devices = await getData(env, 'devices');
-                const companyDevices = devices.filter(d => d.licenseKey === licenseKey && d.status !== 'DELETED');
+                const deviceIndex = buildDeviceIndexes(devices);
+                const companyDevices = getDevicesByLicense(deviceIndex, licenseKey).filter(d => d.status !== 'DELETED');
                 const currentDeviceCount = companyDevices.length;
                 
                 let status = 'ACTIVE';
@@ -209,7 +221,7 @@ export default {
                     status = 'PENDING_APPROVAL';
                 }
                 
-                let device = devices.find(d => d.deviceId === deviceId && d.licenseKey === licenseKey);
+                let device = getDeviceByLicense(deviceIndex, deviceId, licenseKey);
                 const deviceMutationTs = Date.now();
                 if (device) {
                     device.lastSeen = deviceMutationTs;
@@ -238,7 +250,8 @@ export default {
                 
                 await saveData(env, 'devices', devices);
                 
-                company.currentDevices = devices.filter(d => d.licenseKey === licenseKey && d.status === 'ACTIVE').length;
+                invalidateDeviceIndexCache();
+                company.currentDevices = countDevicesByLicense(devices, licenseKey, 'ACTIVE');
                 await saveData(env, 'companies', companies);
                 
                 const featurePolicy = buildFeaturePolicy(company.package, company.maxDevices);
@@ -288,7 +301,8 @@ export default {
                 }
                 
                 const devices = await getData(env, 'devices');
-                const companyDevices = devices.filter(d => d.licenseKey === licenseKey && d.status !== 'DELETED');
+                const deviceIndex = buildDeviceIndexes(devices);
+                const companyDevices = getDevicesByLicense(deviceIndex, licenseKey).filter(d => d.status !== 'DELETED');
                 
                 return new Response(JSON.stringify({ ok: true, devices: companyDevices }), { headers: corsHeaders });
             }
@@ -302,7 +316,8 @@ export default {
                 }
                 await reconcileDeviceState(env);
                 const devices = await getData(env, 'devices');
-                let device = devices.find(d => d.deviceId === deviceId && d.licenseKey === licenseKey);
+                const deviceIndex = buildDeviceIndexes(devices);
+                let device = getDeviceByLicense(deviceIndex, deviceId, licenseKey);
                 if (device && device.status !== 'DELETED') {
                     const heartbeatTs = Date.now();
                     device.lastSeen = heartbeatTs;
@@ -332,7 +347,7 @@ export default {
                 }
                 
                 const devices = await getData(env, 'devices');
-                const device = devices.find(d => d.deviceId === deviceId && d.licenseKey === licenseKey);
+                const device = getDeviceByLicense(buildDeviceIndexes(devices), deviceId, licenseKey);
                 if (!device || device.status !== 'ACTIVE') {
                     return new Response(JSON.stringify({ ok: false, message: 'Device not active' }), { headers: corsHeaders });
                 }
@@ -371,7 +386,7 @@ export default {
                 }
                 
                 const devices = await getData(env, 'devices');
-                const device = devices.find(d => d.deviceId === deviceId);
+                const device = getDeviceById(buildDeviceIndexes(devices), deviceId);
                 if (!device) {
                     return new Response(JSON.stringify({ ok: false, message: 'Device not found' }), { headers: corsHeaders });
                 }
@@ -471,30 +486,22 @@ export default {
                 const now = Date.now();
                 const last30Days = now - 30 * 86400000;
                 
+                const deviceIndex = buildDeviceIndexes(devices);
+                const deviceStatusCounts = getDeviceStatusCounts(deviceIndex);
+                const companyStats = summarizeCompanies(companies, now);
+                const violationStats = summarizeViolations(activities, now, last30Days);
                 const stats = {
-                    companies: {
-                        total: companies.length,
-                        active: companies.filter(c => c.expiredAt > now).length,
-                        byPackage: {
-                            DEMO: companies.filter(c => c.package === 'DEMO').length,
-                            BASIC: companies.filter(c => c.package === 'BASIC').length,
-                            PRO: companies.filter(c => c.package === 'PRO').length
-                        }
-                    },
+                    companies: companyStats,
                     devices: {
                         total: devices.length,
-                        active: devices.filter(d => d.status === 'ACTIVE').length,
-                        pending: devices.filter(d => d.status === 'PENDING_APPROVAL').length,
-                        suspended: devices.filter(d => d.status === 'SUSPENDED').length,
-                        banned: devices.filter(d => d.status === 'BANNED').length
+                        active: deviceStatusCounts.ACTIVE || 0,
+                        pending: deviceStatusCounts.PENDING_APPROVAL || 0,
+                        suspended: deviceStatusCounts.SUSPENDED || 0,
+                        banned: deviceStatusCounts.BANNED || 0
                     },
-                    violations: {
-                        total: activities.filter(a => a.type === 'VIOLATION_REPORTED').length,
-                        last7Days: activities.filter(a => a.type === 'VIOLATION_REPORTED' && a.timestamp > now - 7 * 86400000).length,
-                        last30Days: activities.filter(a => a.type === 'VIOLATION_REPORTED' && a.timestamp > last30Days).length
-                    },
+                    violations: violationStats,
                     revenue: {
-                        last30Days: invoices.filter(i => i.status === 'PAID' && i.paidAt > last30Days).reduce((sum, i) => sum + i.amount, 0)
+                        last30Days: sumPaidRevenue(invoices, last30Days)
                     }
                 };
                 
@@ -520,14 +527,15 @@ export default {
                     });
                 }
                 
-                const companyDevices = devices.filter(d => d.companyId === companyId);
+                const companyDevices = getDevicesByCompany(buildDeviceIndexes(devices), companyId);
+                const companyStatusCounts = countDeviceStatuses(companyDevices);
                 
                 return new Response(JSON.stringify({
                     ...company,
                     devices: companyDevices,
                     stats: {
                         totalDevices: companyDevices.length,
-                        activeDevices: companyDevices.filter(d => d.status === 'ACTIVE').length
+                        activeDevices: companyStatusCounts.ACTIVE || 0
                     }
                 }), { headers: corsHeaders });
             }
@@ -729,7 +737,7 @@ export default {
                 const { deviceId, approve } = body;
                 
                 const devices = await getData(env, 'devices');
-                const device = devices.find(d => d.deviceId === deviceId);
+                const device = getDeviceById(buildDeviceIndexes(devices), deviceId);
                 if (!device) {
                     return new Response(JSON.stringify({ ok: false, error: 'Device not found' }), { headers: corsHeaders });
                 }
@@ -753,7 +761,7 @@ export default {
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.id === device.companyId);
                 if (company && approve) {
-                    company.currentDevices = devices.filter(d => d.companyId === company.id && d.status === 'ACTIVE').length;
+                    company.currentDevices = countDevicesByCompany(devices, company.id, 'ACTIVE');
                     await saveData(env, 'companies', companies);
                 }
                 
@@ -766,7 +774,7 @@ export default {
                 const { deviceId, reason } = body;
                 
                 const devices = await getData(env, 'devices');
-                const index = devices.findIndex(d => d.deviceId === deviceId);
+                const index = getDeviceIndexById(devices, deviceId);
                 if (index === -1) {
                     return new Response(JSON.stringify({ ok: false, error: 'Device not found' }), { headers: corsHeaders });
                 }
@@ -875,7 +883,7 @@ export default {
                             devices.push(newDevice);
                             await saveData(env, 'devices', devices);
                             
-                            company.currentDevices = devices.filter(d => d.companyId === company.id && d.status === 'ACTIVE').length;
+                            company.currentDevices = countDevicesByCompany(devices, company.id, 'ACTIVE');
                             await saveData(env, 'companies', companies);
                         }
                     }
@@ -1007,8 +1015,9 @@ export default {
                 }
                 console.log(JSON.stringify({ type:"SYNC_SAVE", licenseKey, deviceId: body.deviceId || meta.deviceId || anti.deviceId || null, visitors: Object.keys(visitors || {}).length, logs: Array.isArray(logs) ? logs.length : 0, hasAnti: !!Object.keys(anti).length, updatedAt: Date.now() }));
                 return await withMutationLock(`save:${licenseKey}`, async () => {
-                const mutationId = generateMutationId(licenseKey, body.deviceId || 'unknown');
-                const replayId = body.replayId || null;
+                const clientMutationId = sanitizeText(body.mutationId || meta.mutationId || body.clientMutationId || '', 180);
+                const mutationId = clientMutationId || generateMutationId(licenseKey, body.deviceId || 'unknown');
+                const replayId = body.replayId || clientMutationId || null;
                 const replayInFlightKey = replayId ? `${licenseKey}:${replayId}` : null;
                 if (replayId) {
                     const nowTs = Date.now();
@@ -1030,6 +1039,7 @@ export default {
                         return json({ ok: true, dedup: true, inFlight: true }, 202);
                     }
                     globalThis.__vms_inflight_replays.add(replayInFlightKey);
+                    pruneInflightReplayCache();
                 }
                 try {
                 if (company.expiredAt < Date.now()) {
@@ -1043,8 +1053,13 @@ export default {
                     let allVisitors = await getData(env, 'visitors');
                     for (const [key, value] of Object.entries(visitors)) {
                         if (!value || typeof value !== 'object') continue;
-                        const normalizedVisitor = {
+                        const normalizedVisitor = sanitizeVisitorEntity({
                             ...value,
+                            id: value.id || key,
+                            name: value.name || value.nama || "",
+                            company: value.company || value.perusahaan || "",
+                            category: value.category || value.kategori || "UMUM",
+                            purpose: value.purpose || value.tujuan || "",
                             nama: value.nama || value.name || "",
                             perusahaan: value.perusahaan || value.company || "",
                             kategori: value.kategori || value.category || "UMUM",
@@ -1053,8 +1068,10 @@ export default {
                             exp: value.exp || value.expDate || "",
                             pic: value.pic || "",
                             dept: value.dept || "",
-                            keterangan: value.keterangan || value.note || ""
-                        };
+                            keterangan: value.keterangan || value.note || "",
+                            site: value.site || body.site || String(key).split('_')[0] || 'SITE_A',
+                            mutationId
+                        });
                         const prev = allVisitors[key] || {};
                         const prevUpdated = Number(prev.updatedAt || 0);
                         const incomingUpdated = Number(normalizedVisitor?.updatedAt || 0);
@@ -1068,7 +1085,7 @@ export default {
                             continue;
                         }
                         const mutationClock = buildAuthoritativeMutationClock(prev, normalizedVisitor, trustedSyncDevice, mutationId);
-                        allVisitors[key] = stampAuthoritativeEntity({ ...prev, ...normalizedVisitor, licenseKey, lastSync: mutationClock.updatedAt }, mutationClock, mutationId, body.deviceId || getWorkerOriginNode());
+                        allVisitors[key] = sanitizeVisitorEntity(stampAuthoritativeEntity({ ...sanitizeVisitorEntity(prev), ...normalizedVisitor, licenseKey, lastSync: mutationClock.updatedAt }, mutationClock, mutationId, body.deviceId || getWorkerOriginNode()));
                         acceptedVisitors[key] = { ...allVisitors[key] };
                     }
                     const visitorBucketOk = await appendVisitorsToBuckets(env, licenseKey, acceptedVisitors);
@@ -1088,15 +1105,16 @@ export default {
                         if (!l || !l.reg || !l.action || !(l.time || l.logTime)) continue;
                         const logTime = l.time || l.logTime;
                         const normalizedTime = typeof logTime === "string" ? logTime : new Date(logTime).toISOString();
-                        normalizedLogs.push({
+                        normalizedLogs.push(sanitizeLogEntity({
                             ...l,
                             time: normalizedTime,
                             logTime: normalizedTime,
                             sequenceId: l.sequenceId || null,
                             licenseKey,
                             companyId: company.id,
-                            companyName: sanitizeText(company.companyName, 120)
-                        });
+                            companyName: sanitizeText(company.companyName, 120),
+                            mutationId
+                        }));
                     }
                     if (logs.length > maxIncomingLogs) {
                         console.log(JSON.stringify({ type:"LOG_BATCH_TRUNCATED", licenseKey, received: logs.length, processed: maxIncomingLogs, updatedAt: Date.now() }));
@@ -1136,12 +1154,12 @@ export default {
                         const lk = buildCanonicalLogKey(log);
                         if (seen.has(k)) continue;
                         if (logicalSeen.has(lk)) continue;
-                        seen.add(k);
-                        logicalSeen.add(lk);
+                        rememberCappedSet(seen, k, MAX_SAVE_DEDUPE_KEYS);
+                        rememberCappedSet(logicalSeen, lk, MAX_SAVE_DEDUPE_KEYS);
                         const persistedAt = Date.now();
                         const sequenceId = log.sequenceId || generateSequenceId(licenseKey, persistedAt);
                         const logClock = buildAuthoritativeMutationClock({}, { ...log, updatedAt: Number(log.updatedAt || persistedAt), persistedAt }, trustedSyncDevice, mutationId);
-                        appendOnly.push(stampAuthoritativeEntity({ ...log, persistedAt, sequenceId }, logClock, mutationId, body.deviceId || getWorkerOriginNode()));
+                        appendOnly.push(sanitizeLogEntity(stampAuthoritativeEntity({ ...log, persistedAt, sequenceId }, logClock, mutationId, body.deviceId || getWorkerOriginNode())));
                     }
                     // Avoid array cloning for high-frequency logging
                     for (const item of appendOnly) {
@@ -1221,7 +1239,7 @@ export default {
                 if (replayId) {
                     const replayCommitTs = Date.now();
                     const normalizedReplay = (await loadReplayGovernanceEntries(env, replayId, replayCommitTs)).filter(x => x.id !== replayId);
-                    normalizedReplay.push(buildReplayEntry({ id: replayId, ts: replayCommitTs, licenseKey, deviceId: body.deviceId || null, status: 'PROCESSED' }));
+                    normalizedReplay.push(buildReplayEntry({ id: replayId, mutationId, ts: replayCommitTs, licenseKey, deviceId: body.deviceId || null, status: 'PROCESSED' }));
                     await persistReplayGovernanceEntries(env, replayId, normalizedReplay, replayCommitTs, true);
                 }
                 globalThis.__vms_metrics.saveOk++;
@@ -1265,7 +1283,7 @@ export default {
                     if (siteFilter && !(key.startsWith(`${siteFilter}_`) || v?.site === siteFilter)) return;
                     if (Number(v?.updatedAt || 0) >= since || Number(v?.lastSync || 0) >= since){
                         const current = visitors[key];
-                        if (!current || isIncomingEntityNewer(current, v)) {
+                        if (shouldPreferEntity(current, v)) {
                             if (!current) visitorCount++;
                             visitors[key] = sanitizeVisitorForPull(v);
                         }
@@ -1289,12 +1307,11 @@ export default {
                     const nextLog = Object.assign({}, l, { sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) });
                     const dedupeKey = nextLog.sequenceId || buildCanonicalLogKey(nextLog);
                     const current = dedupeMap.get(dedupeKey);
-                    if (!current || isIncomingEntityNewer(current, nextLog) || (current.source !== 'bucket_authoritative' && nextLog.source === 'bucket_authoritative')) {
+                    if (shouldPreferEntity(current, nextLog)) {
                         dedupeMap.set(dedupeKey, nextLog);
                     }
                     if (dedupeMap.size > MAX_PULL_LOGS * 2) {
-                        const coldest = Array.from(dedupeMap.entries()).sort((a, b) => (Number(a[1]?.persistedAt || 0) || Date.parse(a[1]?.time || 0)) - (Number(b[1]?.persistedAt || 0) || Date.parse(b[1]?.time || 0)))[0]?.[0];
-                        if (coldest) dedupeMap.delete(coldest);
+                        evictOldestMapEntry(dedupeMap);
                     }
                 };
                 for (const l of bucketLogs) appendPullLog(l);
@@ -1553,6 +1570,16 @@ async function getData(env, key) {
 }
 
 // ==================== KV SAVE DATA ====================
+
+async function saveDataIfChangedFromJson(env, key, originalJson, nextData) {
+    const nextJson = JSON.stringify(nextData || (Array.isArray(nextData) ? [] : {}));
+    if (nextJson === originalJson) {
+        console.log(`[SAVE_DATA] Reconcile no-op skip for "${key}": unchanged`);
+        return true;
+    }
+    return saveData(env, key, nextData);
+}
+
 async function saveData(env, key, data) {
     try {
         if (!env || !env.VMS_STORAGE) {
@@ -1566,10 +1593,15 @@ async function saveData(env, key, data) {
             globalThis.__vms_kv_write_fingerprints = new Map();
         }
         if (globalThis.__vms_kv_write_fingerprints.get(key) === fingerprint) {
-            console.log(`[SAVE_DATA] Skipped identical payload for "${key}": ${jsonString.length} bytes`);
-            return true;
+            const confirmedIdentical = await confirmExistingPayloadFingerprint(env, key, fingerprint);
+            if (confirmedIdentical) {
+                console.log(`[SAVE_DATA] Skipped confirmed identical payload for "${key}": ${jsonString.length} bytes`);
+                return true;
+            }
+            console.warn(`[SAVE_DATA] Fingerprint cache stale for "${key}"; rewriting payload to avoid cross-isolate skip race`);
         }
         await env.VMS_STORAGE.put(key, jsonString);
+        if (key === 'devices') invalidateDeviceIndexCache();
         globalThis.__vms_kv_write_fingerprints.set(key, fingerprint);
         pruneFingerprintCache();
         const itemCount = Array.isArray(data) ? data.length + ' items' : Object.keys(data || {}).length + ' keys';
@@ -1664,14 +1696,53 @@ function boundedClone(value, depth = 0, stats = { truncatedArrays: 0, truncatedO
 }
 
 
+
+const VISITOR_STORAGE_WHITELIST = new Set([
+    'id', 'reg', 'name', 'nama', 'company', 'perusahaan', 'category', 'kategori', 'purpose', 'tujuan',
+    'checkIn', 'checkOut', 'start', 'startDate', 'exp', 'expDate', 'pic', 'dept', 'note', 'keterangan',
+    'site', 'licenseKey', 'companyId', 'companyName', 'version', 'updatedAt', 'lastSync', 'firstSeen', 'lastSeen',
+    'mutationId', 'lastMutationId', 'commitClock', 'mutationEpoch', 'writeEpoch', 'mutationSource', 'source'
+]);
+
+const LOG_STORAGE_WHITELIST = new Set([
+    'id', 'reg', 'action', 'time', 'logTime', 'site', 'deviceId', 'deviceName', 'location',
+    'sequenceId', 'gasReplayId', 'licenseKey', 'companyId', 'companyName', 'version', 'updatedAt', 'persistedAt',
+    'mutationId', 'lastMutationId', 'commitClock', 'mutationEpoch', 'writeEpoch', 'mutationSource', 'source', 'bucketKey'
+]);
+
+function sanitizeWhitelistedEntity(raw = {}, whitelist = new Set(), maxString = 500) {
+    const out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    for (const [key, value] of Object.entries(raw)) {
+        if (!whitelist.has(key)) continue;
+        if (value === undefined) continue;
+        if (typeof value === 'string') out[key] = sanitizeText(value, maxString);
+        else if (typeof value === 'number') out[key] = Number.isFinite(value) ? value : 0;
+        else if (typeof value === 'boolean' || value === null) out[key] = value;
+        else if (Array.isArray(value)) out[key] = value.slice(0, 50).map(item => typeof item === 'string' ? sanitizeText(item, 200) : boundedClone(item, 0));
+        else out[key] = boundedClone(value, 0);
+    }
+    return out;
+}
+
+function sanitizeVisitorEntity(raw = {}) {
+    return sanitizeWhitelistedEntity(raw, VISITOR_STORAGE_WHITELIST, 500);
+}
+
+function sanitizeLogEntity(raw = {}) {
+    return sanitizeWhitelistedEntity(raw, LOG_STORAGE_WHITELIST, 500);
+}
+
 function buildAuthoritativeMutationClock(previous = {}, incoming = {}, trustedDevice = false, mutationId = '') {
     const now = Date.now();
     const prevVersion = Math.max(0, Number(previous.version || 0));
     const incomingVersion = Math.max(0, Number(incoming.version || 0));
     const prevEpoch = Math.max(0, Number(previous.mutationEpoch || previous.writeEpoch || previous.updatedAt || 0));
-    const incomingEpoch = Math.max(0, Number(incoming.mutationEpoch || incoming.writeEpoch || incoming.updatedAt || 0));
+    const rawIncomingEpoch = Math.max(0, Number(incoming.mutationEpoch || incoming.writeEpoch || incoming.updatedAt || 0));
+    const incomingEpoch = clampIncomingClock(rawIncomingEpoch, now, mutationId || incoming.mutationId || incoming.lastMutationId || '');
     const prevCommitClock = Math.max(0, Number(previous.commitClock || previous.updatedAt || previous.persistedAt || 0));
-    const incomingCommitClock = Math.max(0, Number(incoming.commitClock || incoming.updatedAt || incoming.persistedAt || 0));
+    const rawIncomingCommitClock = Math.max(0, Number(incoming.commitClock || incoming.updatedAt || incoming.persistedAt || 0));
+    const incomingCommitClock = clampIncomingClock(rawIncomingCommitClock, now, mutationId || incoming.mutationId || incoming.lastMutationId || '');
     const maxTrustedJump = trustedDevice ? 50 : 5;
     const trustedIncomingVersion = incomingVersion > prevVersion && incomingVersion <= prevVersion + maxTrustedJump
         ? incomingVersion
@@ -1692,14 +1763,17 @@ function buildAuthoritativeMutationClock(previous = {}, incoming = {}, trustedDe
 
 function shouldAcceptAuthoritativeMutation(previous = {}, incoming = {}, trustedDevice = false) {
     if (!previous || Object.keys(previous).length === 0) return true;
+    const now = Date.now();
     const prevVersion = Math.max(0, Number(previous.version || 0));
     const incomingVersion = Math.max(0, Number(incoming.version || 0));
     if (!isTrustedVersionCandidate(prevVersion, incomingVersion, trustedDevice)) return false;
     const prevEpoch = Math.max(0, Number(previous.mutationEpoch || previous.writeEpoch || previous.updatedAt || 0));
-    const incomingEpoch = Math.max(0, Number(incoming.mutationEpoch || incoming.writeEpoch || incoming.updatedAt || 0));
+    const rawIncomingEpoch = Math.max(0, Number(incoming.mutationEpoch || incoming.writeEpoch || incoming.updatedAt || 0));
+    const incomingEpoch = clampIncomingClock(rawIncomingEpoch, now, incoming.mutationId || incoming.lastMutationId || '');
     if (incomingEpoch && prevEpoch && incomingEpoch < prevEpoch) return false;
     const prevCommitClock = Math.max(0, Number(previous.commitClock || previous.updatedAt || previous.persistedAt || 0));
-    const incomingCommitClock = Math.max(0, Number(incoming.commitClock || incoming.updatedAt || incoming.persistedAt || 0));
+    const rawIncomingCommitClock = Math.max(0, Number(incoming.commitClock || incoming.updatedAt || incoming.persistedAt || 0));
+    const incomingCommitClock = clampIncomingClock(rawIncomingCommitClock, now, incoming.mutationId || incoming.lastMutationId || '');
     if (incomingCommitClock && prevCommitClock && incomingCommitClock < prevCommitClock) return false;
     return incomingVersion > prevVersion || incomingEpoch >= prevEpoch || incomingCommitClock >= prevCommitClock;
 }
@@ -1730,9 +1804,8 @@ function pruneHotVisitors(visitors, limit = MAX_HOT_VISITORS) {
 function pruneHotLogs(logs, limit = MAX_HOT_LOGS) {
     if (!Array.isArray(logs)) return [];
     if (logs.length <= limit) return logs;
-    return logs
-        .sort((a, b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
-        .slice(-limit);
+    // Root logs are maintained append-only; keep the newest append window without O(N log N) resorting.
+    return logs.slice(-limit);
 }
 
 async function stablePayloadFingerprint(jsonString = '') {
@@ -1745,6 +1818,112 @@ function pruneFingerprintCache() {
     const cache = globalThis.__vms_kv_write_fingerprints;
     if (!cache || cache.size <= 512) return;
     for (const key of Array.from(cache.keys()).slice(0, cache.size - 512)) cache.delete(key);
+}
+
+
+async function confirmExistingPayloadFingerprint(env, key, fingerprint) {
+    try {
+        if (!env?.VMS_STORAGE?.get) return false;
+        const existing = await env.VMS_STORAGE.get(key);
+        if (typeof existing !== 'string') return false;
+        return (await stablePayloadFingerprint(existing)) === fingerprint;
+    } catch (err) {
+        console.warn(`[SAVE_DATA] Could not confirm fingerprint for "${key}":`, err?.message || err);
+        return false;
+    }
+}
+
+function clampIncomingClock(rawClock, now = Date.now(), mutationId = '') {
+    const safeClock = Number(rawClock || 0);
+    if (!Number.isFinite(safeClock) || safeClock <= 0) return 0;
+    if (safeClock > now + MAX_CLOCK_FUTURE_DRIFT_MS) {
+        console.warn('[MUTATION_CLOCK] Future clock quarantined', { mutationId: sanitizeText(mutationId, 180), rawClock: safeClock, now, maxFutureDriftMs: MAX_CLOCK_FUTURE_DRIFT_MS });
+        return 0;
+    }
+    return safeClock;
+}
+
+function getSourcePriority(entity = {}) {
+    const source = String(entity?.source || '').toLowerCase();
+    if (source === 'bucket_authoritative') return 4;
+    if (entity?.replayId || entity?.gasReplayId) return 3;
+    if (source === 'legacy_hot_cache') return 2;
+    return 1;
+}
+
+function shouldPreferEntity(current, incoming) {
+    if (!current) return true;
+    const currentPriority = getSourcePriority(current);
+    const incomingPriority = getSourcePriority(incoming);
+    if (incomingPriority !== currentPriority) return incomingPriority > currentPriority;
+    return isIncomingEntityNewer(current, incoming);
+}
+
+function evictOldestMapEntry(map) {
+    if (!map || typeof map.entries !== 'function' || map.size === 0) return;
+    let oldestKey;
+    let oldestTs = Infinity;
+    for (const [key, value] of map.entries()) {
+        const ts = Number(value?.persistedAt || value?.commitClock || value?.updatedAt || 0) || Date.parse(value?.time || 0) || 0;
+        if (ts < oldestTs) {
+            oldestTs = ts;
+            oldestKey = key;
+        }
+    }
+    if (oldestKey !== undefined) map.delete(oldestKey);
+}
+
+function rememberCappedSet(set, value, maxSize = MAX_SAVE_DEDUPE_KEYS) {
+    set.add(value);
+    if (set.size > maxSize) {
+        const oldest = set.values().next().value;
+        set.delete(oldest);
+    }
+}
+
+function getMutationIdsFromRows(rows) {
+    const ids = new Set();
+    for (const row of (Array.isArray(rows) ? rows : [])) {
+        const id = sanitizeText(row?.mutationId || row?.lastMutationId || '', 180);
+        if (id) ids.add(id);
+        if (ids.size >= 32) break;
+    }
+    return Array.from(ids);
+}
+
+async function persistBucketCommitMarkers(env, mutationIds, marker = {}) {
+    if (!Array.isArray(mutationIds) || mutationIds.length === 0) return;
+    const now = Date.now();
+    await limitedMap(mutationIds, 4, async mutationId => {
+        const key = `bucket_commit_${sanitizeText(mutationId, 180)}`;
+        const existing = await getData(env, key);
+        const history = Array.isArray(existing?.history) ? existing.history.slice(-8) : [];
+        history.push({ status: marker.status, type: marker.type, updatedAt: now, touchedBuckets: marker.touchedBuckets || [] });
+        const payload = {
+            mutationId,
+            type: marker.type,
+            status: marker.status,
+            licenseKey: marker.licenseKey,
+            buckets: marker.buckets || [],
+            touchedBuckets: marker.touchedBuckets || [],
+            updatedAt: now,
+            incomplete: marker.status === 'INCOMPLETE',
+            history
+        };
+        await saveData(env, key, payload);
+    });
+}
+
+function pruneMapToMax(map, maxSize) {
+    if (!map || typeof map.keys !== 'function' || map.size <= maxSize) return;
+    for (const key of map.keys()) {
+        map.delete(key);
+        if (map.size <= maxSize) break;
+    }
+}
+
+function pruneInflightReplayCache() {
+    pruneMapToMax(globalThis.__vms_inflight_replays, MAX_GLOBAL_INFLIGHT_REPLAYS);
 }
 
 function isTrustedVersionCandidate(prevVersion, incomingVersion, trustedDevice = false) {
@@ -1801,6 +1980,8 @@ function buildReplayEntry(entry = {}) {
     const status = String(entry.status || 'PROCESSED').toUpperCase();
     const commitClock = Math.max(ts, Number(entry.commitClock || entry.commitTs || entry.updatedAt || ts));
     const mutationEpoch = Math.max(commitClock, Number(entry.mutationEpoch || entry.writeEpoch || commitClock));
+    const finalizedAt = status === 'DEAD_LETTER' ? Math.max(commitClock, Number(entry.finalizedAt || entry.tombstoneClock || commitClock)) : Number(entry.finalizedAt || 0);
+    const tombstoneClock = status === 'DEAD_LETTER' ? Math.max(finalizedAt, Number(entry.tombstoneClock || finalizedAt)) : Number(entry.tombstoneClock || 0);
     return {
         ...entry,
         id: sanitizeText(entry.id, 180),
@@ -1813,6 +1994,9 @@ function buildReplayEntry(entry = {}) {
         lastMutationId: sanitizeText(entry.lastMutationId || entry.mutationId || entry.id || '', 180),
         mutationId: sanitizeText(entry.mutationId || entry.id || '', 180),
         mutationSource: sanitizeText(entry.mutationSource || entry.deviceId || getWorkerOriginNode(), 120),
+        finalizedAt,
+        tombstoneClock,
+        final: status === 'DEAD_LETTER' || !!entry.final,
         commitTs: Number(entry.commitTs || commitClock),
         logicalClock: Number(entry.logicalClock || entry.commitTs || commitClock),
         originNode: sanitizeText(entry.originNode || getWorkerOriginNode(), 80),
@@ -1846,7 +2030,8 @@ function pruneReplayEntries(entries, nowTs = Date.now()) {
         if (!raw || !raw.id) continue;
         const entry = buildReplayEntry(raw);
         const ttl = ttlByStatus[entry.status] || ttlByStatus.PROCESSED;
-        if ((nowTs - Number(entry.ts || nowTs)) > ttl) continue;
+        const age = nowTs - Number(entry.ts || nowTs);
+        if (age > ttl && entry.status !== 'DEAD_LETTER') continue;
         const current = byId.get(entry.id);
         if (!current || compareReplayEntries(entry, current) >= 0) {
             byId.set(entry.id, entry);
@@ -1898,46 +2083,99 @@ function getReplayBucketKey(replayId) {
     return `processed_replays_b${String(hashToShard(clean, 16)).padStart(2, '0')}`;
 }
 
+
+async function safeAppendLogBucket(env, bucketKey, bucketLogs) {
+    const existing = await getData(env, bucketKey);
+    const byReplayKey = new Map();
+    if (Array.isArray(existing)) {
+        for (const rawLog of existing) {
+            if (!rawLog) continue;
+            const log = sanitizeLogEntity(rawLog);
+            const dedupeKey = buildLogBucketDedupeKey(log);
+            const current = byReplayKey.get(dedupeKey);
+            if (shouldPreferEntity(current, log)) byReplayKey.set(dedupeKey, log);
+        }
+    }
+    for (const rawLog of bucketLogs) {
+        const log = sanitizeLogEntity(rawLog);
+        const dedupeKey = buildLogBucketDedupeKey(log);
+        const current = byReplayKey.get(dedupeKey);
+        if (shouldPreferEntity(current, log)) byReplayKey.set(dedupeKey, log);
+    }
+    const next = Array.from(byReplayKey.values()).sort((a, b) => Number(a?.persistedAt || 0) - Number(b?.persistedAt || 0));
+    if (next.length > MAX_BUCKET_LOGS) throw new Error('BUCKET_FULL_RETRY_NEW_SHARD');
+    await saveDataOrThrow(env, bucketKey, next);
+    await verifyLogBucketWrite(env, bucketKey, bucketLogs);
+    return true;
+}
+
+async function safeAppendVisitorBucket(env, bucketKey, entries) {
+    const existing = await getData(env, bucketKey);
+    const next = (existing && typeof existing === 'object' && !Array.isArray(existing)) ? sanitizeVisitorBucket(existing) : {};
+    for (const [key, rawVisitor] of Object.entries(entries || {})) {
+        const visitor = sanitizeVisitorEntity(rawVisitor);
+        const current = next[key];
+        if (shouldPreferEntity(current, visitor)) next[key] = visitor;
+    }
+    const keys = Object.keys(next);
+    if (keys.length > MAX_BUCKET_VISITORS) throw new Error('VISITOR_BUCKET_FULL_RETRY_NEW_SHARD');
+    await saveDataOrThrow(env, bucketKey, next);
+    await verifyVisitorBucketWrite(env, bucketKey, entries);
+    return true;
+}
+
+function sanitizeVisitorBucket(bucket = {}) {
+    const out = {};
+    for (const [key, visitor] of Object.entries(bucket || {})) out[key] = sanitizeVisitorEntity(visitor);
+    return out;
+}
+
+async function verifyLogBucketWrite(env, bucketKey, bucketLogs) {
+    const verifyRows = await getData(env, bucketKey);
+    if (!Array.isArray(verifyRows)) throw new Error(`BUCKET_VERIFY_FAILED:${bucketKey}`);
+    const verifyKeys = new Set(verifyRows.map(row => buildLogBucketDedupeKey(row)));
+    for (const log of bucketLogs || []) {
+        if (!verifyKeys.has(buildLogBucketDedupeKey(log))) throw new Error(`BUCKET_VERIFY_MISSING_LOG:${bucketKey}`);
+    }
+}
+
+async function verifyVisitorBucketWrite(env, bucketKey, entries) {
+    const verifyRows = await getData(env, bucketKey);
+    if (!verifyRows || typeof verifyRows !== 'object' || Array.isArray(verifyRows)) throw new Error(`VISITOR_BUCKET_VERIFY_FAILED:${bucketKey}`);
+    for (const key of Object.keys(entries || {})) {
+        if (!verifyRows[key]) throw new Error(`VISITOR_BUCKET_VERIFY_MISSING:${bucketKey}:${sanitizeText(key, 80)}`);
+    }
+}
+
 async function appendLogsToBuckets(env, licenseKey, logs) {
     if (!Array.isArray(logs) || logs.length === 0) return true;
     const grouped = new Map();
     for (const log of logs) {
         const bucketKey = getLogBucketKey(licenseKey, Number(log.persistedAt || Date.now()), log.sequenceId || buildCanonicalLogKey(log));
         if (!grouped.has(bucketKey)) grouped.set(bucketKey, []);
-        grouped.get(bucketKey).push({ ...log, source: 'bucket_authoritative', bucketKey });
+        grouped.get(bucketKey).push(sanitizeLogEntity({ ...log, source: 'bucket_authoritative', bucketKey }));
     }
     const touchedBuckets = [];
-    const results = await limitedMap(Array.from(grouped.entries()), 6, async ([bucketKey, bucketLogs]) => {
-        const existing = await getData(env, bucketKey);
-        const byReplayKey = new Map();
-        if (Array.isArray(existing)) {
-            for (const log of existing) {
-                if (!log) continue;
-                const dedupeKey = buildLogBucketDedupeKey(log);
-                const current = byReplayKey.get(dedupeKey);
-                if (!current || isIncomingEntityNewer(current, log)) {
-                    byReplayKey.set(dedupeKey, log);
-                }
-            }
-        }
-        for (const log of bucketLogs) {
-            const dedupeKey = buildLogBucketDedupeKey(log);
-            const current = byReplayKey.get(dedupeKey);
-            if (!current || isIncomingEntityNewer(current, log)) {
-                byReplayKey.set(dedupeKey, log);
-            }
-        }
-        const next = Array.from(byReplayKey.values()).sort((a, b) => Number(a?.persistedAt || 0) - Number(b?.persistedAt || 0));
-        if (next.length > MAX_BUCKET_LOGS) next.splice(0, next.length - MAX_BUCKET_LOGS);
-        const saved = await saveDataOrThrow(env, bucketKey, next).then(() => true).catch(err => {
-            console.warn(`[LOG_BUCKET] Failed to save ${bucketKey}: ${err?.message || err}`);
-            return false;
+    const mutationIds = getMutationIdsFromRows(logs);
+    await persistBucketCommitMarkers(env, mutationIds, { type: 'LOG_BUCKET_COMMIT', status: 'STARTED', licenseKey, buckets: Array.from(grouped.keys()) });
+    try {
+        const results = await limitedMap(Array.from(grouped.entries()), 6, async ([bucketKey, bucketLogs]) => {
+            const saved = await safeAppendLogBucket(env, bucketKey, bucketLogs);
+            if (saved) touchedBuckets.push(bucketKey);
+            return saved;
         });
-        if (saved) touchedBuckets.push(bucketKey);
-        return saved;
-    });
-    if (touchedBuckets.length) await updateLogBucketManifest(env, licenseKey, touchedBuckets);
-    return results.every(Boolean);
+        const allCommitted = results.every(Boolean);
+        if (!allCommitted) {
+            await persistBucketCommitMarkers(env, mutationIds, { type: 'LOG_BUCKET_COMMIT', status: 'INCOMPLETE', licenseKey, buckets: Array.from(grouped.keys()), touchedBuckets });
+            return false;
+        }
+        await updateLogBucketManifest(env, licenseKey, touchedBuckets);
+        await persistBucketCommitMarkers(env, mutationIds, { type: 'LOG_BUCKET_COMMIT', status: 'COMMITTED', licenseKey, buckets: Array.from(grouped.keys()), touchedBuckets });
+        return true;
+    } catch (err) {
+        await persistBucketCommitMarkers(env, mutationIds, { type: 'LOG_BUCKET_COMMIT', status: 'INCOMPLETE', licenseKey, buckets: Array.from(grouped.keys()), touchedBuckets, error: sanitizeText(err?.message || err, 240) });
+        throw err;
+    }
 }
 
 async function getRecentLogBuckets(env, licenseKey, since = 0, maxRows = MAX_PULL_LOGS_DEFAULT * 3) {
@@ -1981,8 +2219,34 @@ async function getRecentLogBucketKeys(env, licenseKey, since = 0) {
     return fallbackKeys;
 }
 
+
+async function loadManifestOccMeta(env, manifestKey) {
+    const meta = await getData(env, `${manifestKey}_meta`);
+    return (meta && typeof meta === 'object' && !Array.isArray(meta)) ? meta : { version: 0, updatedAt: 0 };
+}
+
+async function saveManifestWithOCC(env, manifestKey, nextManifest, parentMeta, manifestType) {
+    const latestMeta = await loadManifestOccMeta(env, manifestKey);
+    const parentVersion = Number(parentMeta?.version || 0);
+    if (Number(latestMeta.version || 0) !== parentVersion) {
+        throw new Error(`${manifestType || 'MANIFEST'}_CONFLICT_DETECTED`);
+    }
+    const now = Date.now();
+    const nextMeta = {
+        version: parentVersion + 1,
+        updatedAt: now,
+        engine: SYNC_ENGINE,
+        syncStrategy: SYNC_STRATEGY,
+        manifestType
+    };
+    await saveDataOrThrow(env, manifestKey, nextManifest);
+    await saveDataOrThrow(env, `${manifestKey}_meta`, nextMeta);
+    return nextMeta;
+}
+
 async function updateLogBucketManifest(env, licenseKey, bucketKeys) {
     const manifestKey = getLogBucketManifestKey(licenseKey);
+    const parentMeta = await loadManifestOccMeta(env, manifestKey);
     const now = Date.now();
     const existing = await getData(env, manifestKey);
     const byKey = new Map();
@@ -1991,17 +2255,18 @@ async function updateLogBucketManifest(env, licenseKey, bucketKeys) {
             if (!item?.key) continue;
             const dayStart = Number(item.dayStart || getLogBucketDayStart(item.key));
             const isActive = dayStart >= now - LOG_MANIFEST_TTL_MS || Number(item.updatedAt || 0) >= now - LOG_MANIFEST_TTL_MS;
-            if (isActive) byKey.set(item.key, { ...item, dayStart });
+            if (isActive) byKey.set(item.key, { ...item, dayStart, retiredAt: item.retiredAt || null });
+            else if (!item.retiredAt) byKey.set(item.key, { ...item, dayStart, retiredAt: now, cleanupMarker: 'STALE_LOG_BUCKET_RETIRED' });
         }
     }
     for (const key of bucketKeys) {
         byKey.set(key, { key, updatedAt: now, dayStart: getLogBucketDayStart(key), retiredAt: null });
     }
     const next = Array.from(byKey.values())
-        .sort((a, b) => Number(b.dayStart || 0) - Number(a.dayStart || 0) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .sort((a, b) => Number(Boolean(a.retiredAt)) - Number(Boolean(b.retiredAt)) || Number(b.dayStart || 0) - Number(a.dayStart || 0) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
         .slice(0, 96);
-    const saved = await saveData(env, manifestKey, next);
-    if (!saved) console.warn(`[LOG_BUCKET_MANIFEST] Failed to save ${manifestKey}`);
+    await saveManifestWithOCC(env, manifestKey, next, parentMeta, 'LOG_BUCKET_MANIFEST');
+    return true;
 }
 
 function getLogBucketManifestKey(licenseKey) {
@@ -2054,12 +2319,17 @@ async function getRecentVisitorBuckets(env, licenseKey, siteFilter = '', since =
         .slice(0, 64);
     const rows = await limitedMap(selectedKeys, 6, key => getData(env, key));
     const visitors = {};
+    let visitorCount = 0;
     for (const bucket of rows) {
         if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) continue;
         for (const [key, visitor] of Object.entries(bucket)) {
-            if (Object.keys(visitors).length >= maxVisitors && !visitors[key]) continue;
+            if (visitorCount >= maxVisitors && !visitors[key]) continue;
+            const authoritativeVisitor = { ...visitor, source: 'bucket_authoritative' };
             const current = visitors[key];
-            if (!current || isIncomingEntityNewer(current, visitor)) visitors[key] = visitor;
+            if (shouldPreferEntity(current, authoritativeVisitor)) {
+                if (!current) visitorCount++;
+                visitors[key] = authoritativeVisitor;
+            }
         }
     }
     return visitors;
@@ -2067,23 +2337,25 @@ async function getRecentVisitorBuckets(env, licenseKey, siteFilter = '', since =
 
 async function updateVisitorBucketManifest(env, licenseKey, bucketKeys) {
     const manifestKey = getVisitorBucketManifestKey(licenseKey);
+    const parentMeta = await loadManifestOccMeta(env, manifestKey);
     const now = Date.now();
     const existing = await getData(env, manifestKey);
     const byKey = new Map();
     if (Array.isArray(existing)) {
         for (const item of existing) {
             if (!item?.key) continue;
-            if (Number(item.updatedAt || 0) >= now - VISITOR_MANIFEST_TTL_MS) byKey.set(item.key, item);
+            if (Number(item.updatedAt || 0) >= now - VISITOR_MANIFEST_TTL_MS) byKey.set(item.key, { ...item, retiredAt: item.retiredAt || null });
+            else if (!item.retiredAt) byKey.set(item.key, { ...item, retiredAt: now, cleanupMarker: 'STALE_VISITOR_BUCKET_RETIRED' });
         }
     }
     for (const key of bucketKeys) {
         byKey.set(key, { key, site: getVisitorBucketSite(key), updatedAt: now, retiredAt: null });
     }
     const next = Array.from(byKey.values())
-        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .sort((a, b) => Number(Boolean(a.retiredAt)) - Number(Boolean(b.retiredAt)) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
         .slice(0, 256);
-    const saved = await saveData(env, manifestKey, next);
-    if (!saved) console.warn(`[VISITOR_BUCKET_MANIFEST] Failed to save ${manifestKey}`);
+    await saveManifestWithOCC(env, manifestKey, next, parentMeta, 'VISITOR_BUCKET_MANIFEST');
+    return true;
 }
 
 function getVisitorBucketManifestKey(licenseKey) {
@@ -2102,34 +2374,29 @@ async function appendVisitorsToBuckets(env, licenseKey, visitors) {
         const site = sanitizeText(visitor?.site || String(key).split('_')[0] || 'SITE_A', 80) || 'SITE_A';
         const bucketKey = getVisitorBucketKey(licenseKey || visitor?.licenseKey || 'unknown', site, key);
         if (!grouped.has(bucketKey)) grouped.set(bucketKey, {});
-        grouped.get(bucketKey)[key] = visitor;
+        grouped.get(bucketKey)[key] = sanitizeVisitorEntity({ ...visitor, source: 'bucket_authoritative' });
     }
     const touchedBuckets = [];
-    const results = await limitedMap(Array.from(grouped.entries()), 6, async ([bucketKey, entries]) => {
-        const existing = await getData(env, bucketKey);
-        const next = (existing && typeof existing === 'object' && !Array.isArray(existing)) ? existing : {};
-        for (const [key, visitor] of Object.entries(entries)) {
-            const current = next[key];
-            if (!current || isIncomingEntityNewer(current, visitor)) {
-                next[key] = visitor;
-            }
-        }
-        const keys = Object.keys(next);
-        if (keys.length > MAX_BUCKET_VISITORS) {
-            keys.sort((a, b) => Number(next[b]?.updatedAt || 0) - Number(next[a]?.updatedAt || 0));
-            const keep = new Set(keys.slice(0, MAX_BUCKET_VISITORS));
-            for (const key of keys) if (!keep.has(key)) delete next[key];
-        }
-        const saved = await saveDataOrThrow(env, bucketKey, next).then(() => true).catch(err => {
-            console.warn(`[VISITOR_BUCKET] Failed to save ${bucketKey}: ${err?.message || err}`);
-            return false;
+    const mutationIds = getMutationIdsFromRows(Object.values(visitors));
+    await persistBucketCommitMarkers(env, mutationIds, { type: 'VISITOR_BUCKET_COMMIT', status: 'STARTED', licenseKey, buckets: Array.from(grouped.keys()) });
+    try {
+        const results = await limitedMap(Array.from(grouped.entries()), 6, async ([bucketKey, entries]) => {
+            const saved = await safeAppendVisitorBucket(env, bucketKey, entries);
+            if (saved) touchedBuckets.push(bucketKey);
+            return saved;
         });
-        if (saved) touchedBuckets.push(bucketKey);
-        if (!saved) console.warn(`[VISITOR_BUCKET] Failed to save ${bucketKey}`);
-        return saved;
-    });
-    if (touchedBuckets.length) await updateVisitorBucketManifest(env, licenseKey, touchedBuckets);
-    return results.every(Boolean);
+        const allCommitted = results.every(Boolean);
+        if (!allCommitted) {
+            await persistBucketCommitMarkers(env, mutationIds, { type: 'VISITOR_BUCKET_COMMIT', status: 'INCOMPLETE', licenseKey, buckets: Array.from(grouped.keys()), touchedBuckets });
+            return false;
+        }
+        await updateVisitorBucketManifest(env, licenseKey, touchedBuckets);
+        await persistBucketCommitMarkers(env, mutationIds, { type: 'VISITOR_BUCKET_COMMIT', status: 'COMMITTED', licenseKey, buckets: Array.from(grouped.keys()), touchedBuckets });
+        return true;
+    } catch (err) {
+        await persistBucketCommitMarkers(env, mutationIds, { type: 'VISITOR_BUCKET_COMMIT', status: 'INCOMPLETE', licenseKey, buckets: Array.from(grouped.keys()), touchedBuckets, error: sanitizeText(err?.message || err, 240) });
+        throw err;
+    }
 }
 
 
@@ -2163,6 +2430,12 @@ function getVisitorBucketKey(licenseKey, site, visitorKey) {
 }
 
 function compareReplayEntries(a, b) {
+    const aFinal = a?.status === 'DEAD_LETTER' || a?.final ? 1 : 0;
+    const bFinal = b?.status === 'DEAD_LETTER' || b?.final ? 1 : 0;
+    if (aFinal !== bFinal) return aFinal - bFinal;
+    const aTombstone = Number(a?.tombstoneClock || a?.finalizedAt || 0);
+    const bTombstone = Number(b?.tombstoneClock || b?.finalizedAt || 0);
+    if (aTombstone !== bTombstone) return aTombstone - bTombstone;
     const aClock = Number(a?.logicalClock || a?.commitTs || a?.updatedAt || a?.ts || 0);
     const bClock = Number(b?.logicalClock || b?.commitTs || b?.updatedAt || b?.ts || 0);
     if (aClock !== bClock) return aClock - bClock;
@@ -2212,11 +2485,159 @@ function generateMutationId(licenseKey, deviceId) {
     return `${sanitizeText(licenseKey || 'unknown', 80)}:${sanitizeText(deviceId || getWorkerOriginNode(), 80)}:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
 }
 
+
+
+function summarizeCompanies(companies, now = Date.now()) {
+    const summary = { total: Array.isArray(companies) ? companies.length : 0, active: 0, byPackage: { DEMO: 0, BASIC: 0, PRO: 0 } };
+    if (!Array.isArray(companies)) return summary;
+    for (const company of companies) {
+        if (!company) continue;
+        if (Number(company.expiredAt || 0) > now) summary.active++;
+        const pkg = String(company.package || '').toUpperCase();
+        if (Object.prototype.hasOwnProperty.call(summary.byPackage, pkg)) summary.byPackage[pkg]++;
+    }
+    return summary;
+}
+
+function summarizeViolations(activities, now = Date.now(), last30Days = now - 30 * 86400000) {
+    const summary = { total: 0, last7Days: 0, last30Days: 0 };
+    if (!Array.isArray(activities)) return summary;
+    const last7Days = now - 7 * 86400000;
+    for (const activity of activities) {
+        if (activity?.type !== 'VIOLATION_REPORTED') continue;
+        summary.total++;
+        const ts = Number(activity.timestamp || 0);
+        if (ts > last7Days) summary.last7Days++;
+        if (ts > last30Days) summary.last30Days++;
+    }
+    return summary;
+}
+
+function sumPaidRevenue(invoices, sinceTs = 0) {
+    if (!Array.isArray(invoices)) return 0;
+    let total = 0;
+    for (const invoice of invoices) {
+        if (invoice?.status === 'PAID' && Number(invoice.paidAt || 0) > sinceTs) total += Number(invoice.amount || 0);
+    }
+    return total;
+}
+
+function buildDeviceIndexes(devices) {
+    const source = Array.isArray(devices) ? devices : [];
+    if (globalThis.__vms_device_index_cache?.source === source) {
+        return globalThis.__vms_device_index_cache.index;
+    }
+    const index = {
+        byDeviceId: new Map(),
+        byDeviceLicense: new Map(),
+        byCompanyId: new Map(),
+        byLicenseKey: new Map(),
+        statusCounts: Object.create(null)
+    };
+    try {
+        for (let i = 0; i < source.length; i++) {
+            const device = source[i];
+            if (!device || typeof device !== 'object') continue;
+            const deviceId = String(device.deviceId || '');
+            const licenseKey = String(device.licenseKey || '');
+            const companyId = String(device.companyId || '');
+            const status = String(device.status || 'UNKNOWN').toUpperCase();
+            if (deviceId && !index.byDeviceId.has(deviceId)) index.byDeviceId.set(deviceId, device);
+            if (deviceId && licenseKey) index.byDeviceLicense.set(`${licenseKey}\u0000${deviceId}`, device);
+            if (companyId) pushIndexArray(index.byCompanyId, companyId, device);
+            if (licenseKey) pushIndexArray(index.byLicenseKey, licenseKey, device);
+            index.statusCounts[status] = (index.statusCounts[status] || 0) + 1;
+        }
+        globalThis.__vms_device_index_cache = { source, index, builtAt: Date.now(), size: source.length };
+        return index;
+    } catch (err) {
+        console.warn('[DEVICE_INDEX] Falling back to direct array scans:', err?.message || err);
+        return { ...index, fallback: source };
+    }
+}
+
+function pushIndexArray(map, key, value) {
+    const cleanKey = String(key || '');
+    if (!cleanKey) return;
+    const existing = map.get(cleanKey);
+    if (existing) existing.push(value);
+    else map.set(cleanKey, [value]);
+}
+
+function invalidateDeviceIndexCache() {
+    globalThis.__vms_device_index_cache = null;
+}
+
+function getDeviceByLicense(index, deviceId, licenseKey) {
+    const key = `${licenseKey}\u0000${deviceId}`;
+    return index?.byDeviceLicense?.get(key) || (Array.isArray(index?.fallback) ? index.fallback.find(d => d?.deviceId === deviceId && d?.licenseKey === licenseKey) : null);
+}
+
+function getDeviceById(index, deviceId) {
+    return index?.byDeviceId?.get(String(deviceId || '')) || (Array.isArray(index?.fallback) ? index.fallback.find(d => d?.deviceId === deviceId) : null);
+}
+
+function getDeviceIndexById(devices, deviceId) {
+    if (!Array.isArray(devices)) return -1;
+    const indexedDevice = getDeviceById(buildDeviceIndexes(devices), deviceId);
+    if (!indexedDevice) return -1;
+    return devices.indexOf(indexedDevice);
+}
+
+function getDevicesByLicense(index, licenseKey) {
+    return index?.byLicenseKey?.get(String(licenseKey || '')) || (Array.isArray(index?.fallback) ? index.fallback.filter(d => d?.licenseKey === licenseKey) : []);
+}
+
+function getDevicesByCompany(index, companyId) {
+    return index?.byCompanyId?.get(String(companyId || '')) || (Array.isArray(index?.fallback) ? index.fallback.filter(d => d?.companyId === companyId) : []);
+}
+
+function getDeviceStatusCounts(index) {
+    return index?.statusCounts || Object.create(null);
+}
+
+function countDeviceStatuses(devices) {
+    const counts = Object.create(null);
+    if (!Array.isArray(devices)) return counts;
+    for (const device of devices) {
+        const status = String(device?.status || 'UNKNOWN').toUpperCase();
+        counts[status] = (counts[status] || 0) + 1;
+    }
+    return counts;
+}
+
+function countDevicesByLicense(devices, licenseKey, status = '') {
+    const rows = getDevicesByLicense(buildDeviceIndexes(devices), licenseKey);
+    if (!status) return rows.length;
+    const target = String(status).toUpperCase();
+    let count = 0;
+    for (const device of rows) if (String(device?.status || '').toUpperCase() === target) count++;
+    return count;
+}
+
+function countDevicesByCompany(devices, companyId, status = '') {
+    const rows = getDevicesByCompany(buildDeviceIndexes(devices), companyId);
+    if (!status) return rows.length;
+    const target = String(status).toUpperCase();
+    let count = 0;
+    for (const device of rows) if (String(device?.status || '').toUpperCase() === target) count++;
+    return count;
+}
+
+function countOnlineDevices(devices, now = Date.now()) {
+    if (!Array.isArray(devices)) return 0;
+    let count = 0;
+    for (const device of devices) {
+        if (device?.status === 'ACTIVE' && (now - Number(device.lastSeen || 0)) < 5 * 60000) count++;
+    }
+    return count;
+}
+
 async function isTrustedSyncDevice(env, licenseKey, deviceId) {
     if (!licenseKey || !deviceId) return false;
     const devices = await getData(env, 'devices');
-    const device = Array.isArray(devices) ? devices.find(d => d?.licenseKey === licenseKey && d?.deviceId === deviceId && d?.status !== 'DELETED') : null;
-    return !!device && ['ACTIVE', 'PENDING_APPROVAL', 'SUSPENDED'].includes(String(device.status || '').toUpperCase());
+    const device = getDeviceByLicense(buildDeviceIndexes(devices), deviceId, licenseKey);
+    return !!device && device.status !== 'DELETED' && ['ACTIVE', 'PENDING_APPROVAL', 'SUSPENDED'].includes(String(device.status || '').toUpperCase());
 }
 
 async function withMutationLock(lockKey, mutationFn) {
@@ -2234,6 +2655,7 @@ async function withMutationLock(lockKey, mutationFn) {
     const tail = previous.then(() => current, () => current);
     const record = { tail, startedAt: now, settled: false, recoveredFromStale: !!previousIsStale };
     globalThis.__vms_mutation_locks.set(lockKey, record);
+    pruneMapToMax(globalThis.__vms_mutation_locks, MAX_MUTATION_LOCKS);
     if (previousIsStale) {
         console.log(JSON.stringify({ type:"MUTATION_LOCK_STALE_RECOVERY", lockKey: sanitizeText(lockKey, 200), staleMs: now - Number(previousRecord.startedAt || now), warning:"possible_double_execution", updatedAt: now }));
         await Promise.race([
@@ -2452,6 +2874,10 @@ async function reconcileDeviceState(env) {
     let companies = await getData(env, 'companies');
     let requests = await getData(env, 'device_requests');
     let invoices = await getData(env, 'invoices');
+    const originalDevicesJson = JSON.stringify(devices || []);
+    const originalCompaniesJson = JSON.stringify(companies || []);
+    const originalRequestsJson = JSON.stringify(requests || []);
+    const originalInvoicesJson = JSON.stringify(invoices || []);
     const companyIds = new Set((companies || []).map(c => c.id));
 
     const bestByDeviceId = new Map();
@@ -2475,22 +2901,24 @@ async function reconcileDeviceState(env) {
     requests = requests.filter(r => !deletedDeviceIds.has(r.deviceId));
     console.log("ZOMBIE CLEANUP", { requests: requests.length, invoices: invoices.length });
 
+    const deviceIndex = buildDeviceIndexes(devices);
     for (const company of companies) {
-        const companyDevices = devices.filter(d => d.companyId === company.id);
-        company.approvedDevices = companyDevices.filter(d => d.status === 'ACTIVE' || d.status === 'SUSPENDED' || d.status === 'BANNED').length;
-        company.activeDevices = companyDevices.filter(d => d.status === 'ACTIVE' && (now - Number(d.lastSeen || 0)) < 5 * 60000).length;
+        const companyDevices = getDevicesByCompany(deviceIndex, company.id);
+        const statusCounts = countDeviceStatuses(companyDevices);
+        company.approvedDevices = (statusCounts.ACTIVE || 0) + (statusCounts.SUSPENDED || 0) + (statusCounts.BANNED || 0);
+        company.activeDevices = countOnlineDevices(companyDevices, now);
         company.activeOnlineDevices = company.activeDevices;
-        company.pendingDevices = companyDevices.filter(d => d.status === 'PENDING_APPROVAL').length;
-        company.suspendedDevices = companyDevices.filter(d => d.status === 'SUSPENDED').length;
-        company.deletedDevices = companyDevices.filter(d => d.status === 'DELETED').length;
-        company.currentDevices = companyDevices.filter(d => d.status === 'ACTIVE').length;
+        company.pendingDevices = statusCounts.PENDING_APPROVAL || 0;
+        company.suspendedDevices = statusCounts.SUSPENDED || 0;
+        company.deletedDevices = statusCounts.DELETED || 0;
+        company.currentDevices = statusCounts.ACTIVE || 0;
         company.onlineDevices = company.activeDevices;
     }
 
-    await saveData(env, 'devices', devices);
-    await saveData(env, 'companies', companies);
-    await saveData(env, 'device_requests', requests);
-    await saveData(env, 'invoices', invoices);
+    await saveDataIfChangedFromJson(env, 'devices', originalDevicesJson, devices);
+    await saveDataIfChangedFromJson(env, 'companies', originalCompaniesJson, companies);
+    await saveDataIfChangedFromJson(env, 'device_requests', originalRequestsJson, requests);
+    await saveDataIfChangedFromJson(env, 'invoices', originalInvoicesJson, invoices);
     console.log('DEVICE RECONCILE', { devices: devices.length, companies: companies.length, requests: requests.length, invoices: invoices.length });
     } finally {
         globalThis.__lastReconcile = Date.now();

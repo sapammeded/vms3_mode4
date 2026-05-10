@@ -16,6 +16,10 @@ const MAX_BUCKET_LOGS = 1200;
 const MAX_BUCKET_VISITORS = 1000;
 const MAX_PULL_LOGS_DEFAULT = 1000;
 const MAX_PULL_VISITORS_DEFAULT = 2000;
+// Short isolate cache only.
+// Lower TTL untuk mengurangi stale burst saat sync storm mobile.
+const RUNTIME_BUCKET_CACHE_TTL_MS = 250;
+const MAX_RUNTIME_BUCKET_CACHE_ENTRIES = 256;
 const LOG_MANIFEST_TTL_MS = 14 * 86400000;
 const VISITOR_MANIFEST_TTL_MS = 30 * 86400000;
 const REPLAY_PROCESSED_TTL_MS = 36 * 3600000;
@@ -56,7 +60,15 @@ export default {
             if (!globalThis.__vms_inflight_replays) {
                 globalThis.__vms_inflight_replays = new Set();
             }
+            if (!globalThis.__vms_runtime_bucket_cache) {
+                globalThis.__vms_runtime_bucket_cache = new Map();
+            }
+            if (!globalThis.__vms_dead_letter_recovery) {
+                globalThis.__vms_dead_letter_recovery = new Map();
+            }
             pruneInflightReplayCache();
+            pruneDeadLetterRecoveryCache();
+            pruneRuntimeBucketCache();
             // ==================== AUTO INIT (ANTI LOOP) ====================
             if (!globalThis.__vms_init_done) {
                 let adminsCheck = await getData(env, 'admins');
@@ -1023,12 +1035,23 @@ export default {
                     const nowTs = Date.now();
                     const normalizedReplay = await loadReplayGovernanceEntries(env, replayId, nowTs);
                     const replayState = getReplayGovernanceState(normalizedReplay, replayId);
+                    // Operational stability mode: do not block valid saves only because
+                    // replay governance previously marked the mutation as DEAD_LETTER.
+                    // Basic replay dedupe below remains active for non-FAILED states.
                     if (replayState?.status === 'DEAD_LETTER') {
-                        globalThis.__vms_metrics.dedupReplay++;
-                        console.log(JSON.stringify({ type:"REPLAY_DEAD_LETTER", replayId: sanitizeText(replayId, 180), retryCount: replayState.retryCount, licenseKey, updatedAt: Date.now() }));
-                        return json({ ok: false, dedup: true, deadLetter: true, retryCount: replayState.retryCount || 0, message: 'Replay masuk DEAD_LETTER dan tidak akan diproses ulang.' }, 409);
+                        const recoveryKey = `${licenseKey}:${replayId}`;
+                        const recovery = trackDeadLetterRecovery(
+                            recoveryKey,
+                            body.deviceId || '',
+                            licenseKey || ''
+                        );
+                        console.warn(JSON.stringify({ type:"REPLAY_DEAD_LETTER_RECOVERY", replayId: sanitizeText(replayId, 180), licenseKey, retryCount: replayState.retryCount || 0, recoveryCount: recovery.count, updatedAt: Date.now() }));
+                        if (recovery.throttled) {
+                            globalThis.__vms_metrics.dedupReplay++;
+                            return json({ ok: true, dedup: true, deadLetterRecoveryThrottled: true }, 202);
+                        }
                     }
-                    if (replayState && replayState.status !== 'FAILED') {
+                    if (replayState && replayState.status !== 'FAILED' && replayState.status !== 'DEAD_LETTER') {
                         globalThis.__vms_metrics.dedupReplay++;
                         console.log(JSON.stringify({ type:"REPLAY_DETECTED", replayId: sanitizeText(replayId, 180), status: replayState.status, licenseKey, updatedAt: Date.now() }));
                         return json({ ok: true, dedup: true });
@@ -1050,7 +1073,13 @@ export default {
                 
                 const acceptedVisitors = {};
                 if (visitors && Object.keys(visitors).length > 0) {
-                    let allVisitors = await getData(env, 'visitors');
+                    // Cloudflare KV is not a transactional database. The legacy
+                    // `visitors` hot cache is only a compatibility mirror; bucket
+                    // storage is the primary sync source for save/pull convergence.
+                    const visitorBucketCache = await preloadVisitorBucketsForKeys(env, licenseKey, Object.entries(visitors).map(([key, value]) => ({
+                        key,
+                        site: value?.site || body.site || String(key).split('_')[0] || 'SITE_A'
+                    })));
                     for (const [key, value] of Object.entries(visitors)) {
                         if (!value || typeof value !== 'object') continue;
                         const normalizedVisitor = sanitizeVisitorEntity({
@@ -1072,31 +1101,37 @@ export default {
                             site: value.site || body.site || String(key).split('_')[0] || 'SITE_A',
                             mutationId
                         });
-                        const prev = allVisitors[key] || {};
+                        const prev = await getVisitorFromAuthoritativeBucket(env, licenseKey, key, normalizedVisitor.site, visitorBucketCache);
                         const prevUpdated = Number(prev.updatedAt || 0);
                         const incomingUpdated = Number(normalizedVisitor?.updatedAt || 0);
                         const prevVersion = Number(prev.version || 0);
                         const incomingVersion = Number(normalizedVisitor?.version || 0);
                         const trustedIncomingVersion = isTrustedVersionCandidate(prevVersion, incomingVersion, trustedSyncDevice);
                         const accepted = shouldAcceptAuthoritativeMutation(prev, normalizedVisitor, trustedSyncDevice);
-                        console.log("VISITOR CONFLICT", { key, prevUpdated, incomingUpdated, prevVersion, incomingVersion, trustedIncomingVersion, trustedSyncDevice, accepted });
+                        console.log("VISITOR CONFLICT", { key, prevUpdated, incomingUpdated, prevVersion, incomingVersion, trustedIncomingVersion, trustedSyncDevice, accepted, authority: 'bucket' });
                         if (!accepted) {
-                            console.log(JSON.stringify({ type:"VISITOR_MUTATION_REJECTED", key: sanitizeText(key, 160), reason:"stale_or_untrusted_mutation", trustedSyncDevice, prevVersion, incomingVersion, updatedAt: Date.now() }));
+                            console.log(JSON.stringify({ type:"VISITOR_MUTATION_REJECTED", key: sanitizeText(key, 160), reason:"stale_or_untrusted_mutation", trustedSyncDevice, prevVersion, incomingVersion, authority: 'bucket', updatedAt: Date.now() }));
                             continue;
                         }
                         const mutationClock = buildAuthoritativeMutationClock(prev, normalizedVisitor, trustedSyncDevice, mutationId);
-                        allVisitors[key] = sanitizeVisitorEntity(stampAuthoritativeEntity({ ...sanitizeVisitorEntity(prev), ...normalizedVisitor, licenseKey, lastSync: mutationClock.updatedAt }, mutationClock, mutationId, body.deviceId || getWorkerOriginNode()));
-                        acceptedVisitors[key] = { ...allVisitors[key] };
+                        acceptedVisitors[key] = sanitizeVisitorEntity(stampAuthoritativeEntity({ ...sanitizeVisitorEntity(prev), ...normalizedVisitor, licenseKey, lastSync: mutationClock.updatedAt }, mutationClock, mutationId, body.deviceId || getWorkerOriginNode()));
                     }
-                    const visitorBucketOk = await appendVisitorsToBuckets(env, licenseKey, acceptedVisitors);
-                    if (!visitorBucketOk) throw new Error('AUTHORITATIVE_VISITOR_BUCKET_SAVE_FAILED');
-                    const hotVisitors = pruneHotVisitors(allVisitors, MAX_HOT_VISITORS);
-                    await saveDataOrThrow(env, 'visitors', hotVisitors);
+                    if (Object.keys(acceptedVisitors).length) {
+                        const visitorBucketOk = await appendVisitorsToBuckets(env, licenseKey, acceptedVisitors);
+                        if (!visitorBucketOk) throw new Error('AUTHORITATIVE_VISITOR_BUCKET_SAVE_FAILED');
+                        // Hot cache mirror must append/merge to avoid corrupt rolling snapshots.
+                        // It remains non-authoritative and may be stale under KV eventual consistency.
+                        const existingHotVisitors = await getData(env, 'visitors');
+                        const hotVisitors = mergeHotVisitorMirror(existingHotVisitors, acceptedVisitors, MAX_HOT_VISITORS);
+                        const hotVisitorsOk = await saveData(env, 'visitors', hotVisitors);
+                        if (!hotVisitorsOk) console.warn('[VISITOR_HOT_CACHE] Legacy hot cache mirror failed; bucket storage remains authoritative');
+                    }
                 }
                 
                 if (Array.isArray(logs) && logs.length > 0) {
-                    let allLogs = await getData(env, 'logs');
-                    const allVisitors = await getData(env, 'visitors');
+                    // Logs are appended to authoritative buckets directly. The
+                    // legacy `logs` hot cache is never used for authoritative
+                    // dedupe/merge because Cloudflare KV reads can be stale.
                     const maxIncomingLogs = 1000;
                     const normalizedLogs = [];
                     const incomingLimit = Math.min(logs.length, maxIncomingLogs);
@@ -1122,19 +1157,21 @@ export default {
                     globalThis.__vms_metrics.malformedLogs += Math.max(0, logs.length - normalizedLogs.length);
                     const seen = new Set();
                     const logicalSeen = new Set();
-                    const dedupeStart = Math.max(0, allLogs.length - 7000);
-                    for (let i = dedupeStart; i < allLogs.length; i++) {
-                        const l = allLogs[i];
-                        if (!l) continue;
-                        seen.add(l.sequenceId || `${l.licenseKey}|${l.reg}|${l.action}|${l.time}|${l.site || ''}|${l.deviceId || ''}`);
-                        logicalSeen.add(buildCanonicalLogKey(l));
-                    }
                     const appendOnly = [];
                     const rejectedExpired = [];
+                    const visitorBucketCache = await preloadVisitorBucketsForKeys(env, licenseKey, normalizedLogs.map(log => {
+                        const site = log.site || body.site || 'SITE_A';
+                        return { key: `${site}_${log.reg}`, site };
+                    }));
+                    const visitorEntityCache = new Map();
                     for (const log of normalizedLogs) {
                         const site = log.site || body.site || 'SITE_A';
                         const visitorKey = `${site}_${log.reg}`;
-                        const visitor = allVisitors[visitorKey];
+                        let visitor = acceptedVisitors[visitorKey] || visitorEntityCache.get(visitorKey);
+                        if (!acceptedVisitors[visitorKey] && !visitorEntityCache.has(visitorKey)) {
+                            visitor = await getVisitorFromAuthoritativeBucket(env, licenseKey, visitorKey, site, visitorBucketCache);
+                            visitorEntityCache.set(visitorKey, visitor);
+                        }
                         const expValue = visitor?.exp || visitor?.expDate;
                         if (expValue) {
                             const expText = String(expValue);
@@ -1161,21 +1198,16 @@ export default {
                         const logClock = buildAuthoritativeMutationClock({}, { ...log, updatedAt: Number(log.updatedAt || persistedAt), persistedAt }, trustedSyncDevice, mutationId);
                         appendOnly.push(sanitizeLogEntity(stampAuthoritativeEntity({ ...log, persistedAt, sequenceId }, logClock, mutationId, body.deviceId || getWorkerOriginNode())));
                     }
-                    // Avoid array cloning for high-frequency logging
-                    for (const item of appendOnly) {
-                        allLogs.push({ ...item, source: 'legacy_hot_cache' });
-                    }
-                    if (allLogs.length > MAX_HOT_LOGS) {
-                        const dropCount = allLogs.length - MAX_HOT_LOGS;
-                        allLogs.splice(0, dropCount);
-                        console.log(JSON.stringify({ type:"LOG_KV_PRUNE", licenseKey, dropped: dropCount, retained: allLogs.length, mode:"legacy_hot_index", updatedAt: Date.now() }));
-                    }
                     if (appendOnly.length) {
                         const bucketOk = await appendLogsToBuckets(env, licenseKey, appendOnly);
                         if (!bucketOk) throw new Error('AUTHORITATIVE_LOG_BUCKET_SAVE_FAILED');
+                        const hotLogMirror = appendOnly.map(item => ({ ...item, source: 'legacy_hot_cache' }));
+                        // Hot cache mirror is append-style only; bucket logs remain authoritative.
+                        const existingHotLogs = await getData(env, 'logs');
+                        const mergedLogs = mergeHotLogMirror(existingHotLogs, hotLogMirror, MAX_HOT_LOGS);
+                        const hotCacheOk = await saveData(env, 'logs', mergedLogs);
+                        if (!hotCacheOk) console.warn('[LOG_HOT_CACHE] Legacy hot cache mirror failed; bucket storage remains authoritative');
                     }
-                    const hotCacheOk = await saveData(env, 'logs', pruneHotLogs(allLogs, MAX_HOT_LOGS));
-                    if (!hotCacheOk) console.warn('[LOG_HOT_CACHE] Legacy hot cache save failed; bucket storage remains authoritative');
                     if (appendOnly.length) {
                         const gasLogs = [];
                         for (const log of appendOnly) {
@@ -1272,7 +1304,8 @@ export default {
                 if (!company) {
                     return json({ ok: false, message: 'Invalid licenseKey' }, 403);
                 }
-                const allVisitors = pruneHotVisitors(await getData(env, 'visitors'), MAX_HOT_VISITORS);
+                // Pull is intentionally bucket-only. The legacy hot visitor cache can lag
+                // or regress under KV eventual consistency, so it is not merged here.
                 const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, siteFilter, since, MAX_PULL_VISITORS_DEFAULT);
                 const visitors = {};
                 const MAX_PULL_VISITORS = MAX_PULL_VISITORS_DEFAULT;
@@ -1290,9 +1323,9 @@ export default {
                     }
                 };
                 for (const [key, v] of Object.entries(bucketVisitors || {})) appendPullVisitor(key, v);
-                for (const [key, v] of Object.entries(allVisitors || {})) appendPullVisitor(key, v);
                 const MAX_PULL_LOGS = MAX_PULL_LOGS_DEFAULT;
-                const allLogs = pruneHotLogs(await getData(env, 'logs'), MAX_HOT_LOGS);
+                // Pull is intentionally bucket-only. The legacy hot log cache remains a
+                // best-effort write-through cache for compatibility, not a read source.
                 const bucketLogs = await getRecentLogBuckets(env, licenseKey, since, MAX_PULL_LOGS * 3);
                 const MAX_PULL_SCAN_LOGS = MAX_PULL_LOGS * 4;
                 let scannedLogs = 0;
@@ -1315,7 +1348,6 @@ export default {
                     }
                 };
                 for (const l of bucketLogs) appendPullLog(l);
-                for (let i = allLogs.length - 1; i >= 0 && scannedLogs < MAX_PULL_SCAN_LOGS; i--) appendPullLog(allLogs[i]);
                 const dedupedLogs = Array.from(dedupeMap.values())
                     .sort((a,b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
                     .slice(-MAX_PULL_LOGS);
@@ -1808,6 +1840,30 @@ function pruneHotLogs(logs, limit = MAX_HOT_LOGS) {
     return logs.slice(-limit);
 }
 
+function mergeHotVisitorMirror(existingHotVisitors, incomingVisitors, limit = MAX_HOT_VISITORS) {
+    const merged = {};
+    if (existingHotVisitors && typeof existingHotVisitors === 'object' && !Array.isArray(existingHotVisitors)) {
+        for (const [key, visitor] of Object.entries(existingHotVisitors)) merged[key] = sanitizeVisitorEntity(visitor);
+    }
+    for (const [key, visitor] of Object.entries(incomingVisitors || {})) {
+        const candidate = sanitizeVisitorEntity({ ...visitor, source: 'legacy_hot_cache' });
+        if (shouldPreferEntity(merged[key], candidate)) merged[key] = candidate;
+    }
+    return pruneHotVisitors(merged, limit);
+}
+
+function mergeHotLogMirror(existingHotLogs, incomingLogs, limit = MAX_HOT_LOGS) {
+    const byDedupeKey = new Map();
+    const keyIndex = new Map();
+    if (Array.isArray(existingHotLogs)) {
+        for (const log of existingHotLogs) upsertLogDedupeCandidate(byDedupeKey, keyIndex, log);
+    }
+    for (const log of (Array.isArray(incomingLogs) ? incomingLogs : [])) upsertLogDedupeCandidate(byDedupeKey, keyIndex, log);
+    const merged = Array.from(byDedupeKey.values())
+        .sort((a, b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)));
+    return pruneHotLogs(merged, limit);
+}
+
 async function stablePayloadFingerprint(jsonString = '') {
     const bytes = new TextEncoder().encode(String(jsonString));
     const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -1926,12 +1982,71 @@ function pruneInflightReplayCache() {
     pruneMapToMax(globalThis.__vms_inflight_replays, MAX_GLOBAL_INFLIGHT_REPLAYS);
 }
 
+function pruneDeadLetterRecoveryCache(now = Date.now()) {
+    const cache = globalThis.__vms_dead_letter_recovery;
+    if (!cache || typeof cache.entries !== 'function') return;
+    for (const [key, entry] of cache.entries()) {
+        if (!entry || Number(entry.expiresAt || 0) <= now) cache.delete(key);
+    }
+    pruneMapToMax(cache, 1000);
+}
+
+function trackDeadLetterRecovery(key, deviceId = '', licenseKey = '') {
+    const cache = globalThis.__vms_dead_letter_recovery;
+    const now = Date.now();
+    const windowMs = 5 * 60 * 1000;
+    const compositeKey = `${key}:${deviceId}:${licenseKey}`;
+    const existing = cache?.get(compositeKey);
+    const entry = existing && Number(existing.expiresAt || 0) > now
+        ? { ...existing, count: Number(existing.count || 0) + 1 }
+        : { count: 1, firstSeen: now };
+    entry.expiresAt = now + windowMs;
+    entry.throttled = entry.count > 3;
+    if (cache) cache.set(compositeKey, entry);
+    pruneDeadLetterRecoveryCache(now);
+    return entry;
+}
+
+function pruneRuntimeBucketCache(now = Date.now()) {
+    const cache = globalThis.__vms_runtime_bucket_cache;
+    if (!cache || typeof cache.entries !== 'function') return;
+    for (const [key, entry] of cache.entries()) {
+        if (!entry || Number(entry.expiresAt || 0) <= now) cache.delete(key);
+    }
+    pruneMapToMax(cache, MAX_RUNTIME_BUCKET_CACHE_ENTRIES);
+}
+
+function setRuntimeBucketCache(key, value, ttlMs = RUNTIME_BUCKET_CACHE_TTL_MS) {
+    const cache = globalThis.__vms_runtime_bucket_cache;
+    if (!cache || !key) return;
+    cache.set(key, { value: clonePayloadSafe(value), expiresAt: Date.now() + ttlMs });
+    pruneRuntimeBucketCache();
+}
+
+async function getRuntimeCachedBucketData(env, key, ttlMs = RUNTIME_BUCKET_CACHE_TTL_MS) {
+    // Short-lived isolate cache is an optimization only. KV buckets remain the
+    // authoritative storage and stale runtime cache must never decide writes.
+    const cache = globalThis.__vms_runtime_bucket_cache;
+    const now = Date.now();
+    const cached = cache?.get(key);
+    if (cached && Number(cached.expiresAt || 0) > now) return clonePayloadSafe(cached.value);
+    const value = await getData(env, key);
+    setRuntimeBucketCache(key, value, ttlMs);
+    return value;
+}
+
 function isTrustedVersionCandidate(prevVersion, incomingVersion, trustedDevice = false) {
+    // Relaxed security: tolerate normal multi-device drift but reject obvious
+    // version poisoning and stale rollback candidates.
     const safePrev = Math.max(0, Number(prevVersion || 0));
     const safeIncoming = Math.max(0, Number(incomingVersion || 0));
-    const maxTrustedJump = trustedDevice ? 50 : 5;
+    if (!Number.isFinite(safeIncoming)) return false;
+    if (safeIncoming === 0) return true;
     const absolutePoisonLimit = 10000000;
-    return safeIncoming <= absolutePoisonLimit && safeIncoming <= safePrev + maxTrustedJump;
+    if (safeIncoming > absolutePoisonLimit) return false;
+    if (safePrev && safeIncoming < Math.max(1, safePrev - 2)) return false;
+    const maxTrustedJump = trustedDevice ? 500 : 25;
+    return safeIncoming <= safePrev + maxTrustedJump;
 }
 
 function normalizeReplayEntries(entries, nowTs = Date.now()) {
@@ -2086,25 +2201,16 @@ function getReplayBucketKey(replayId) {
 
 async function safeAppendLogBucket(env, bucketKey, bucketLogs) {
     const existing = await getData(env, bucketKey);
-    const byReplayKey = new Map();
+    const byDedupeKey = new Map();
+    const keyIndex = new Map();
     if (Array.isArray(existing)) {
-        for (const rawLog of existing) {
-            if (!rawLog) continue;
-            const log = sanitizeLogEntity(rawLog);
-            const dedupeKey = buildLogBucketDedupeKey(log);
-            const current = byReplayKey.get(dedupeKey);
-            if (shouldPreferEntity(current, log)) byReplayKey.set(dedupeKey, log);
-        }
+        for (const rawLog of existing) upsertLogDedupeCandidate(byDedupeKey, keyIndex, rawLog);
     }
-    for (const rawLog of bucketLogs) {
-        const log = sanitizeLogEntity(rawLog);
-        const dedupeKey = buildLogBucketDedupeKey(log);
-        const current = byReplayKey.get(dedupeKey);
-        if (shouldPreferEntity(current, log)) byReplayKey.set(dedupeKey, log);
-    }
-    const next = Array.from(byReplayKey.values()).sort((a, b) => Number(a?.persistedAt || 0) - Number(b?.persistedAt || 0));
+    for (const rawLog of bucketLogs) upsertLogDedupeCandidate(byDedupeKey, keyIndex, rawLog);
+    const next = Array.from(byDedupeKey.values()).sort((a, b) => Number(a?.persistedAt || 0) - Number(b?.persistedAt || 0));
     if (next.length > MAX_BUCKET_LOGS) throw new Error('BUCKET_FULL_RETRY_NEW_SHARD');
     await saveDataOrThrow(env, bucketKey, next);
+    setRuntimeBucketCache(bucketKey, next);
     await verifyLogBucketWrite(env, bucketKey, bucketLogs);
     return true;
 }
@@ -2120,6 +2226,7 @@ async function safeAppendVisitorBucket(env, bucketKey, entries) {
     const keys = Object.keys(next);
     if (keys.length > MAX_BUCKET_VISITORS) throw new Error('VISITOR_BUCKET_FULL_RETRY_NEW_SHARD');
     await saveDataOrThrow(env, bucketKey, next);
+    setRuntimeBucketCache(bucketKey, next);
     await verifyVisitorBucketWrite(env, bucketKey, entries);
     return true;
 }
@@ -2133,9 +2240,10 @@ function sanitizeVisitorBucket(bucket = {}) {
 async function verifyLogBucketWrite(env, bucketKey, bucketLogs) {
     const verifyRows = await getData(env, bucketKey);
     if (!Array.isArray(verifyRows)) throw new Error(`BUCKET_VERIFY_FAILED:${bucketKey}`);
-    const verifyKeys = new Set(verifyRows.map(row => buildLogBucketDedupeKey(row)));
+    const verifyPrimaryKeys = new Set(verifyRows.map(row => buildLogBucketDedupeKey(row)));
     for (const log of bucketLogs || []) {
-        if (!verifyKeys.has(buildLogBucketDedupeKey(log))) throw new Error(`BUCKET_VERIFY_MISSING_LOG:${bucketKey}`);
+        const primaryKey = buildLogBucketDedupeKey(log);
+        if (!verifyPrimaryKeys.has(primaryKey)) throw new Error(`BUCKET_VERIFY_MISSING_LOG:${bucketKey}`);
     }
 }
 
@@ -2181,7 +2289,7 @@ async function appendLogsToBuckets(env, licenseKey, logs) {
 async function getRecentLogBuckets(env, licenseKey, since = 0, maxRows = MAX_PULL_LOGS_DEFAULT * 3) {
     const keys = await getRecentLogBucketKeys(env, licenseKey, since);
     const merged = [];
-    const bucketRows = await limitedMap(keys, 6, key => getData(env, key));
+    const bucketRows = await limitedMap(keys, 6, key => getRuntimeCachedBucketData(env, key));
     for (const rows of bucketRows) {
         if (!Array.isArray(rows)) continue;
         for (let i = rows.length - 1; i >= 0; i--) {
@@ -2225,21 +2333,71 @@ async function loadManifestOccMeta(env, manifestKey) {
     return (meta && typeof meta === 'object' && !Array.isArray(meta)) ? meta : { version: 0, updatedAt: 0 };
 }
 
-async function saveManifestWithOCC(env, manifestKey, nextManifest, parentMeta, manifestType) {
-    const latestMeta = await loadManifestOccMeta(env, manifestKey);
-    const parentVersion = Number(parentMeta?.version || 0);
-    if (Number(latestMeta.version || 0) !== parentVersion) {
-        throw new Error(`${manifestType || 'MANIFEST'}_CONFLICT_DETECTED`);
+function mergeManifestForDirectWrite(latestManifest, nextManifest, manifestType = '') {
+    if (!Array.isArray(nextManifest)) return nextManifest;
+    const now = Date.now();
+    const ttl = String(manifestType).includes('VISITOR') ? VISITOR_MANIFEST_TTL_MS : LOG_MANIFEST_TTL_MS;
+    const limit = String(manifestType).includes('VISITOR') ? 256 : 96;
+    const byKey = new Map();
+    const add = (item) => {
+        if (!item?.key) return;
+        const updatedAt = Number(item.updatedAt || 0);
+        const dayStart = Number(item.dayStart || getLogBucketDayStart(item.key) || 0);
+        const active = updatedAt >= now - ttl || dayStart >= now - ttl;
+        if (!active) return;
+        const current = byKey.get(item.key);
+        if (!current || Number(item.updatedAt || 0) >= Number(current.updatedAt || 0)) byKey.set(item.key, item);
+    };
+    if (Array.isArray(latestManifest)) {
+        for (const item of latestManifest) add(item);
     }
+    for (const item of nextManifest) add(item);
+    return Array.from(byKey.values())
+        .sort((a, b) => Number(Boolean(a.retiredAt)) - Number(Boolean(b.retiredAt)) || Number(b.dayStart || 0) - Number(a.dayStart || 0) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .slice(0, limit);
+}
+
+async function saveManifestWithOCC(env, manifestKey, nextManifest, parentMeta, manifestType) {
+    // Cloudflare KV is eventually consistent and does not provide transactional
+    // compare-and-swap semantics. Treat the manifest as a best-effort bucket
+    // index and write it directly instead of rejecting on observed meta drift.
+    const latestMeta = await loadManifestOccMeta(env, manifestKey);
+    const latestManifest = await getData(env, manifestKey);
+
+    // Lightweight drift detection.
+    // Hindari JSON.stringify object besar di isolate Worker.
+    const manifestConflictDetected =
+        Array.isArray(latestManifest) &&
+        Array.isArray(nextManifest) &&
+        (
+            latestManifest.length !== nextManifest.length ||
+            latestManifest[0]?.key !== nextManifest[0]?.key ||
+            latestManifest[0]?.updatedAt !== nextManifest[0]?.updatedAt
+        );
+
+    if (manifestConflictDetected) {
+        console.warn(JSON.stringify({
+            type: "MANIFEST_SOFT_OCC_DRIFT",
+            manifestKey,
+            manifestType,
+            updatedAt: Date.now()
+        }));
+    }
+
+    const mergedManifest = mergeManifestForDirectWrite(
+        latestManifest,
+        nextManifest,
+        manifestType
+    );
     const now = Date.now();
     const nextMeta = {
-        version: parentVersion + 1,
+        version: Math.max(Number(latestMeta?.version || 0), Number(parentMeta?.version || 0)) + 1,
         updatedAt: now,
         engine: SYNC_ENGINE,
-        syncStrategy: SYNC_STRATEGY,
+        syncStrategy: 'DIRECT_KV_MANIFEST_WRITE',
         manifestType
     };
-    await saveDataOrThrow(env, manifestKey, nextManifest);
+    await saveDataOrThrow(env, manifestKey, mergedManifest);
     await saveDataOrThrow(env, `${manifestKey}_meta`, nextMeta);
     return nextMeta;
 }
@@ -2317,7 +2475,7 @@ async function getRecentVisitorBuckets(env, licenseKey, siteFilter = '', since =
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
         .map(item => item.key)
         .slice(0, 64);
-    const rows = await limitedMap(selectedKeys, 6, key => getData(env, key));
+    const rows = await limitedMap(selectedKeys, 6, key => getRuntimeCachedBucketData(env, key));
     const visitors = {};
     let visitorCount = 0;
     for (const bucket of rows) {
@@ -2367,6 +2525,46 @@ function getVisitorBucketSite(bucketKey) {
     return parts.length >= 3 ? parts.slice(2, -1).join('_') || '' : '';
 }
 
+async function preloadVisitorBucketsForKeys(env, licenseKey, visitorRefs = []) {
+    // Batch bucket lookup within one request lifecycle. This reduces KV reads
+    // without making memory cache authoritative.
+    const bucketKeys = new Set();
+    for (const ref of visitorRefs || []) {
+        const key = sanitizeText(ref?.key || '', 180);
+        if (!key) continue;
+        const site = sanitizeText(ref?.site || String(key).split('_')[0] || 'SITE_A', 80) || 'SITE_A';
+        bucketKeys.add(getVisitorBucketKey(licenseKey, site, key));
+    }
+    const cache = new Map();
+    const keys = Array.from(bucketKeys).slice(0, 128);
+    const rows = await limitedMap(
+        keys,
+        6,
+        async key => [
+            key,
+            await getRuntimeCachedBucketData(env, key)
+        ]
+    );
+    for (const [key, bucket] of rows) {
+        cache.set(key, (bucket && typeof bucket === 'object' && !Array.isArray(bucket)) ? sanitizeVisitorBucket(bucket) : {});
+    }
+    return cache;
+}
+
+async function getVisitorFromAuthoritativeBucket(env, licenseKey, visitorKey, site = '', requestBucketCache = null) {
+    // Cloudflare KV is eventually consistent and not transactional; never use the
+    // legacy `visitors` hot cache as authoritative state on save. Visitor buckets
+    // are the primary sync source, while hot cache writes are compatibility-only.
+    const resolvedSite = sanitizeText(site || String(visitorKey || '').split('_')[0] || 'SITE_A', 80) || 'SITE_A';
+    const bucketKey = getVisitorBucketKey(licenseKey, resolvedSite, visitorKey);
+    const bucket =
+        requestBucketCache?.has(bucketKey)
+            ? requestBucketCache.get(bucketKey)
+            : await getRuntimeCachedBucketData(env, bucketKey);
+    if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) return {};
+    return sanitizeVisitorEntity(bucket[visitorKey] || {});
+}
+
 async function appendVisitorsToBuckets(env, licenseKey, visitors) {
     if (!visitors || typeof visitors !== 'object' || Object.keys(visitors).length === 0) return true;
     const grouped = new Map();
@@ -2402,6 +2600,37 @@ async function appendVisitorsToBuckets(env, licenseKey, visitors) {
 
 function buildLogBucketDedupeKey(log) {
     return log?.gasReplayId || log?.sequenceId || buildCanonicalLogKey(log);
+}
+
+function getLogDedupeKeys(log) {
+    const keys = [];
+    const gasReplayId = sanitizeText(log?.gasReplayId || '', 220);
+    const sequenceId = sanitizeText(log?.sequenceId || '', 220);
+    const canonical = buildCanonicalLogKey(log);
+    if (gasReplayId) keys.push(`gas:${gasReplayId}`);
+    if (sequenceId) keys.push(`seq:${sequenceId}`);
+    if (!gasReplayId && !sequenceId && canonical) keys.push(`canonical:${canonical}`);
+    if (!keys.length) keys.push(`fallback:${buildLogBucketDedupeKey(log)}`);
+    return keys;
+}
+
+function upsertLogDedupeCandidate(byDedupeKey, keyIndex, rawLog) {
+    if (!rawLog) return;
+    const log = sanitizeLogEntity(rawLog);
+    const keys = getLogDedupeKeys(log);
+    let primaryKey = null;
+    let current = null;
+    for (const key of keys) {
+        const indexedKey = keyIndex.get(key);
+        if (indexedKey && byDedupeKey.has(indexedKey)) {
+            primaryKey = indexedKey;
+            current = byDedupeKey.get(indexedKey);
+            break;
+        }
+    }
+    if (!primaryKey) primaryKey = keys[0];
+    if (!current || shouldPreferEntity(current, log)) byDedupeKey.set(primaryKey, log);
+    for (const key of keys) keyIndex.set(key, primaryKey);
 }
 
 function isIncomingEntityNewer(current = {}, incoming = {}) {

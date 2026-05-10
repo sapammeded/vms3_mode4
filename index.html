@@ -370,6 +370,111 @@ function handleSiteSelectorChange(e){
     setSite(selected);
 }
 
+function safeParseJSON(raw, fallback = null){
+    if(!raw) return fallback;
+    try { return JSON.parse(raw); } catch(e) { return fallback; }
+}
+
+function normalizeLicenseMode(mode){
+    const clean = String(mode || "DEMO").toUpperCase();
+    return ["PRO", "BASIC", "DEMO"].includes(clean) ? clean : "DEMO";
+}
+
+function persistWorkerFeatures(features){
+    if(!features || typeof features !== "object") return;
+    WORKER_FEATURES = { ...(WORKER_FEATURES || {}), ...features };
+    CURRENT_LICENSE.features = WORKER_FEATURES;
+    try { localStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); } catch(e){}
+    try { sessionStorage.setItem("vms_worker_features", JSON.stringify(WORKER_FEATURES)); } catch(storageErr){
+        console.warn("WORKER_FEATURE_SESSION_FAIL", {
+            module:"Storage Runtime",
+            reason:storageErr?.message || "session_storage_failed",
+            action:"ignore_feature_cache"
+        });
+    }
+}
+
+function syncRuntimeLicenseContext(next = {}){
+    const storedMode = next.mode || next.license || next.package || localStorage.getItem("vms_license") || sessionStorage.getItem("vms_license") || LICENSE_MODE;
+    LICENSE_MODE = normalizeLicenseMode(storedMode);
+    CURRENT_LICENSE.mode = LICENSE_MODE;
+    CURRENT_LICENSE.key = next.key || localStorage.getItem("vms_license_key") || sessionStorage.getItem("vms_license_key") || CURRENT_LICENSE.key || "";
+    try { localStorage.setItem("vms_license", LICENSE_MODE); } catch(e){}
+    try { sessionStorage.setItem("vms_license", LICENSE_MODE); } catch(e){}
+
+    const storedFeatures = next.features || safeParseJSON(localStorage.getItem("vms_worker_features"), null) || safeParseJSON(sessionStorage.getItem("vms_worker_features"), null);
+    if(storedFeatures) persistWorkerFeatures(storedFeatures);
+    window.CURRENT_LICENSE = CURRENT_LICENSE;
+    return CURRENT_LICENSE;
+}
+
+function getRuntimeFeatures(){
+    if(!WORKER_FEATURES){
+        const stored = safeParseJSON(localStorage.getItem("vms_worker_features"), null) || safeParseJSON(sessionStorage.getItem("vms_worker_features"), null);
+        if(stored) persistWorkerFeatures(stored);
+    }
+    return WORKER_FEATURES || CURRENT_LICENSE.features || {};
+}
+
+function canUseDynamicSites(){
+    const features = getRuntimeFeatures();
+
+    return (
+        features?.allowSiteRename === true &&
+        features?.staticSitesOnly !== true
+    );
+}
+
+function getDefaultSites(){ return ["SITE_A", "SITE_B", "SITE_C"]; }
+function getDynamicSites(){ return safeParseJSON(localStorage.getItem("vms_dynamic_sites"), []) || []; }
+
+function buildSiteLabel(site){
+    const icon = site === "SITE_A" ? "🏭" : (site === "SITE_B" ? "🏢" : (site === "SITE_C" ? "🏬" : "🌐"));
+    return `${icon} ${site.replace(/_/g, " ")}`;
+}
+
+function renderSiteSelectors(){
+    const dynamicEnabled = canUseDynamicSites();
+    const sites = [...new Set([...getDefaultSites(), ...getDynamicSites(), SITE_ID].filter(Boolean))];
+    document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel => {
+        if(!sel) return;
+        const previous = SITE_ID || sel.value || "SITE_A";
+        sel.innerHTML = "";
+        sites.forEach(site => {
+            const opt = document.createElement("option");
+            opt.value = site;
+            opt.text = buildSiteLabel(site);
+            sel.appendChild(opt);
+        });
+        if(dynamicEnabled){
+            const createOpt = document.createElement("option");
+            createOpt.value = "__CREATE_SITE__";
+            createOpt.text = "➕ Rename / Create site...";
+            sel.appendChild(createOpt);
+        }
+        sel.disabled = false;
+        sel.style.pointerEvents = "auto";
+        sel.title = dynamicEnabled ? "Site dinamis aktif dari license Worker" : "Static site mode";
+        sel.value = sites.includes(previous) ? previous : "SITE_A";
+    });
+}
+
+function handleSiteSelectorChange(e){
+    const selected = e?.target?.value;
+    if(selected === "__CREATE_SITE__"){
+        if(!canUseDynamicSites()){
+            toast("Rename/create site terkunci oleh license saat ini", "error");
+            renderSiteSelectors();
+            return;
+        }
+        const proposed = prompt("Masukkan nama site baru / rename site:", SITE_ID || "");
+        if(proposed && proposed.trim()) setSite(proposed);
+        else renderSiteSelectors();
+        return;
+    }
+    setSite(selected);
+}
+
 function restoreLicenseSession(){
     const savedLicenseKey = localStorage.getItem("vms_license_key") || sessionStorage.getItem("vms_license_key");
     const savedPackage = localStorage.getItem("vms_license") || sessionStorage.getItem("vms_license");

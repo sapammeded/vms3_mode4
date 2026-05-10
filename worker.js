@@ -3,7 +3,18 @@
 // KV Namespace: VMS_STORAGE
 
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzQQr4hZKbSEeiW4h0q6H_HPOqODBuZbQfZm_hjIl0F551eK2WrXnpDO9_Qk31sp8-Y9w/exec';
-const PATCH_VERSION = '1.0.13';
+const PATCH_VERSION = '1.0.14';
+const MAX_HOT_LOGS = 3000;
+const MAX_HOT_VISITORS = 2000;
+const MAX_BUCKET_LOGS = 1200;
+const MAX_BUCKET_VISITORS = 1000;
+const MAX_PULL_LOGS_DEFAULT = 1000;
+const MAX_PULL_VISITORS_DEFAULT = 2000;
+const LOG_MANIFEST_TTL_MS = 14 * 86400000;
+const VISITOR_MANIFEST_TTL_MS = 30 * 86400000;
+const REPLAY_PROCESSED_TTL_MS = 36 * 3600000;
+const REPLAY_FAILED_TTL_MS = 2 * 86400000;
+const REPLAY_DEAD_LETTER_TTL_MS = 14 * 86400000;
 
 // ==================== MAIN HANDLER ====================
 export default {
@@ -996,12 +1007,12 @@ export default {
                 }
                 console.log(JSON.stringify({ type:"SYNC_SAVE", licenseKey, deviceId: body.deviceId || meta.deviceId || anti.deviceId || null, visitors: Object.keys(visitors || {}).length, logs: Array.isArray(logs) ? logs.length : 0, hasAnti: !!Object.keys(anti).length, updatedAt: Date.now() }));
                 return await withMutationLock(`save:${licenseKey}`, async () => {
+                const mutationId = generateMutationId(licenseKey, body.deviceId || 'unknown');
                 const replayId = body.replayId || null;
                 const replayInFlightKey = replayId ? `${licenseKey}:${replayId}` : null;
                 if (replayId) {
-                    const replayKeys = await getData(env, 'processed_replays');
                     const nowTs = Date.now();
-                    const normalizedReplay = normalizeReplayEntries(replayKeys, nowTs);
+                    const normalizedReplay = await loadReplayGovernanceEntries(env, replayId, nowTs);
                     const replayState = getReplayGovernanceState(normalizedReplay, replayId);
                     if (replayState?.status === 'DEAD_LETTER') {
                         globalThis.__vms_metrics.dedupReplay++;
@@ -1050,17 +1061,20 @@ export default {
                         const prevVersion = Number(prev.version || 0);
                         const incomingVersion = Number(normalizedVisitor?.version || 0);
                         const trustedIncomingVersion = isTrustedVersionCandidate(prevVersion, incomingVersion, trustedSyncDevice);
-                        const accepted = trustedIncomingVersion && (incomingVersion > prevVersion || (incomingVersion === prevVersion && incomingUpdated >= prevUpdated));
+                        const accepted = shouldAcceptAuthoritativeMutation(prev, normalizedVisitor, trustedSyncDevice);
                         console.log("VISITOR CONFLICT", { key, prevUpdated, incomingUpdated, prevVersion, incomingVersion, trustedIncomingVersion, trustedSyncDevice, accepted });
                         if (!accepted) {
-                            console.log(JSON.stringify({ type:"VISITOR_MUTATION_REJECTED", key: sanitizeText(key, 160), reason:"untrusted_version_jump", trustedSyncDevice, prevVersion, incomingVersion, updatedAt: Date.now() }));
+                            console.log(JSON.stringify({ type:"VISITOR_MUTATION_REJECTED", key: sanitizeText(key, 160), reason:"stale_or_untrusted_mutation", trustedSyncDevice, prevVersion, incomingVersion, updatedAt: Date.now() }));
                             continue;
                         }
-                        const mutationClock = buildAuthoritativeMutationClock(prev, normalizedVisitor, trustedSyncDevice);
-                        allVisitors[key] = { ...prev, ...normalizedVisitor, licenseKey, version: mutationClock.version, updatedAt: mutationClock.updatedAt, lastSync: mutationClock.updatedAt };
+                        const mutationClock = buildAuthoritativeMutationClock(prev, normalizedVisitor, trustedSyncDevice, mutationId);
+                        allVisitors[key] = stampAuthoritativeEntity({ ...prev, ...normalizedVisitor, licenseKey, lastSync: mutationClock.updatedAt }, mutationClock, mutationId, body.deviceId || getWorkerOriginNode());
                         acceptedVisitors[key] = { ...allVisitors[key] };
                     }
-                    await saveDataOrThrow(env, 'visitors', allVisitors);
+                    const visitorBucketOk = await appendVisitorsToBuckets(env, licenseKey, acceptedVisitors);
+                    if (!visitorBucketOk) throw new Error('AUTHORITATIVE_VISITOR_BUCKET_SAVE_FAILED');
+                    const hotVisitors = pruneHotVisitors(allVisitors, MAX_HOT_VISITORS);
+                    await saveDataOrThrow(env, 'visitors', hotVisitors);
                 }
                 
                 if (Array.isArray(logs) && logs.length > 0) {
@@ -1126,19 +1140,24 @@ export default {
                         logicalSeen.add(lk);
                         const persistedAt = Date.now();
                         const sequenceId = log.sequenceId || generateSequenceId(licenseKey, persistedAt);
-                        const logVersion = Math.max(1, Number(log.version || 0));
-                        appendOnly.push({ ...log, version: logVersion, updatedAt: Number(log.updatedAt || persistedAt), persistedAt, sequenceId });
+                        const logClock = buildAuthoritativeMutationClock({}, { ...log, updatedAt: Number(log.updatedAt || persistedAt), persistedAt }, trustedSyncDevice, mutationId);
+                        appendOnly.push(stampAuthoritativeEntity({ ...log, persistedAt, sequenceId }, logClock, mutationId, body.deviceId || getWorkerOriginNode()));
                     }
                     // Avoid array cloning for high-frequency logging
                     for (const item of appendOnly) {
-                        allLogs.push(item);
+                        allLogs.push({ ...item, source: 'legacy_hot_cache' });
                     }
-                    if (allLogs.length > 8000) {
-                        const dropCount = allLogs.length - 8000;
+                    if (allLogs.length > MAX_HOT_LOGS) {
+                        const dropCount = allLogs.length - MAX_HOT_LOGS;
                         allLogs.splice(0, dropCount);
-                        console.log(JSON.stringify({ type:"LOG_KV_PRUNE", licenseKey, dropped: dropCount, retained: allLogs.length, updatedAt: Date.now() }));
+                        console.log(JSON.stringify({ type:"LOG_KV_PRUNE", licenseKey, dropped: dropCount, retained: allLogs.length, mode:"legacy_hot_index", updatedAt: Date.now() }));
                     }
-                    await saveDataOrThrow(env, 'logs', allLogs);
+                    if (appendOnly.length) {
+                        const bucketOk = await appendLogsToBuckets(env, licenseKey, appendOnly);
+                        if (!bucketOk) throw new Error('AUTHORITATIVE_LOG_BUCKET_SAVE_FAILED');
+                    }
+                    const hotCacheOk = await saveData(env, 'logs', pruneHotLogs(allLogs, MAX_HOT_LOGS));
+                    if (!hotCacheOk) console.warn('[LOG_HOT_CACHE] Legacy hot cache save failed; bucket storage remains authoritative');
                     if (appendOnly.length) {
                         const gasLogs = [];
                         for (const log of appendOnly) {
@@ -1201,10 +1220,9 @@ export default {
                 }
                 if (replayId) {
                     const replayCommitTs = Date.now();
-                    const replayKeys = await getData(env, 'processed_replays');
-                    const normalizedReplay = normalizeReplayEntries(replayKeys, replayCommitTs).filter(x => x.id !== replayId);
+                    const normalizedReplay = (await loadReplayGovernanceEntries(env, replayId, replayCommitTs)).filter(x => x.id !== replayId);
                     normalizedReplay.push(buildReplayEntry({ id: replayId, ts: replayCommitTs, licenseKey, deviceId: body.deviceId || null, status: 'PROCESSED' }));
-                    await saveDataOrThrow(env, 'processed_replays', pruneReplayEntries(normalizedReplay, replayCommitTs));
+                    await persistReplayGovernanceEntries(env, replayId, normalizedReplay, replayCommitTs, true);
                 }
                 globalThis.__vms_metrics.saveOk++;
                 globalThis.__vms_metrics.lastSaveAt = Date.now();
@@ -1236,40 +1254,56 @@ export default {
                 if (!company) {
                     return json({ ok: false, message: 'Invalid licenseKey' }, 403);
                 }
-                const allVisitors = await getData(env, 'visitors');
+                const allVisitors = pruneHotVisitors(await getData(env, 'visitors'), MAX_HOT_VISITORS);
+                const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, siteFilter, since, MAX_PULL_VISITORS_DEFAULT);
                 const visitors = {};
-                const MAX_PULL_VISITORS = 2000;
+                const MAX_PULL_VISITORS = MAX_PULL_VISITORS_DEFAULT;
                 let visitorCount = 0;
-                for (const [key, v] of Object.entries(allVisitors || {})) {
-                    if (v?.licenseKey !== licenseKey) continue;
+                const appendPullVisitor = (key, v) => {
+                    if (visitorCount >= MAX_PULL_VISITORS) return;
+                    if (v?.licenseKey !== licenseKey) return;
+                    if (siteFilter && !(key.startsWith(`${siteFilter}_`) || v?.site === siteFilter)) return;
                     if (Number(v?.updatedAt || 0) >= since || Number(v?.lastSync || 0) >= since){
-                        visitors[key] = sanitizeVisitorForPull(v);
-                        visitorCount++;
-                        if(visitorCount >= MAX_PULL_VISITORS) break;
+                        const current = visitors[key];
+                        if (!current || isIncomingEntityNewer(current, v)) {
+                            if (!current) visitorCount++;
+                            visitors[key] = sanitizeVisitorForPull(v);
+                        }
                     }
-                }
-                const MAX_PULL_LOGS = 1000;
-                const allLogs = await getData(env, 'logs');
-                const logs = [];
-                for (const l of (allLogs || [])) {
-                    if (l?.licenseKey !== licenseKey) continue;
-                    if (siteFilter && l?.site !== siteFilter) continue;
-                    if (!(Number(l?.persistedAt || 0) >= since || Number(l?.time ? Date.parse(l.time) : 0) >= since)) continue;
-                    const nextLog = Object.assign({}, l, { sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) });
-                    logs.push(nextLog);
-                }
-                logs.sort((a,b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)));
+                };
+                for (const [key, v] of Object.entries(bucketVisitors || {})) appendPullVisitor(key, v);
+                for (const [key, v] of Object.entries(allVisitors || {})) appendPullVisitor(key, v);
+                const MAX_PULL_LOGS = MAX_PULL_LOGS_DEFAULT;
+                const allLogs = pruneHotLogs(await getData(env, 'logs'), MAX_HOT_LOGS);
+                const bucketLogs = await getRecentLogBuckets(env, licenseKey, since, MAX_PULL_LOGS * 3);
+                const MAX_PULL_SCAN_LOGS = MAX_PULL_LOGS * 4;
+                let scannedLogs = 0;
                 const dedupeMap = new Map();
-                for (const l of logs) {
-                    dedupeMap.set(l.sequenceId || buildCanonicalLogKey(l), l);
-                    if (dedupeMap.size > MAX_PULL_LOGS * 2) {
-                        const firstKey = dedupeMap.keys().next().value;
-                        dedupeMap.delete(firstKey);
+                const appendPullLog = (l) => {
+                    if (scannedLogs >= MAX_PULL_SCAN_LOGS) return;
+                    if (l?.licenseKey !== licenseKey) return;
+                    if (siteFilter && l?.site !== siteFilter) return;
+                    const logTs = Number(l?.persistedAt || l?.commitClock || 0) || Date.parse(l?.time || 0);
+                    if (!(logTs >= since)) return;
+                    scannedLogs++;
+                    const nextLog = Object.assign({}, l, { sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) });
+                    const dedupeKey = nextLog.sequenceId || buildCanonicalLogKey(nextLog);
+                    const current = dedupeMap.get(dedupeKey);
+                    if (!current || isIncomingEntityNewer(current, nextLog) || (current.source !== 'bucket_authoritative' && nextLog.source === 'bucket_authoritative')) {
+                        dedupeMap.set(dedupeKey, nextLog);
                     }
-                }
-                const dedupedLogs = Array.from(dedupeMap.values()).slice(-MAX_PULL_LOGS);
+                    if (dedupeMap.size > MAX_PULL_LOGS * 2) {
+                        const coldest = Array.from(dedupeMap.entries()).sort((a, b) => (Number(a[1]?.persistedAt || 0) || Date.parse(a[1]?.time || 0)) - (Number(b[1]?.persistedAt || 0) || Date.parse(b[1]?.time || 0)))[0]?.[0];
+                        if (coldest) dedupeMap.delete(coldest);
+                    }
+                };
+                for (const l of bucketLogs) appendPullLog(l);
+                for (let i = allLogs.length - 1; i >= 0 && scannedLogs < MAX_PULL_SCAN_LOGS; i--) appendPullLog(allLogs[i]);
+                const dedupedLogs = Array.from(dedupeMap.values())
+                    .sort((a,b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
+                    .slice(-MAX_PULL_LOGS);
                 console.log("AUTHORITATIVE LOG SORT", { total: dedupedLogs.length });
-                console.log('PULL DEDUPE', { before: logs.length, after: dedupedLogs.length });
+                console.log('PULL DEDUPE', { before: scannedLogs, after: dedupedLogs.length, scanLimit: MAX_PULL_SCAN_LOGS });
                 return new Response(JSON.stringify({ ok: true, visitors, logs: dedupedLogs, serverTs: Date.now() }), { headers: corsHeaders });
             }
 
@@ -1527,8 +1561,18 @@ async function saveData(env, key, data) {
         }
         
         const jsonString = JSON.stringify(data);
+        const fingerprint = await stablePayloadFingerprint(jsonString);
+        if (!globalThis.__vms_kv_write_fingerprints) {
+            globalThis.__vms_kv_write_fingerprints = new Map();
+        }
+        if (globalThis.__vms_kv_write_fingerprints.get(key) === fingerprint) {
+            console.log(`[SAVE_DATA] Skipped identical payload for "${key}": ${jsonString.length} bytes`);
+            return true;
+        }
         await env.VMS_STORAGE.put(key, jsonString);
-        const itemCount = Array.isArray(data) ? data.length + ' items' : Object.keys(data).length + ' keys';
+        globalThis.__vms_kv_write_fingerprints.set(key, fingerprint);
+        pruneFingerprintCache();
+        const itemCount = Array.isArray(data) ? data.length + ' items' : Object.keys(data || {}).length + ' keys';
         console.log(`[SAVE_DATA] Saved "${key}": ${jsonString.length} bytes, ${itemCount}`);
         return true;
         
@@ -1540,21 +1584,42 @@ async function saveData(env, key, data) {
 
 
 async function saveDataOrThrow(env, key, data) {
-    const ok = await saveData(env, key, data);
-    if (!ok) {
-        throw new Error(`AUTHORITATIVE_SAVE_FAILED:${key}`);
+    const maxAttempts = 3;
+    let lastOk = false;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        lastOk = await saveData(env, key, data);
+        if (lastOk) return true;
+        if (attempt < maxAttempts) {
+            const backoffMs = 50 * Math.pow(2, attempt - 1);
+            console.warn(`[SAVE_DATA] Retry ${attempt}/${maxAttempts - 1} for key "${key}" after ${backoffMs}ms`);
+            await sleep(backoffMs);
+        }
     }
-    return true;
+    throw new Error(`AUTHORITATIVE_SAVE_FAILED:${key}`);
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 
 function sanitizeText(value, max = 120) {
-    return String(value || '')
-        .normalize('NFC')
-        .replace(/[\p{C}]/gu, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, max);
+    const normalized = String(value || '').normalize('NFC');
+    try {
+        const unicodeControlPattern = new RegExp('\\p{C}', 'gu');
+        return normalized
+            .replace(unicodeControlPattern, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, max);
+    } catch (regexErr) {
+        console.warn('[SANITIZE] Unicode property escape unsupported, using control-char fallback:', regexErr?.message || regexErr);
+        return normalized
+            .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, max);
+    }
 }
 
 function clonePayloadSafe(value) {
@@ -1565,48 +1630,127 @@ function clonePayloadSafe(value) {
     } catch (cloneErr) {
         console.warn('[CLONE] structuredClone failed, falling back to bounded clone:', cloneErr?.message || cloneErr);
     }
-    return boundedClone(value || (Array.isArray(value) ? [] : {}));
+    const stats = { truncatedArrays: 0, truncatedObjects: 0, depthTruncations: 0 };
+    const cloned = boundedClone(value || (Array.isArray(value) ? [] : {}), 0, stats);
+    if (stats.truncatedArrays || stats.truncatedObjects || stats.depthTruncations) {
+        console.warn('[CLONE] Bounded clone truncated payload', { ...stats, updatedAt: Date.now() });
+    }
+    return cloned;
 }
 
-function boundedClone(value, depth = 0) {
+function boundedClone(value, depth = 0, stats = { truncatedArrays: 0, truncatedObjects: 0, depthTruncations: 0 }) {
     if (value === null || typeof value !== 'object') return value;
-    if (depth > 6) return null;
+    if (depth > 6) {
+        stats.depthTruncations++;
+        return null;
+    }
     if (Array.isArray(value)) {
         const arr = [];
         const limit = Math.min(value.length, 2000);
-        for (let i = 0; i < limit; i++) arr.push(boundedClone(value[i], depth + 1));
+        if (value.length > limit) stats.truncatedArrays++;
+        for (let i = 0; i < limit; i++) arr.push(boundedClone(value[i], depth + 1, stats));
         return arr;
     }
     const out = {};
     let count = 0;
     for (const [key, item] of Object.entries(value)) {
-        if (count++ >= 5000) break;
-        out[key] = boundedClone(item, depth + 1);
+        if (count++ >= 5000) {
+            stats.truncatedObjects++;
+            break;
+        }
+        out[key] = boundedClone(item, depth + 1, stats);
     }
     return out;
 }
 
 
-function buildAuthoritativeMutationClock(previous = {}, incoming = {}, trustedDevice = false) {
+function buildAuthoritativeMutationClock(previous = {}, incoming = {}, trustedDevice = false, mutationId = '') {
     const now = Date.now();
     const prevVersion = Math.max(0, Number(previous.version || 0));
     const incomingVersion = Math.max(0, Number(incoming.version || 0));
-    const maxTrustedJump = trustedDevice ? 5000 : 5;
+    const prevEpoch = Math.max(0, Number(previous.mutationEpoch || previous.writeEpoch || previous.updatedAt || 0));
+    const incomingEpoch = Math.max(0, Number(incoming.mutationEpoch || incoming.writeEpoch || incoming.updatedAt || 0));
+    const prevCommitClock = Math.max(0, Number(previous.commitClock || previous.updatedAt || previous.persistedAt || 0));
+    const incomingCommitClock = Math.max(0, Number(incoming.commitClock || incoming.updatedAt || incoming.persistedAt || 0));
+    const maxTrustedJump = trustedDevice ? 50 : 5;
     const trustedIncomingVersion = incomingVersion > prevVersion && incomingVersion <= prevVersion + maxTrustedJump
         ? incomingVersion
         : 0;
     const nextVersion = Math.max(1, trustedIncomingVersion || prevVersion + 1);
+    const commitClock = Math.max(now, prevCommitClock + 1, incomingCommitClock);
+    const mutationEpoch = Math.max(commitClock, prevEpoch + 1, incomingEpoch);
     return {
         version: nextVersion,
-        updatedAt: now
+        updatedAt: commitClock,
+        commitClock,
+        mutationEpoch,
+        lastMutationId: sanitizeText(mutationId || incoming.mutationId || incoming.lastMutationId || previous.lastMutationId || '', 180)
     };
 }
 
 
+
+function shouldAcceptAuthoritativeMutation(previous = {}, incoming = {}, trustedDevice = false) {
+    if (!previous || Object.keys(previous).length === 0) return true;
+    const prevVersion = Math.max(0, Number(previous.version || 0));
+    const incomingVersion = Math.max(0, Number(incoming.version || 0));
+    if (!isTrustedVersionCandidate(prevVersion, incomingVersion, trustedDevice)) return false;
+    const prevEpoch = Math.max(0, Number(previous.mutationEpoch || previous.writeEpoch || previous.updatedAt || 0));
+    const incomingEpoch = Math.max(0, Number(incoming.mutationEpoch || incoming.writeEpoch || incoming.updatedAt || 0));
+    if (incomingEpoch && prevEpoch && incomingEpoch < prevEpoch) return false;
+    const prevCommitClock = Math.max(0, Number(previous.commitClock || previous.updatedAt || previous.persistedAt || 0));
+    const incomingCommitClock = Math.max(0, Number(incoming.commitClock || incoming.updatedAt || incoming.persistedAt || 0));
+    if (incomingCommitClock && prevCommitClock && incomingCommitClock < prevCommitClock) return false;
+    return incomingVersion > prevVersion || incomingEpoch >= prevEpoch || incomingCommitClock >= prevCommitClock;
+}
+
+function stampAuthoritativeEntity(entity = {}, clock = {}, mutationId = '', mutationSource = '') {
+    const commitClock = Number(clock.commitClock || clock.updatedAt || Date.now());
+    return {
+        ...entity,
+        version: Math.max(1, Number(clock.version || entity.version || 1)),
+        updatedAt: commitClock,
+        commitClock,
+        mutationEpoch: Number(clock.mutationEpoch || commitClock),
+        lastMutationId: sanitizeText(clock.lastMutationId || mutationId || entity.lastMutationId || '', 180),
+        mutationId: sanitizeText(mutationId || entity.mutationId || '', 180),
+        writeEpoch: Number(clock.mutationEpoch || commitClock),
+        mutationSource: sanitizeText(mutationSource || entity.mutationSource || getWorkerOriginNode(), 120)
+    };
+}
+
+function pruneHotVisitors(visitors, limit = MAX_HOT_VISITORS) {
+    if (!visitors || typeof visitors !== 'object' || Array.isArray(visitors)) return {};
+    const entries = Object.entries(visitors);
+    if (entries.length <= limit) return visitors;
+    entries.sort((a, b) => Number(b[1]?.updatedAt || b[1]?.lastSync || 0) - Number(a[1]?.updatedAt || a[1]?.lastSync || 0));
+    return Object.fromEntries(entries.slice(0, limit));
+}
+
+function pruneHotLogs(logs, limit = MAX_HOT_LOGS) {
+    if (!Array.isArray(logs)) return [];
+    if (logs.length <= limit) return logs;
+    return logs
+        .sort((a, b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
+        .slice(-limit);
+}
+
+async function stablePayloadFingerprint(jsonString = '') {
+    const bytes = new TextEncoder().encode(String(jsonString));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function pruneFingerprintCache() {
+    const cache = globalThis.__vms_kv_write_fingerprints;
+    if (!cache || cache.size <= 512) return;
+    for (const key of Array.from(cache.keys()).slice(0, cache.size - 512)) cache.delete(key);
+}
+
 function isTrustedVersionCandidate(prevVersion, incomingVersion, trustedDevice = false) {
     const safePrev = Math.max(0, Number(prevVersion || 0));
     const safeIncoming = Math.max(0, Number(incomingVersion || 0));
-    const maxTrustedJump = trustedDevice ? 5000 : 5;
+    const maxTrustedJump = trustedDevice ? 50 : 5;
     const absolutePoisonLimit = 10000000;
     return safeIncoming <= absolutePoisonLimit && safeIncoming <= safePrev + maxTrustedJump;
 }
@@ -1630,8 +1774,7 @@ function normalizeReplayEntries(entries, nowTs = Date.now()) {
 async function recordReplayFailure(env, replayId, licenseKey, deviceId, error) {
     try {
         const failedAt = Date.now();
-        const replayKeys = await getData(env, 'processed_replays');
-        const normalizedReplay = normalizeReplayEntries(replayKeys, failedAt);
+        const normalizedReplay = await loadReplayGovernanceEntries(env, replayId, failedAt);
         const previous = getReplayGovernanceState(normalizedReplay, replayId);
         const retryCount = Number(previous?.retryCount || 0) + 1;
         const status = retryCount >= getReplayMaxRetry() ? 'DEAD_LETTER' : 'FAILED';
@@ -1645,7 +1788,7 @@ async function recordReplayFailure(env, replayId, licenseKey, deviceId, error) {
             retryCount,
             error: sanitizeText(error?.message || 'mutation_failed', 240)
         }));
-        await saveData(env, 'processed_replays', pruneReplayEntries(withoutCurrent, failedAt));
+        await persistReplayGovernanceEntries(env, replayId, withoutCurrent, failedAt, false);
     } catch (replayErr) {
         console.error('[REPLAY] Failed to record failed replay state:', replayErr?.message || replayErr);
     }
@@ -1656,12 +1799,23 @@ async function recordReplayFailure(env, replayId, licenseKey, deviceId, error) {
 function buildReplayEntry(entry = {}) {
     const ts = Number(entry.ts || entry.updatedAt || Date.now());
     const status = String(entry.status || 'PROCESSED').toUpperCase();
+    const commitClock = Math.max(ts, Number(entry.commitClock || entry.commitTs || entry.updatedAt || ts));
+    const mutationEpoch = Math.max(commitClock, Number(entry.mutationEpoch || entry.writeEpoch || commitClock));
     return {
         ...entry,
         id: sanitizeText(entry.id, 180),
         ts,
         version: Math.max(1, Number(entry.version || 0)),
-        updatedAt: Number(entry.updatedAt || ts),
+        updatedAt: commitClock,
+        commitClock,
+        mutationEpoch,
+        writeEpoch: mutationEpoch,
+        lastMutationId: sanitizeText(entry.lastMutationId || entry.mutationId || entry.id || '', 180),
+        mutationId: sanitizeText(entry.mutationId || entry.id || '', 180),
+        mutationSource: sanitizeText(entry.mutationSource || entry.deviceId || getWorkerOriginNode(), 120),
+        commitTs: Number(entry.commitTs || commitClock),
+        logicalClock: Number(entry.logicalClock || entry.commitTs || commitClock),
+        originNode: sanitizeText(entry.originNode || getWorkerOriginNode(), 80),
         status,
         retryCount: Math.max(0, Number(entry.retryCount || 0)),
         maxRetry: getReplayMaxRetry()
@@ -1673,7 +1827,7 @@ function getReplayGovernanceState(entries, replayId) {
     let latest = null;
     for (const entry of entries) {
         if (!entry || entry.id !== replayId) continue;
-        if (!latest || Number(entry.updatedAt || entry.ts || 0) >= Number(latest.updatedAt || latest.ts || 0)) {
+        if (!latest || compareReplayEntries(entry, latest) >= 0) {
             latest = entry;
         }
     }
@@ -1686,7 +1840,7 @@ function getReplayMaxRetry() {
 
 function pruneReplayEntries(entries, nowTs = Date.now()) {
     if (!Array.isArray(entries)) return [];
-    const ttlByStatus = { PROCESSED: 3 * 86400000, FAILED: 86400000, DEAD_LETTER: 7 * 86400000 };
+    const ttlByStatus = { PROCESSED: REPLAY_PROCESSED_TTL_MS, FAILED: REPLAY_FAILED_TTL_MS, DEAD_LETTER: REPLAY_DEAD_LETTER_TTL_MS };
     const byId = new Map();
     for (const raw of entries) {
         if (!raw || !raw.id) continue;
@@ -1694,12 +1848,368 @@ function pruneReplayEntries(entries, nowTs = Date.now()) {
         const ttl = ttlByStatus[entry.status] || ttlByStatus.PROCESSED;
         if ((nowTs - Number(entry.ts || nowTs)) > ttl) continue;
         const current = byId.get(entry.id);
-        if (!current || Number(entry.updatedAt || entry.ts || 0) >= Number(current.updatedAt || current.ts || 0)) {
+        if (!current || compareReplayEntries(entry, current) >= 0) {
             byId.set(entry.id, entry);
         }
     }
     const retained = Array.from(byId.values()).sort((a, b) => Number(a.updatedAt || a.ts || 0) - Number(b.updatedAt || b.ts || 0));
-    return retained.slice(-1500);
+    const deadLetters = retained.filter(entry => entry.status === 'DEAD_LETTER').slice(-500);
+    const failed = retained.filter(entry => entry.status === 'FAILED').slice(-300);
+    const processed = retained.filter(entry => entry.status === 'PROCESSED').slice(-700);
+    return [...processed, ...failed, ...deadLetters].sort(compareReplayEntries).slice(-1200);
+}
+
+
+async function loadReplayGovernanceEntries(env, replayId, nowTs = Date.now()) {
+    const central = normalizeReplayEntries(await getData(env, 'processed_replays'), nowTs);
+    if (!replayId) return central;
+    const bucket = normalizeReplayEntries(await getData(env, getReplayBucketKey(replayId)), nowTs);
+    const merged = [];
+    for (const item of central) merged.push(item);
+    for (const item of bucket) merged.push(item);
+    return pruneReplayEntries(merged, nowTs);
+}
+
+async function persistReplayGovernanceEntries(env, replayId, entries, nowTs = Date.now(), critical = false) {
+    const pruned = pruneReplayEntries(entries, nowTs);
+    const central = pruneReplayEntries(pruned, nowTs).slice(-400);
+    if (critical) {
+        await saveDataOrThrow(env, 'processed_replays', central);
+    } else {
+        await saveData(env, 'processed_replays', central);
+    }
+    if (!replayId) return;
+    const bucketKey = getReplayBucketKey(replayId);
+    const existingBucket = normalizeReplayEntries(await getData(env, bucketKey), nowTs);
+    const mergedBucket = [];
+    for (const item of existingBucket) mergedBucket.push(item);
+    for (const item of pruned) {
+        if (item.id === replayId) mergedBucket.push(item);
+    }
+    const bucketPayload = pruneReplayEntries(mergedBucket, nowTs).slice(-220);
+    const bucketOk = await saveData(env, bucketKey, bucketPayload);
+    if (!bucketOk) {
+        console.warn(`[REPLAY_BUCKET] Failed to save ${bucketKey}; central replay registry remains authoritative`);
+    }
+}
+
+function getReplayBucketKey(replayId) {
+    const clean = sanitizeText(replayId || 'unknown', 180);
+    return `processed_replays_b${String(hashToShard(clean, 16)).padStart(2, '0')}`;
+}
+
+async function appendLogsToBuckets(env, licenseKey, logs) {
+    if (!Array.isArray(logs) || logs.length === 0) return true;
+    const grouped = new Map();
+    for (const log of logs) {
+        const bucketKey = getLogBucketKey(licenseKey, Number(log.persistedAt || Date.now()), log.sequenceId || buildCanonicalLogKey(log));
+        if (!grouped.has(bucketKey)) grouped.set(bucketKey, []);
+        grouped.get(bucketKey).push({ ...log, source: 'bucket_authoritative', bucketKey });
+    }
+    const touchedBuckets = [];
+    const results = await limitedMap(Array.from(grouped.entries()), 6, async ([bucketKey, bucketLogs]) => {
+        const existing = await getData(env, bucketKey);
+        const byReplayKey = new Map();
+        if (Array.isArray(existing)) {
+            for (const log of existing) {
+                if (!log) continue;
+                const dedupeKey = buildLogBucketDedupeKey(log);
+                const current = byReplayKey.get(dedupeKey);
+                if (!current || isIncomingEntityNewer(current, log)) {
+                    byReplayKey.set(dedupeKey, log);
+                }
+            }
+        }
+        for (const log of bucketLogs) {
+            const dedupeKey = buildLogBucketDedupeKey(log);
+            const current = byReplayKey.get(dedupeKey);
+            if (!current || isIncomingEntityNewer(current, log)) {
+                byReplayKey.set(dedupeKey, log);
+            }
+        }
+        const next = Array.from(byReplayKey.values()).sort((a, b) => Number(a?.persistedAt || 0) - Number(b?.persistedAt || 0));
+        if (next.length > MAX_BUCKET_LOGS) next.splice(0, next.length - MAX_BUCKET_LOGS);
+        const saved = await saveDataOrThrow(env, bucketKey, next).then(() => true).catch(err => {
+            console.warn(`[LOG_BUCKET] Failed to save ${bucketKey}: ${err?.message || err}`);
+            return false;
+        });
+        if (saved) touchedBuckets.push(bucketKey);
+        return saved;
+    });
+    if (touchedBuckets.length) await updateLogBucketManifest(env, licenseKey, touchedBuckets);
+    return results.every(Boolean);
+}
+
+async function getRecentLogBuckets(env, licenseKey, since = 0, maxRows = MAX_PULL_LOGS_DEFAULT * 3) {
+    const keys = await getRecentLogBucketKeys(env, licenseKey, since);
+    const merged = [];
+    const bucketRows = await limitedMap(keys, 6, key => getData(env, key));
+    for (const rows of bucketRows) {
+        if (!Array.isArray(rows)) continue;
+        for (let i = rows.length - 1; i >= 0; i--) {
+            const row = rows[i];
+            if (!row) continue;
+            merged.push(row);
+            if (merged.length >= maxRows) return merged;
+        }
+    }
+    return merged;
+}
+
+async function getRecentLogBucketKeys(env, licenseKey, since = 0) {
+    const manifest = await getData(env, getLogBucketManifestKey(licenseKey));
+    const sinceTs = Number(since || 0);
+    const activeDayStart = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z');
+    if (Array.isArray(manifest) && manifest.length) {
+        return manifest
+            .filter(item => item?.key && (!sinceTs || Number(item.updatedAt || 0) >= sinceTs || Number(item.dayStart || 0) >= sinceTs - 86400000 || Number(item.dayStart || 0) >= activeDayStart))
+            .sort((a, b) => {
+                const dayDelta = Number(b.dayStart || 0) - Number(a.dayStart || 0);
+                if (dayDelta) return dayDelta;
+                return Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+            })
+            .map(item => item.key)
+            .slice(0, 32);
+    }
+    const now = Date.now();
+    const fallbackKeys = [];
+    for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+        const dayTs = now - dayOffset * 86400000;
+        for (let shard = 15; shard >= 0; shard--) fallbackKeys.push(getLogBucketKeyForShard(licenseKey, dayTs, shard));
+        fallbackKeys.push(getLegacyLogBucketKey(licenseKey, dayTs));
+    }
+    return fallbackKeys;
+}
+
+async function updateLogBucketManifest(env, licenseKey, bucketKeys) {
+    const manifestKey = getLogBucketManifestKey(licenseKey);
+    const now = Date.now();
+    const existing = await getData(env, manifestKey);
+    const byKey = new Map();
+    if (Array.isArray(existing)) {
+        for (const item of existing) {
+            if (!item?.key) continue;
+            const dayStart = Number(item.dayStart || getLogBucketDayStart(item.key));
+            const isActive = dayStart >= now - LOG_MANIFEST_TTL_MS || Number(item.updatedAt || 0) >= now - LOG_MANIFEST_TTL_MS;
+            if (isActive) byKey.set(item.key, { ...item, dayStart });
+        }
+    }
+    for (const key of bucketKeys) {
+        byKey.set(key, { key, updatedAt: now, dayStart: getLogBucketDayStart(key), retiredAt: null });
+    }
+    const next = Array.from(byKey.values())
+        .sort((a, b) => Number(b.dayStart || 0) - Number(a.dayStart || 0) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .slice(0, 96);
+    const saved = await saveData(env, manifestKey, next);
+    if (!saved) console.warn(`[LOG_BUCKET_MANIFEST] Failed to save ${manifestKey}`);
+}
+
+function getLogBucketManifestKey(licenseKey) {
+    return `logs_manifest_${sanitizeText(licenseKey || 'unknown', 80) || 'unknown'}`;
+}
+
+function getLogBucketDayStart(bucketKey) {
+    const match = String(bucketKey || '').match(/_(\d{8})_s\d{2}$/);
+    if (!match) return 0;
+    const y = match[1].slice(0, 4);
+    const m = match[1].slice(4, 6);
+    const d = match[1].slice(6, 8);
+    return Date.parse(`${y}-${m}-${d}T00:00:00.000Z`) || 0;
+}
+
+function getLogBucketKey(licenseKey, timestampMs = Date.now(), shardSeed = '') {
+    const cleanLicense = sanitizeText(licenseKey || 'unknown', 80) || 'unknown';
+    const day = new Date(Number(timestampMs || Date.now())).toISOString().slice(0, 10).replace(/-/g, '');
+    const shard = hashToShard(shardSeed || `${cleanLicense}:${day}`, 16);
+    return `logs_${cleanLicense}_${day}_s${String(shard).padStart(2, '0')}`;
+}
+
+function getLogBucketKeyForShard(licenseKey, timestampMs = Date.now(), shard = 0) {
+    const cleanLicense = sanitizeText(licenseKey || 'unknown', 80) || 'unknown';
+    const day = new Date(Number(timestampMs || Date.now())).toISOString().slice(0, 10).replace(/-/g, '');
+    return `logs_${cleanLicense}_${day}_s${String(Math.max(0, Math.min(15, Number(shard) || 0))).padStart(2, '0')}`;
+}
+
+function getLegacyLogBucketKey(licenseKey, timestampMs = Date.now()) {
+    const cleanLicense = sanitizeText(licenseKey || 'unknown', 80) || 'unknown';
+    const day = new Date(Number(timestampMs || Date.now())).toISOString().slice(0, 10).replace(/-/g, '');
+    return `logs_${cleanLicense}_${day}`;
+}
+
+async function getRecentVisitorBuckets(env, licenseKey, siteFilter = '', since = 0, maxVisitors = MAX_PULL_VISITORS_DEFAULT) {
+    const manifest = await getData(env, getVisitorBucketManifestKey(licenseKey));
+    const sinceTs = Number(since || 0);
+    const keyEntries = [];
+    if (Array.isArray(manifest) && manifest.length) {
+        for (const item of manifest) {
+            if (!item?.key) continue;
+            if (siteFilter && item.site !== siteFilter) continue;
+            if (sinceTs && Number(item.updatedAt || 0) < sinceTs - 86400000) continue;
+            keyEntries.push(item);
+        }
+    }
+    const selectedKeys = keyEntries
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .map(item => item.key)
+        .slice(0, 64);
+    const rows = await limitedMap(selectedKeys, 6, key => getData(env, key));
+    const visitors = {};
+    for (const bucket of rows) {
+        if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) continue;
+        for (const [key, visitor] of Object.entries(bucket)) {
+            if (Object.keys(visitors).length >= maxVisitors && !visitors[key]) continue;
+            const current = visitors[key];
+            if (!current || isIncomingEntityNewer(current, visitor)) visitors[key] = visitor;
+        }
+    }
+    return visitors;
+}
+
+async function updateVisitorBucketManifest(env, licenseKey, bucketKeys) {
+    const manifestKey = getVisitorBucketManifestKey(licenseKey);
+    const now = Date.now();
+    const existing = await getData(env, manifestKey);
+    const byKey = new Map();
+    if (Array.isArray(existing)) {
+        for (const item of existing) {
+            if (!item?.key) continue;
+            if (Number(item.updatedAt || 0) >= now - VISITOR_MANIFEST_TTL_MS) byKey.set(item.key, item);
+        }
+    }
+    for (const key of bucketKeys) {
+        byKey.set(key, { key, site: getVisitorBucketSite(key), updatedAt: now, retiredAt: null });
+    }
+    const next = Array.from(byKey.values())
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .slice(0, 256);
+    const saved = await saveData(env, manifestKey, next);
+    if (!saved) console.warn(`[VISITOR_BUCKET_MANIFEST] Failed to save ${manifestKey}`);
+}
+
+function getVisitorBucketManifestKey(licenseKey) {
+    return `visitors_manifest_${sanitizeText(licenseKey || 'unknown', 80) || 'unknown'}`;
+}
+
+function getVisitorBucketSite(bucketKey) {
+    const parts = String(bucketKey || '').split('_');
+    return parts.length >= 3 ? parts.slice(2, -1).join('_') || '' : '';
+}
+
+async function appendVisitorsToBuckets(env, licenseKey, visitors) {
+    if (!visitors || typeof visitors !== 'object' || Object.keys(visitors).length === 0) return true;
+    const grouped = new Map();
+    for (const [key, visitor] of Object.entries(visitors)) {
+        const site = sanitizeText(visitor?.site || String(key).split('_')[0] || 'SITE_A', 80) || 'SITE_A';
+        const bucketKey = getVisitorBucketKey(licenseKey || visitor?.licenseKey || 'unknown', site, key);
+        if (!grouped.has(bucketKey)) grouped.set(bucketKey, {});
+        grouped.get(bucketKey)[key] = visitor;
+    }
+    const touchedBuckets = [];
+    const results = await limitedMap(Array.from(grouped.entries()), 6, async ([bucketKey, entries]) => {
+        const existing = await getData(env, bucketKey);
+        const next = (existing && typeof existing === 'object' && !Array.isArray(existing)) ? existing : {};
+        for (const [key, visitor] of Object.entries(entries)) {
+            const current = next[key];
+            if (!current || isIncomingEntityNewer(current, visitor)) {
+                next[key] = visitor;
+            }
+        }
+        const keys = Object.keys(next);
+        if (keys.length > MAX_BUCKET_VISITORS) {
+            keys.sort((a, b) => Number(next[b]?.updatedAt || 0) - Number(next[a]?.updatedAt || 0));
+            const keep = new Set(keys.slice(0, MAX_BUCKET_VISITORS));
+            for (const key of keys) if (!keep.has(key)) delete next[key];
+        }
+        const saved = await saveDataOrThrow(env, bucketKey, next).then(() => true).catch(err => {
+            console.warn(`[VISITOR_BUCKET] Failed to save ${bucketKey}: ${err?.message || err}`);
+            return false;
+        });
+        if (saved) touchedBuckets.push(bucketKey);
+        if (!saved) console.warn(`[VISITOR_BUCKET] Failed to save ${bucketKey}`);
+        return saved;
+    });
+    if (touchedBuckets.length) await updateVisitorBucketManifest(env, licenseKey, touchedBuckets);
+    return results.every(Boolean);
+}
+
+
+function buildLogBucketDedupeKey(log) {
+    return log?.gasReplayId || log?.sequenceId || buildCanonicalLogKey(log);
+}
+
+function isIncomingEntityNewer(current = {}, incoming = {}) {
+    const currentCommit = Number(current.commitClock || current.updatedAt || current.persistedAt || current.timestamp || 0);
+    const incomingCommit = Number(incoming.commitClock || incoming.updatedAt || incoming.persistedAt || incoming.timestamp || 0);
+    if (incomingCommit !== currentCommit) return incomingCommit > currentCommit;
+    const currentEpoch = Number(current.mutationEpoch || current.writeEpoch || 0);
+    const incomingEpoch = Number(incoming.mutationEpoch || incoming.writeEpoch || 0);
+    if (incomingEpoch !== currentEpoch) return incomingEpoch > currentEpoch;
+    const currentVersion = Number(current.version || 0);
+    const incomingVersion = Number(incoming.version || 0);
+    if (incomingVersion !== currentVersion) return incomingVersion > currentVersion;
+    const currentMutation = String(current.lastMutationId || current.mutationId || '');
+    const incomingMutation = String(incoming.lastMutationId || incoming.mutationId || '');
+    if (incomingMutation !== currentMutation) return incomingMutation >= currentMutation;
+    const currentSeq = String(current.sequenceId || current.gasReplayId || '');
+    const incomingSeq = String(incoming.sequenceId || incoming.gasReplayId || '');
+    return incomingSeq >= currentSeq;
+}
+
+function getVisitorBucketKey(licenseKey, site, visitorKey) {
+    const cleanLicense = sanitizeText(licenseKey || 'unknown', 80) || 'unknown';
+    const cleanSite = sanitizeText(site || 'SITE_A', 80) || 'SITE_A';
+    const shard = hashToShard(visitorKey || `${cleanLicense}:${cleanSite}`, 16);
+    return `visitors_${cleanLicense}_${cleanSite}_s${String(shard).padStart(2, '0')}`;
+}
+
+function compareReplayEntries(a, b) {
+    const aClock = Number(a?.logicalClock || a?.commitTs || a?.updatedAt || a?.ts || 0);
+    const bClock = Number(b?.logicalClock || b?.commitTs || b?.updatedAt || b?.ts || 0);
+    if (aClock !== bClock) return aClock - bClock;
+    const aCommit = Number(a?.commitTs || a?.updatedAt || a?.ts || 0);
+    const bCommit = Number(b?.commitTs || b?.updatedAt || b?.ts || 0);
+    if (aCommit !== bCommit) return aCommit - bCommit;
+    return String(a?.originNode || '').localeCompare(String(b?.originNode || ''));
+}
+
+function getWorkerOriginNode() {
+    if (!globalThis.__vms_origin_node) {
+        globalThis.__vms_origin_node = `worker-${crypto.randomUUID().slice(0, 12)}`;
+    }
+    return globalThis.__vms_origin_node;
+}
+
+function hashToShard(value, shardCount = 16) {
+    const clean = String(value || 'unknown');
+    let hash = 0;
+    for (let i = 0; i < clean.length; i++) hash = ((hash * 31) + clean.charCodeAt(i)) >>> 0;
+    return hash % shardCount;
+}
+
+async function limitedMap(items, limit, mapper) {
+    const source = Array.isArray(items) ? items : [];
+    const concurrency = Math.max(1, Math.min(Number(limit || 4), 8));
+    const results = new Array(source.length);
+    let cursor = 0;
+    async function worker() {
+        while (cursor < source.length) {
+            const index = cursor++;
+            try {
+                results[index] = await mapper(source[index], index);
+            } catch (err) {
+                console.warn('[LIMITED_MAP] Task failed:', err?.message || err);
+                results[index] = null;
+            }
+        }
+    }
+    const workers = [];
+    for (let i = 0; i < Math.min(concurrency, source.length); i++) workers.push(worker());
+    await Promise.allSettled(workers);
+    return results;
+}
+
+function generateMutationId(licenseKey, deviceId) {
+    return `${sanitizeText(licenseKey || 'unknown', 80)}:${sanitizeText(deviceId || getWorkerOriginNode(), 80)}:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`;
 }
 
 async function isTrustedSyncDevice(env, licenseKey, deviceId) {

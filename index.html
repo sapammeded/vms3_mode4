@@ -1210,32 +1210,65 @@ window.onunhandledrejection = function(e) {
 
     async function generateQRImage(qrPayload){
         const ready = await waitQRCodeReady();
+        const reportedMemory = Number(navigator.deviceMemory || 0);
+
+        const lowRam =
+            !navigator.deviceMemory ||
+            !Number.isFinite(reportedMemory) ||
+            reportedMemory <= 4;
+
+        // Mobile thermal printer tidak membutuhkan QR ultra-HD.
+        // 1024 canvas terlalu berat untuk Android low RAM/WebView.
+        // 320-512 sudah cukup untuk scan reliability.
+        const qrSize = lowRam ? 320 : 512;
         if(ready){
             try{
                 const canvas = document.createElement('canvas');
                 await QRCode.toCanvas(canvas, qrPayload, {
-                    width: 200,
+                    width: qrSize,
                     margin: 1,
+                    errorCorrectionLevel: 'H',
                     color: { dark: '#000000', light: '#FFFFFF' }
                 });
-                return canvas.toDataURL("image/png");
+                const exported = canvas.toDataURL(
+                    lowRam ? "image/webp" : "image/png",
+                    lowRam ? 0.92 : 1.0
+                );
+
+                // Android WebView kadang lambat GC canvas memory.
+                // Release canvas bitmap secepat mungkin.
+                canvas.width = 1;
+                canvas.height = 1;
+
+                return exported;
             }catch(e){ console.warn("Local QR failed:", e); }
         }
         for(let i=0;i<2;i++){
             try{
-                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrPayload)}`;
+                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${qrSize}x${qrSize}&ecc=H&margin=1&data=${encodeURIComponent(qrPayload)}`;
                 const img = new Image();
                 img.crossOrigin = "Anonymous";
                 const result = await new Promise((resolve)=>{
                     img.onload = ()=>{
                         const canvas = document.createElement('canvas');
-                        canvas.width = 200;
-                        canvas.height = 200;
+                        canvas.width = qrSize;
+                        canvas.height = qrSize;
                         const ctx = canvas.getContext('2d');
+                        ctx.imageSmoothingEnabled = false;
                         ctx.fillStyle = "white";
-                        ctx.fillRect(0,0,200,200);
-                        ctx.drawImage(img,0,0,200,200);
-                        resolve(canvas.toDataURL("image/png"));
+                        ctx.fillRect(0,0,qrSize,qrSize);
+                        ctx.drawImage(img,0,0,qrSize,qrSize);
+                        const exported = canvas.toDataURL(
+                            lowRam ? "image/webp" : "image/png",
+                            lowRam ? 0.92 : 1.0
+                        );
+
+                        // Android WebView kadang lambat GC canvas memory.
+                        // Release canvas bitmap secepat mungkin.
+                        canvas.width = 1;
+                        canvas.height = 1;
+
+                        resolve(exported);
                     };
                     img.onerror = ()=>resolve(null);
                     img.src = qrUrl;
@@ -1304,95 +1337,203 @@ window.onunhandledrejection = function(e) {
         }catch(err){ console.error("FORCE DOWNLOAD ERROR:", err); return false; }
     }
 
-    async function downloadPDFStable(reg, data){
+    function getBadgePDFConfig(){
+        const fallback = {
+            orientation: 'landscape',
+            version: 1,
+            updatedAt: Date.now(),
+            mutationSource: localStorage.getItem("vms_device_id") || "unknown_device"
+        };
+        try{
+            const parsed = JSON.parse(localStorage.getItem('vms_badge_pdf_config') || 'null');
+            if(parsed && (parsed.orientation === 'portrait' || parsed.orientation === 'landscape')) return parsed;
+        }catch(e){}
+        return fallback;
+    }
+
+    function setBadgePDFOrientation(orientation){
+        const selected = orientation === 'portrait' ? 'portrait' : 'landscape';
+        const prev = getBadgePDFConfig();
+        const next = {
+            ...prev,
+            orientation: selected,
+            version: (Number(prev.version || 0)) + 1,
+            updatedAt: Date.now(),
+            mutationSource: localStorage.getItem("vms_device_id") || "unknown_device"
+        };
+        localStorage.setItem('vms_badge_pdf_config', JSON.stringify(next));
+        return next;
+    }
+
+    function drawAutoFitText(doc, text, box, options = {}){
+        const normalized = String(text || options.fallback || "-").replace(/\s+/g, " ").trim() || (options.fallback || "-");
+        const maxChars = options.maxChars || 900;
+        const clean = normalized.length > maxChars ? `${normalized.slice(0, maxChars)} (lanjutan di sistem)` : normalized;
+        const minFont = Math.max(options.minFont || 3.2, 3.2);
+        const absoluteMinFont = Math.max(options.absoluteMinFont || 2.8, 2.8);
+        const maxFont = Math.max(options.maxFont || 8, minFont);
+        const lineRatio = options.lineRatio || 1.18;
+        const fontStyle = options.fontStyle || 'normal';
+        const color = options.color || [15,23,42];
+        const align = options.align || 'left';
+        const maxLines = Math.max(1, Math.min(options.maxLines || 12, 18));
+        let fontSize = maxFont;
+        let lines = [];
+        let lineHeight = 0;
+        doc.setFont(undefined, fontStyle);
+        let safety = 0;
+
+        while(fontSize >= absoluteMinFont && safety < 40){
+            safety++;
+            doc.setFontSize(fontSize);
+            lines = doc.splitTextToSize(clean, box.w).slice(0, maxLines);
+            lineHeight = fontSize * 0.3528 * lineRatio;
+            if((lines.length * lineHeight) <= box.h) break;
+            fontSize -= 0.2;
+        }
+        if(lines.length && (lines.length * lineHeight) > box.h){
+            lineHeight = Math.max(1, box.h / lines.length);
+            fontSize = Math.max(absoluteMinFont, Math.min(fontSize, lineHeight / (0.3528 * lineRatio)));
+            doc.setFontSize(fontSize);
+        }
+        doc.setTextColor(...color);
+        doc.setFont(undefined, fontStyle);
+        doc.setFontSize(fontSize);
+        const textX = align === 'center' ? box.x + (box.w / 2) : box.x;
+        const baselineAdjust = Math.max(fontSize * 0.31, 0.9);
+        lines.forEach((line, idx)=>{
+            const unclampedY = box.y + (idx * lineHeight) + baselineAdjust;
+            const y = Math.min(box.y + box.h - 0.6, Math.max(box.y + baselineAdjust, unclampedY));
+            doc.text(line, textX, y, { align });
+        });
+        return { fontSize, lines, lineHeight, height: lines.length * lineHeight };
+    }
+
+    async function prepareBadgePhotoImage(src){
+        if(!src || !String(src).startsWith('data')) return null;
+        return new Promise((resolve)=>{
+            let done = false;
+
+            const safeResolve = (value)=>{
+                if(done) return;
+                done = true;
+                resolve(value);
+            };
+
+            const img = new Image();
+
+            img.onload = ()=>{
+                try{
+                    const maxPx = 512;
+                    const scale = Math.min(1, maxPx / Math.max(img.width || maxPx, img.height || maxPx));
+                    const w = Math.max(1, Math.round((img.width || maxPx) * scale));
+                    const h = Math.max(1, Math.round((img.height || maxPx) * scale));
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0,0,w,h);
+                    ctx.drawImage(img,0,0,w,h);
+                    const optimizedPhoto = canvas.toDataURL('image/jpeg', 0.78);
+
+                    // Release bitmap memory aggressively untuk Android WebView
+                    canvas.width = 1;
+                    canvas.height = 1;
+
+                    safeResolve(optimizedPhoto);
+                }catch(e){ safeResolve(src); }
+            };
+            img.onerror = ()=>safeResolve(src);
+            img.src = src;
+            setTimeout(()=>safeResolve(src), 1800);
+        });
+    }
+
+    async function downloadPDFStable(reg, data, selectedOrientation){
         try{
             const ready = await ensureJsPDFReady();
             if(!ready){ toast("PDF engine gagal dimuat. Coba refresh.", "error"); return false; }
             const { jsPDF } = window.jspdf;
+            const orientation = (selectedOrientation || getBadgePDFConfig().orientation || 'landscape') === 'portrait' ? 'portrait' : 'landscape';
+            setBadgePDFOrientation(orientation);
+            const format = orientation === 'portrait' ? [54, 86] : [86, 54];
             const doc = new jsPDF({
-                orientation: 'landscape',
+                orientation,
                 unit: 'mm',
-                format: [86, 54]
+                format
             });
 
-            const badgeW = 86;
-            const badgeH = 54;
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const pageHeight = doc.internal.pageSize.getHeight();
+            const margin = 3;
+            const headerH = orientation === 'portrait' ? 11 : 10;
+            const footerH = 5;
             let accentColor = [31,78,74];
             if(data.kategori === "VVIP") accentColor = [217,119,6];
             else if(data.kategori === "VIP") accentColor = [100,116,139];
-
             const cleanText = (value, fallback = "-") => String(value || fallback).replace(/\s+/g, " ").trim();
-            const fitText = (value, max = 24) => {
-                const text = cleanText(value);
-                return text.length > max ? text.slice(0, max - 1) + "…" : text;
-            };
 
             doc.setFillColor(248,250,252);
-            doc.rect(0, 0, badgeW, badgeH, 'F');
+            doc.rect(0, 0, pageWidth, pageHeight, 'F');
             doc.setFillColor(...accentColor);
-            doc.roundedRect(0, 0, badgeW, 10, 2, 2, 'F');
+            doc.roundedRect(0, 0, pageWidth, headerH, 2, 2, 'F');
             doc.setTextColor(255,255,255);
             doc.setFont(undefined, 'bold');
-            doc.setFontSize(8);
-            doc.text("VISITOR BADGE", badgeW / 2, 6.5, { align:"center" });
+            doc.setFontSize(orientation === 'portrait' ? 8 : 8.5);
+            doc.text("VISITOR BADGE", pageWidth / 2, headerH - 3.5, { align:"center" });
 
             doc.setDrawColor(...accentColor);
             doc.setLineWidth(0.5);
-            doc.roundedRect(2, 2, badgeW - 4, badgeH - 4, 3, 3, 'S');
+            doc.roundedRect(2, 2, pageWidth - 4, pageHeight - 4, 3, 3, 'S');
 
-            const photoX = 5;
-            const photoY = 14;
-            const photoSize = 22;
-            if(data.foto && data.foto.startsWith('data')){
-                try{
-                    doc.addImage(data.foto, 'JPEG', photoX, photoY, photoSize, photoSize);
-                }catch(e){
-                    try{ doc.addImage(data.foto, 'PNG', photoX, photoY, photoSize, photoSize); }catch(imgErr){}
-                }
+            const contentTop = headerH + 3;
+            const contentBottom = pageHeight - footerH - 2;
+            const contentH = contentBottom - contentTop;
+            const isPortrait = orientation === 'portrait';
+            const qrSize = isPortrait ? Math.min(22, pageWidth - (margin * 2) - 12) : Math.min(20, pageHeight - 34);
+            const photoSize = isPortrait ? 16 : 22;
+            const photoX = isPortrait ? (pageWidth - photoSize) / 2 : margin + 2;
+            const photoY = contentTop;
+            const qrX = isPortrait ? (pageWidth - qrSize) / 2 : pageWidth - margin - qrSize - 2;
+            const textX = isPortrait ? margin + 3 : photoX + photoSize + 4;
+            const textW = isPortrait ? pageWidth - ((margin + 3) * 2) : Math.max(28, qrX - 3 - textX);
+            const textTop = isPortrait ? photoY + photoSize + 2.5 : contentTop + 2;
+            const textBlockBottom = isPortrait ? contentBottom - qrSize - 7 : contentBottom - 10;
+            const qrY = isPortrait ? textBlockBottom + 2 : contentTop + 4;
+            const purposeBoxH = isPortrait ? Math.max(12, textBlockBottom - textTop - 16) : Math.max(11, contentBottom - textTop - 16);
+
+            const safePhoto = await prepareBadgePhotoImage(data.foto);
+            if(safePhoto){
+                try{ doc.addImage(safePhoto, 'JPEG', photoX, photoY, photoSize, photoSize, undefined, 'FAST'); }
+                catch(e){ try{ doc.addImage(safePhoto, 'PNG', photoX, photoY, photoSize, photoSize, undefined, 'FAST'); }catch(imgErr){} }
             } else {
                 doc.setFillColor(226,232,240);
                 doc.roundedRect(photoX, photoY, photoSize, photoSize, 2, 2, 'F');
-                doc.setTextColor(100,116,139);
-                doc.setFontSize(5.5);
-                doc.text("NO PHOTO", photoX + photoSize / 2, photoY + 12, { align:"center" });
+                drawAutoFitText(doc, "NO PHOTO", { x: photoX + 1, y: photoY + (photoSize/2) - 2, w: photoSize - 2, h: 4 }, { maxFont: 5.5, minFont: 4, align: 'center', color: [100,116,139] });
             }
 
-            let y = 17;
-            doc.setTextColor(15,23,42);
-            doc.setFont(undefined, 'bold');
-            doc.setFontSize(8.5);
-            doc.text(fitText(data.nama, 24).toUpperCase(), 31, y);
-            y += 5;
-            doc.setFont(undefined, 'normal');
-            doc.setFontSize(6.2);
-            doc.text(fitText(data.perusahaan, 28), 31, y);
-            y += 4;
-            doc.text(`Tujuan: ${fitText(data.tujuan, 18)}`, 31, y);
-            y += 4;
-            doc.text(`Site: ${fitText(SITE_ID, 16)}`, 31, y);
-            y += 4;
-            doc.setTextColor(...accentColor);
-            doc.setFont(undefined, 'bold');
-            doc.text(`Valid Until: ${fitText(data.expDate, 14)}`, 31, y);
+            drawAutoFitText(doc, cleanText(data.nama).toUpperCase(), { x: textX, y: textTop, w: textW, h: isPortrait ? 7 : 6 }, { maxFont: isPortrait ? 6.8 : 8.5, minFont: 3.4, fontStyle: 'bold', maxLines: 2 });
+            drawAutoFitText(doc, cleanText(data.perusahaan), { x: textX, y: textTop + (isPortrait ? 7.4 : 7), w: textW, h: isPortrait ? 5.5 : 5 }, { maxFont: 5.8, minFont: 3.2, color: [15,23,42], maxLines: 2 });
+            drawAutoFitText(doc, `Tujuan: ${cleanText(data.tujuan)}`, { x: textX, y: textTop + (isPortrait ? 13 : 12), w: textW, h: purposeBoxH }, { maxFont: 5.7, minFont: 3.2, color: [15,23,42], maxLines: isPortrait ? 7 : 5 });
+            drawAutoFitText(doc, `Site: ${cleanText(SITE_ID)}`, { x: textX, y: textBlockBottom - 8.5, w: textW, h: 4 }, { maxFont: 5.2, minFont: 3.2, color: [71,85,105], maxLines: 1 });
+            drawAutoFitText(doc, `Valid Until: ${cleanText(data.expDate)}`, { x: textX, y: textBlockBottom - 4.2, w: textW, h: 4 }, { maxFont: 5.4, minFont: 3.2, fontStyle: 'bold', color: accentColor, maxLines: 1 });
 
             const qrPayload = await buildQR(reg, data);
             const qrBase64 = await generateQRImage(qrPayload);
             if(qrBase64 && qrBase64.startsWith("data:image")){
-                try{ doc.addImage(qrBase64, 'PNG', 62, 18, 19, 19); }
-                catch(e){ doc.setTextColor(239,68,68); doc.setFontSize(6); doc.text("QR ERROR", 71.5, 29, { align:"center" }); }
+                try{ doc.addImage(qrBase64, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'NONE'); }
+                catch(e){ doc.setTextColor(239,68,68); doc.setFontSize(6); doc.text("QR ERROR", qrX + qrSize/2, qrY + qrSize/2, { align:"center" }); }
             } else {
                 doc.setTextColor(239,68,68);
                 doc.setFontSize(6);
-                doc.text("QR FAILED", 71.5, 29, { align:"center" });
+                doc.text("QR FAILED", qrX + qrSize/2, qrY + qrSize/2, { align:"center" });
             }
 
-            doc.setTextColor(71,85,105);
-            doc.setFont(undefined, 'normal');
-            doc.setFontSize(5.5);
-            doc.text(`REG ${reg}`, 71.5, 40, { align:"center" });
-            doc.text("Mobile Thermal Ready", badgeW / 2, 50, { align:"center" });
+            drawAutoFitText(doc, `REG ${reg}`, { x: qrX - 1, y: qrY + qrSize + 2, w: qrSize + 2, h: 5 }, { maxFont: 5.5, minFont: 3, align: 'center', color: [71,85,105] });
+            drawAutoFitText(doc, "Mobile Thermal Ready", { x: margin, y: pageHeight - 5, w: pageWidth - (margin * 2), h: 4 }, { maxFont: 5.5, minFont: 3.2, align: 'center', color: [71,85,105] });
 
-            const success = forceDownloadPDF(doc, `BADGE_${reg}.pdf`);
+            const success = forceDownloadPDF(doc, `BADGE_${reg}_${orientation.toUpperCase()}.pdf`);
             if(!success){ toast("Download gagal. Gunakan browser Chrome.", "error"); return false; }
             toast(`Badge ID ${reg} berhasil didownload`, "success");
             return true;
@@ -1421,6 +1562,13 @@ window.onunhandledrejection = function(e) {
                         <p><strong>REG</strong> : ${reg}</p>
                     </div>
                     ${qrBase64 ? `<img class="qr-preview" src="${qrBase64}">` : '<div style="color:red; text-align:center;">QR gagal dimuat</div>'}
+                    <div class="input-field" style="margin:12px 0;">
+                        <label>Badge PDF Orientation</label>
+                        <select id="badgeOrientationSelect">
+                            <option value="portrait" ${getBadgePDFConfig().orientation === 'portrait' ? 'selected' : ''}>PORTRAIT</option>
+                            <option value="landscape" ${getBadgePDFConfig().orientation !== 'portrait' ? 'selected' : ''}>LANDSCAPE</option>
+                        </select>
+                    </div>
                     <div class="flex-btns">
                         <button id="confirmDownloadBtn">Download Badge ID</button>
                         <button id="closePreviewBtn" class="btn-outline">Close</button>
@@ -1436,7 +1584,9 @@ window.onunhandledrejection = function(e) {
                 const originalText = confirmBtn.innerText;
                 confirmBtn.innerHTML = `Processing <span class="loader"></span>`;
                 confirmBtn.disabled = true;
-                if(previewData) await downloadPDFStable(previewData.reg, previewData.data);
+                const selectedOrientation = modal.querySelector('#badgeOrientationSelect')?.value || getBadgePDFConfig().orientation || 'landscape';
+                setBadgePDFOrientation(selectedOrientation);
+                if(previewData) await downloadPDFStable(previewData.reg, previewData.data, selectedOrientation);
                 confirmBtn.innerHTML = originalText;
                 confirmBtn.disabled = false;
                 isDownloading = false;

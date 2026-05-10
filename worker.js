@@ -340,6 +340,30 @@ export default {
                 return new Response(JSON.stringify({ ok: true, device }), { headers: corsHeaders });
             }
             
+            if (path === '/sheet-append' && request.method === 'POST') {
+                const body = await request.json();
+                const rows = Array.isArray(body.logs) ? body.logs : [];
+                console.log(JSON.stringify({ type:"SHEET_APPEND_ACTION_DEBUG", rows: rows.map(log => ({ reg: log?.reg || '', action: log?.action || '' })).slice(0, 10), updatedAt: Date.now() }));
+                const gasLogs = rows
+                    .filter(log => log && log.reg && (log.action === 'CHECK_IN' || log.action === 'CHECK_OUT'))
+                    .map(log => ({
+                        reg: sanitizeText(log.reg, 80),
+                        nama: sanitizeText(log.nama || log.name || '', 160),
+                        perusahaan: sanitizeText(log.perusahaan || log.company || '', 160),
+                        action: sanitizeText(log.action, 40),
+                        logTime: log.logTime || log.time || Date.now(),
+                        site: sanitizeText(log.site || '', 80),
+                        deviceId: sanitizeText(log.deviceId || '', 120),
+                        kategori: sanitizeText(log.kategori || log.category || '', 80),
+                        pic: sanitizeText(log.pic || '', 120),
+                        start: sanitizeText(log.start || log.startDate || '', 80),
+                        exp: sanitizeText(log.exp || log.expDate || '', 80),
+                        status: sanitizeText(log.status || log.action || '', 80)
+                    }));
+                const ok = await appendLogsToSheet(gasLogs);
+                return new Response(JSON.stringify({ ok, rowsAppended: ok ? gasLogs.length : 0 }), { headers: corsHeaders });
+            }
+
             // ==================== CHECK-IN / CHECK-OUT MODULE ====================
             if (path === '/checkin' && request.method === 'POST') {
                 const body = await request.json();

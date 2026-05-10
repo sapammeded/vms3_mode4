@@ -47,6 +47,7 @@ function doPost(e) {
       if (!logTime) {
         throw createHttpError_(400, 'Field logTime/time tidak dapat diparsing sebagai tanggal.');
       }
+      console.log(JSON.stringify({ type: 'GAS_ACTION_DEBUG', reg: log.reg || '', action: log.action || '' }));
       return buildAppendRow_(log, logTime);
     });
 
@@ -224,12 +225,12 @@ function validateRequiredFields_(payload, required) {
 }
 
 function normalizeAction_(action) {
-  const normalized = String(action || '').trim().toUpperCase().replace(/_/g, '-');
-  if (normalized === 'VISITOR-SNAPSHOT') {
-    return normalized;
+  const normalized = String(action || '').trim().toUpperCase().replace(/-/g, '_');
+  if (normalized === 'VISITOR_SNAPSHOT') {
+    return 'VISITOR-SNAPSHOT';
   }
-  if (normalized !== 'CHECK-IN' && normalized !== 'CHECK-OUT') {
-    throw createHttpError_(400, 'action harus CHECK-IN, CHECK-OUT, atau VISITOR-SNAPSHOT.');
+  if (normalized !== 'CHECK_IN' && normalized !== 'CHECK_OUT') {
+    throw createHttpError_(400, 'action harus CHECK_IN, CHECK_OUT, atau VISITOR-SNAPSHOT.');
   }
   return normalized;
 }
@@ -298,9 +299,10 @@ function toDateOrNull_(value) {
 }
 
 function buildAppendRow_(payload, logTime) {
-  const action = payload.action;
-  const checkin = action === 'CHECK-IN' ? logTime.toISOString() : '';
-  const checkout = action === 'CHECK-OUT' ? logTime.toISOString() : '';
+  const action = String(payload.action || '').trim().toUpperCase().replace(/-/g, '_');
+  const displayAction = action.replace(/_/g, '-');
+  const checkin = action === 'CHECK_IN' ? logTime.toISOString() : '';
+  const checkout = action === 'CHECK_OUT' ? logTime.toISOString() : '';
 
   return [
     String(payload.nama || ''),
@@ -312,7 +314,7 @@ function buildAppendRow_(payload, logTime) {
     checkin,
     checkout,
     String(payload.reg || ''),
-    action,
+    displayAction,
     logTime.toISOString(),
     String(payload.status || action),
     String(payload.site || ''),

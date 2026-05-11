@@ -16,6 +16,8 @@ const MAX_BUCKET_LOGS = 1200;
 const MAX_BUCKET_VISITORS = 1000;
 const MAX_PULL_LOGS_DEFAULT = 1000;
 const MAX_PULL_VISITORS_DEFAULT = 2000;
+const MAX_SHARED_STORE_LOGS = 3000;
+const MAX_SHARED_STORE_VISITORS = 2000;
 const RUNTIME_BUCKET_CACHE_TTL_MS = 1500;
 const MAX_RUNTIME_BUCKET_CACHE_ENTRIES = 256;
 const LOG_MANIFEST_TTL_MS = 14 * 86400000;
@@ -1147,6 +1149,7 @@ export default {
                 const trustedSyncDevice = await isTrustedSyncDevice(env, licenseKey, body.deviceId);
                 
                 const acceptedVisitors = {};
+                let appendOnlyLogsForSharedStore = [];
                 if (visitors && Object.keys(visitors).length > 0) {
                     // Cloudflare KV is not a transactional database. The legacy
                     // `visitors` hot cache is only a compatibility mirror; bucket
@@ -1279,6 +1282,7 @@ export default {
                         const logClock = buildAuthoritativeMutationClock({}, { ...log, updatedAt: Number(log.updatedAt || persistedAt), persistedAt }, trustedSyncDevice, mutationId);
                         appendOnly.push(sanitizeLogEntity(stampAuthoritativeEntity({ ...log, persistedAt, sequenceId }, logClock, mutationId, body.deviceId || getWorkerOriginNode())));
                     }
+                    appendOnlyLogsForSharedStore = appendOnly.slice();
                     if (appendOnly.length) {
                         const bucketOk = await appendLogsToBuckets(env, licenseKey, appendOnly);
                         if (!bucketOk) throw new Error('AUTHORITATIVE_LOG_BUCKET_SAVE_FAILED');
@@ -1347,6 +1351,14 @@ export default {
                     }
                     await appendVisitorsToSheet(env, licenseKey, acceptedVisitors);
                 }
+
+                if(Object.keys(acceptedVisitors).length || appendOnlyLogsForSharedStore.length){
+                    const sharedStoreOk = await updateLicenseSharedStore(env, licenseKey, {
+                        visitors: acceptedVisitors,
+                        logs: appendOnlyLogsForSharedStore
+                    });
+                    if(!sharedStoreOk) console.warn('[LICENSE_SHARED_STORE] Shared license mirror failed; bucket storage remains authoritative');
+                }
                 
                 if (anti && Object.keys(anti).length > 0) {
                     let reports = await getData(env, 'anti_nakal_reports');
@@ -1398,8 +1410,8 @@ export default {
                 if (!company) {
                     return json({ ok: false, message: 'Invalid licenseKey' }, 403);
                 }
-                // Pull is intentionally bucket-only. The legacy hot visitor cache can lag
-                // or regress under KV eventual consistency, so it is not merged here.
+                // Pull reads authoritative license-scoped buckets plus the shared license store.
+                // The legacy global hot visitor cache can lag/regress, so it is not merged here.
                 const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, siteFilter, since, MAX_PULL_VISITORS_DEFAULT);
                 const visitors = {};
                 const MAX_PULL_VISITORS = MAX_PULL_VISITORS_DEFAULT;
@@ -1417,9 +1429,11 @@ export default {
                     }
                 };
                 for (const [key, v] of Object.entries(bucketVisitors || {})) appendPullVisitor(key, v);
+                const sharedStore = await loadLicenseSharedStore(env, licenseKey);
+                for (const [key, v] of Object.entries(sharedStore.visitors || {})) appendPullVisitor(key, v);
                 const MAX_PULL_LOGS = MAX_PULL_LOGS_DEFAULT;
-                // Pull is intentionally bucket-only. The legacy hot log cache remains a
-                // best-effort write-through cache for compatibility, not a read source.
+                // Pull reads authoritative license-scoped log buckets plus the shared license store.
+                // The legacy global hot log cache remains compatibility-only, not a read source.
                 const bucketLogs = await getRecentLogBuckets(env, licenseKey, since, MAX_PULL_LOGS * 3);
                 const MAX_PULL_SCAN_LOGS = MAX_PULL_LOGS * 4;
                 let scannedLogs = 0;
@@ -1442,6 +1456,7 @@ export default {
                     }
                 };
                 for (const l of bucketLogs) appendPullLog(l);
+                for (const l of sharedStore.logs || []) appendPullLog(l);
                 const dedupedLogs = Array.from(dedupeMap.values())
                     .sort((a,b) => (Number(a?.persistedAt || 0) || Date.parse(a?.time || 0)) - (Number(b?.persistedAt || 0) || Date.parse(b?.time || 0)))
                     .slice(-MAX_PULL_LOGS);
@@ -2689,6 +2704,63 @@ function getVisitorBucketKey(licenseKey, site, visitorKey) {
     return `visitors_${cleanLicense}_${cleanSite}_s${String(shard).padStart(2, '0')}`;
 }
 
+
+function getLicenseStorageKey(licenseKey) {
+    const cleanLicense = sanitizeText(licenseKey || 'unknown', 80) || 'unknown';
+    return `VMS_DATA_${cleanLicense}`;
+}
+
+function normalizeLicenseSharedStore(raw, licenseKey) {
+    const store = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const cleanLicense = sanitizeText(licenseKey || store.licenseKey || 'unknown', 80) || 'unknown';
+    const visitors = {};
+    if (store.visitors && typeof store.visitors === 'object' && !Array.isArray(store.visitors)) {
+        for (const [key, visitor] of Object.entries(store.visitors)) {
+            if (!visitor || typeof visitor !== 'object') continue;
+            if (visitor.licenseKey && visitor.licenseKey !== cleanLicense) continue;
+            visitors[key] = sanitizeVisitorEntity({ ...visitor, licenseKey: cleanLicense, source: visitor.source || 'license_shared_store' });
+        }
+    }
+    const logs = Array.isArray(store.logs)
+        ? store.logs
+            .filter(log => log && (!log.licenseKey || log.licenseKey === cleanLicense))
+            .map(log => sanitizeLogEntity({ ...log, licenseKey: cleanLicense, source: log.source || 'license_shared_store' }))
+        : [];
+    return {
+        storageKey: getLicenseStorageKey(cleanLicense),
+        licenseKey: cleanLicense,
+        updatedAt: Number(store.updatedAt || 0),
+        visitors: pruneHotVisitors(visitors, MAX_SHARED_STORE_VISITORS),
+        logs: pruneHotLogs(logs, MAX_SHARED_STORE_LOGS)
+    };
+}
+
+async function loadLicenseSharedStore(env, licenseKey) {
+    return normalizeLicenseSharedStore(await getData(env, getLicenseStorageKey(licenseKey)), licenseKey);
+}
+
+async function updateLicenseSharedStore(env, licenseKey, delta = {}) {
+    const storageKey = getLicenseStorageKey(licenseKey);
+    const current = await loadLicenseSharedStore(env, licenseKey);
+    const incomingVisitors = {};
+    for (const [key, visitor] of Object.entries(delta.visitors || {})) {
+        if (!visitor || typeof visitor !== 'object') continue;
+        incomingVisitors[key] = sanitizeVisitorEntity({ ...visitor, licenseKey: current.licenseKey, source: 'license_shared_store' });
+    }
+    const incomingLogs = (Array.isArray(delta.logs) ? delta.logs : [])
+        .filter(Boolean)
+        .map(log => sanitizeLogEntity({ ...log, licenseKey: current.licenseKey, source: 'license_shared_store' }));
+    const next = {
+        storageKey,
+        licenseKey: current.licenseKey,
+        updatedAt: Date.now(),
+        visitors: mergeHotVisitorMirror(current.visitors, incomingVisitors, MAX_SHARED_STORE_VISITORS),
+        logs: mergeHotLogMirror(current.logs, incomingLogs, MAX_SHARED_STORE_LOGS)
+    };
+    console.log(JSON.stringify({ type:'LICENSE_SHARED_STORE_WRITE', storageKey, licenseKey: current.licenseKey, visitors:Object.keys(incomingVisitors).length, logs:incomingLogs.length, updatedAt: next.updatedAt }));
+    return saveData(env, storageKey, next);
+}
+
 function compareReplayEntries(a, b) {
     const aFinal = a?.status === 'DEAD_LETTER' || a?.final ? 1 : 0;
     const bFinal = b?.status === 'DEAD_LETTER' || b?.final ? 1 : 0;
@@ -3053,18 +3125,45 @@ async function appendVisitorsToSheet(env, licenseKey, visitors) {
     return ok;
 }
 
+
+function buildGoogleScriptPayload(mode, data = {}) {
+    const logs = Array.isArray(data.logs) ? data.logs : [];
+    const visitors = (data.visitors && typeof data.visitors === 'object' && !Array.isArray(data.visitors)) ? data.visitors : undefined;
+    const payload = {
+        source: 'vms-worker',
+        mode,
+        version: PATCH_VERSION,
+        updatedAt: getEventTimestamp(),
+        updatedAtWIB: getWIBISO()
+    };
+    if (logs.length) {
+        payload.logs = logs.map(log => {
+            const eventTs = Number(log.eventTs || (typeof log.time === 'number' ? log.time : 0) || log.updatedAt || Date.parse(log.time || log.logTime || 0) || getEventTimestamp());
+            const mutationId = sanitizeText(log.mutationId || log.sequenceId || generateMutationId(log.licenseKey || 'unknown', log.deviceId || log.mutationSource || 'gas'), 180);
+            return {
+                ...log,
+                eventTs,
+                time: eventTs,
+                action: normalizeAction(log.action),
+                mutationId,
+                mutationSource: sanitizeText(log.mutationSource || log.deviceId || getWorkerOriginNode(), 160),
+                requestFingerprint: sanitizeText(log.requestFingerprint || [mutationId, log.reg || '', log.deviceId || '', eventTs].join('|'), 240),
+                logTime: log.logTime || getWIBISO(eventTs),
+                syncStatus: log.syncStatus || 'PENDING_SYNC'
+            };
+        }).filter(log => log.reg && log.mutationId && isSheetAppendAction(log.action));
+        payload.expectedCount = payload.logs.length;
+    }
+    if (visitors) payload.visitors = visitors;
+    return payload;
+}
+
 async function pushVisitorsToGoogleScript(visitors, options = {}) {
     const timeoutMs = 9000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const payload = {
-            source: 'vms-worker',
-            mode: 'visitor-snapshot',
-            version: PATCH_VERSION,
-            updatedAt: Date.now(),
-            visitors
-        };
+        const payload = buildGoogleScriptPayload('visitor-snapshot', { visitors });
         const headers = { 'Content-Type': 'application/json' };
         let requestBody = JSON.stringify(payload);
         if (options.hmacSecret) {
@@ -3116,17 +3215,7 @@ async function pushLogsToGoogleScript(logs, options = {}) {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const fail = (extra = {}) => detailed ? { ok:false, ack:false, rowsAppended:0, mutationIds:[], skippedMutationIds:[], ackMutationIds:[], ...extra } : false;
     try {
-        const payload = {
-            source: 'vms-worker',
-            mode: 'append-only',
-            version: PATCH_VERSION,
-            updatedAt: getEventTimestamp(),
-            updatedAtWIB: getWIBISO(),
-            logs: logs.map(log => {
-                const eventTs = Number(log.eventTs || (typeof log.time === 'number' ? log.time : 0) || log.updatedAt || Date.parse(log.time || log.logTime || 0) || getEventTimestamp());
-                return { ...log, eventTs, time:eventTs, action: normalizeAction(log.action), logTime: log.logTime || getWIBISO(eventTs), syncStatus: log.syncStatus || 'PENDING_SYNC' };
-            })
-        };
+        const payload = buildGoogleScriptPayload('append-only', { logs });
         const headers = { 'Content-Type': 'application/json' };
         let requestBody = JSON.stringify(payload);
         if (options.hmacSecret) {
@@ -3356,16 +3445,18 @@ function getDefaultData(key) {
 }
 
 // ==================== AUTH CHECK (TOKEN NORMALIZATION) ====================
+function extractAuthToken(headers) {
+    const xToken = headers.get('x-token');
+    if (xToken) return xToken.trim();
+
+    const authHeader = headers.get('authorization') || headers.get('Authorization') || '';
+    const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+    return bearerMatch ? bearerMatch[1].trim() : null;
+}
+
 async function checkAuth(headers, env) {
-    // FIX: normalize token from multiple header formats
-    let token = headers.get('x-token');
-    
-    if (!token) {
-        const authHeader = headers.get('authorization') || headers.get('Authorization');
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            token = authHeader.split(' ')[1];
-        }
-    }
+    // Accept the dashboard's x-token header and standards-compliant Bearer tokens.
+    const token = extractAuthToken(headers);
     
     if (!token) return null;
     
@@ -3415,3 +3506,5 @@ async function sha256(message) {
     const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     return hashHex;
 }
+
+export { buildGoogleScriptPayload, extractAuthToken, getLicenseStorageKey, normalizeAction };

@@ -1192,7 +1192,12 @@ function logSyncMetric(type, payload={}){ console.log(JSON.stringify({ type, upd
 function loadJsonArray(key){ return safeParseJSON(localStorage.getItem(key), []); }
 function saveJsonArray(key, value){ try{ localStorage.setItem(key, JSON.stringify(value)); }catch(e){ console.warn("LOCAL_QUEUE_SAVE_FAIL", { key, reason:e?.message || e, updatedAt:getWIBISO() }); } }
 function getMutationSource(){ return `${localStorage.getItem("vms_device_id") || "unknown"}:${BROWSER_ID}`; }
-function createMutationId(prefix="mut") { return `${prefix}_${getEventTimestamp()}_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2,10)}`; }
+function createMutationId(prefix="mut") {
+    const licenseKey = (localStorage.getItem("vms_license_key") || "NO_LICENSE").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48);
+    const deviceId = (localStorage.getItem("vms_device_id") || "unknown").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48);
+    const entropy = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2,10);
+    return `${prefix}_${licenseKey}_${deviceId}_${getEventTimestamp()}_${entropy}`;
+}
 function visitorFingerprint(data){
     return [data?.mutationId || "", data?.reg || "", data?.deviceId || localStorage.getItem("vms_device_id") || "", data?.eventTs || data?.updatedAt || getEventTimestamp()]
         .map(v => String(v).trim().toLowerCase()).join("|");
@@ -1408,23 +1413,9 @@ function drawCorporateFooter(doc, deviceId, w, h){
 }
 function updateVisitorSyncBadge(){
     const health = window.getSyncQueueHealth ? window.getSyncQueueHealth() : { appendQueueDepth: loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY).length, cloudRetryQueueDepth: 0, deadLetterCount: loadJsonArray(VMS_APPEND_DEAD_LETTER_KEY).length, lastPullTs: 0, lastSyncTime: 0, syncFailStreak: 0, online: navigator.onLine };
-    const queueDepth = Number(health.appendQueueDepth || 0) + Number(health.cloudRetryQueueDepth || 0);
-    let badge = document.getElementById("syncStatusBadge");
-    if(!badge){
-        badge = document.createElement("div");
-        badge.id = "syncStatusBadge";
-        badge.style.cssText = "position:fixed;right:18px;bottom:72px;z-index:1001;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;background:#065f46;color:white;box-shadow:0 8px 20px rgba(0,0,0,.12);";
-        document.body.appendChild(badge);
-    }
-    let state = "SYNCED";
-    let color = "#065f46";
-    if(!health.online && queueDepth){ state = "OFFLINE QUEUED"; color = "#b45309"; }
-    else if(Number(health.syncFailStreak || 0) > 0 || Number(health.deadLetterCount || 0) > 0){ state = "SYNC ERROR"; color = "#991b1b"; }
-    else if(queueDepth){ state = "UNSYNCED"; color = "#b45309"; }
-    const lastPullLabel = health.lastPullTs ? formatWIB(Number(health.lastPullTs), { dateStyle:"short", timeStyle:"medium" }).split(" ").slice(-1)[0] : "-";
-    badge.textContent = `${state} | LAST PULL: ${lastPullLabel} WIB | QUEUE: ${queueDepth}`;
-    badge.style.background = color;
-    badge.title = JSON.stringify(health);
+    window.__vmsLastSyncHealth = health;
+    const badge = document.getElementById("syncStatusBadge");
+    if(badge) badge.remove();
 }
 function queueAppendRetry(mutation){
     if(!isValidMutationEnvelope(mutation)){ queueDeadLetter(mutation, "poison_append_mutation"); logSyncMetric("queueFailures", { reason:"poison_append_mutation" }); return; }
@@ -1864,7 +1855,7 @@ window.onunhandledrejection = function(e) {
 
             const success = forceDownloadPDF(doc, `BADGE_${reg}_${badgeMode}.pdf`);
             if(!success){ toast("Download gagal. Gunakan browser Chrome.", "error"); return false; }
-            toast(`Badge ID ${reg} berhasil didownload`, "success");
+            toast(`Badge ID ${reg} berhasil diunduh`, "success");
             return true;
         }catch(err){ console.error("BADGE PDF ERROR:", err); toast("Terjadi error saat generate Badge ID", "error"); return false; }
     }
@@ -3069,7 +3060,8 @@ function buildPayload(){
         licenseKey,
         version: VMS_RUNTIME_VERSION,
         updatedAt: now,
-        replayId: `${licenseKey}_${localStorage.getItem('vms_device_id') || 'unknown'}_${now}_${replayCounter}`,
+        mutationId: createMutationId("payload"),
+        replayId: `${licenseKey}_${now}_${replayCounter}_${localStorage.getItem('vms_device_id') || 'unknown'}`,
         ts: now,
 
         // 🔥 ANTI NAKAL REPORT
@@ -4225,7 +4217,9 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 
     // ========== STATUS INDICATOR ==========
     function addStatusIndicator() {
-        if (document.getElementById("hybridStatusIndicator")) return;
+        const existing = document.getElementById("hybridStatusIndicator");
+        if (existing) existing.remove();
+        return;
 
         const indicator = document.createElement("div");
         indicator.id = "hybridStatusIndicator";

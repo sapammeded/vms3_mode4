@@ -53,6 +53,7 @@ test('buildGoogleScriptPayload matches GAS append-only contract', () => {
   assert.equal(payload.logs.length, 1);
   assert.equal(payload.logs[0].action, 'CHECK_IN');
   assert.equal(payload.logs[0].eventTs, 1710000000000);
+  assert.equal(payload.logs[0].time, new Date(1710000000000).toISOString());
   assert.equal(payload.logs[0].mutationId, 'mut-1');
   assert.ok(payload.logs[0].requestFingerprint.includes('mut-1'));
 });

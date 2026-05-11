@@ -3143,7 +3143,7 @@ function buildGoogleScriptPayload(mode, data = {}) {
             return {
                 ...log,
                 eventTs,
-                time: eventTs,
+                time: new Date(eventTs).toISOString(),
                 action: normalizeAction(log.action),
                 mutationId,
                 mutationSource: sanitizeText(log.mutationSource || log.deviceId || getWorkerOriginNode(), 160),

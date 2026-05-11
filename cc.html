@@ -1071,8 +1071,10 @@
             
             const currentToken = token || localStorage.getItem("vms_admin_token");
             if (currentToken) {
-                headers["x-token"] = currentToken;
-                console.log(`[API_CALL] Using token: ${currentToken.substring(0, 20)}...`);
+                const cleanToken = String(currentToken).trim();
+                headers["Authorization"] = "Bearer " + cleanToken;
+                headers["x-token"] = cleanToken;
+                console.log(`[API_CALL] Using bearer token: ${cleanToken.substring(0, 20)}...`);
             }
             
             const url = API_URL + endpoint;

@@ -265,6 +265,47 @@ let currentUser = null;
 let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
 let lastScanTime = {};
 const VMS_RUNTIME_VERSION = "1.0.13";
+const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
+const WIB_TIMEZONE = "Asia/Jakarta";
+const REGISTER_LOCK = "REGISTER_LOCK";
+const CHECKIN_LOCK = "CHECKIN_LOCK";
+const CHECKOUT_LOCK = "CHECKOUT_LOCK";
+const MUTATION_DEBOUNCE_MS = 1200;
+const DUPLICATE_REJECTION_WINDOW_MS = 15000;
+const BROWSER_ID = localStorage.getItem("vms_browser_id") || (()=>{ const id = `browser_${Date.now()}_${Math.random().toString(36).slice(2,8)}`; localStorage.setItem("vms_browser_id", id); return id; })();
+const HYDRATION_MODE = { active: false };
+window.HYDRATION_MODE = HYDRATION_MODE;
+window.VMS_ACTION_TYPES = ACTION_TYPES;
+
+function getEventTimestamp(){ return Date.now(); }
+// Backward-compatible alias only. Epoch timestamps are UTC/universal; WIB is applied only when formatting for UI/sheet/log text.
+function getWIBTimestamp(){ return getEventTimestamp(); }
+function getWIBISO(input = getEventTimestamp()){
+    const d = input instanceof Date ? input : new Date(input);
+    const parts = new Intl.DateTimeFormat("sv-SE", { timeZone: WIB_TIMEZONE, year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false }).formatToParts(d)
+        .reduce((acc, part)=>{ if(part.type !== "literal") acc[part.type] = part.value; return acc; }, {});
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+07:00`;
+}
+function getWIBDate(input = getEventTimestamp()){ return getWIBISO(input).slice(0,10); }
+function formatWIB(input = getEventTimestamp(), options = {}){
+    return new Intl.DateTimeFormat("id-ID", { timeZone: WIB_TIMEZONE, dateStyle: options.dateStyle || "medium", timeStyle: options.timeStyle || "medium" }).format(input instanceof Date ? input : new Date(input));
+}
+window.getEventTimestamp = getEventTimestamp;
+window.getWIBTimestamp = getWIBTimestamp;
+window.getWIBISO = getWIBISO;
+window.getWIBDate = getWIBDate;
+window.formatWIB = formatWIB;
+
+function normalizeAction(action){
+    const raw = String(action || "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+    if(["IN", "CHECKIN", "CHECK_IN"].includes(raw)) return ACTION_TYPES.CHECK_IN;
+    if(["OUT", "CHECKOUT", "CHECK_OUT"].includes(raw)) return ACTION_TYPES.CHECK_OUT;
+    if(["WALK_IN", "WALKIN", "WALK_IN_CEPAT"].includes(raw)) return ACTION_TYPES.WALK_IN;
+    if(raw === "REGISTER") return ACTION_TYPES.REGISTER;
+    console.warn("ACTION_NORMALIZATION_INVALID", { raw: action, updatedAt: getWIBISO() });
+    return raw || "UNKNOWN";
+}
+window.normalizeAction = normalizeAction;
 
 function safeParseJSON(raw, fallback = null){
     if(!raw) return fallback;
@@ -641,9 +682,9 @@ async function applyLicenseKey(key) {
         toast("Masukkan license key", "error");
         return;
     }
-    
+
     toast("Memvalidasi license...", "info");
-    
+
     try {
         const response = await fetch(WORKER_BASE_URL + "/validate-license", {
             method: "POST",
@@ -654,24 +695,24 @@ async function applyLicenseKey(key) {
                 deviceName: "VMS Field Device"
             })
         });
-        
+
         const data = await response.json();
-        
+
         if (data && data.ok) {
             // License valid dari Worker
             syncRuntimeLicenseContext({ mode: data.company?.package || "PRO", features: data.features || WORKER_FEATURES, key });
             localStorage.setItem("vms_license_key", key);
             sessionStorage.setItem("vms_license_key", key);
-            
+
             // Simpan info company
             if (data.company) {
                 localStorage.setItem("vms_company", data.company.name || "");
                 localStorage.setItem("vms_max_devices", data.company.maxDevices || 0);
             }
-            
+
             toast(`✅ License aktif: ${LICENSE_MODE}`, "success");
             applyLicenseUI();
-            
+
             // Refresh runtime langsung tanpa reload agar UI unlock mengikuti fitur Worker
             await refreshLicenseFeaturesFromWorker();
             renderSiteSelectors();
@@ -991,27 +1032,27 @@ function updateMonetizationUI() {
     renderSiteSelectors();
     const progressCard = document.getElementById("monetizationProgressCard");
     if(!progressCard) return;
-    
+
     const visitorCount = getCurrentVisitorCount();
     let maxLimit = 0;
     let modeText = "";
-    
+
     // HARD UI LOCK - disable/enable buttons based on limits (GUNAKAN SILENT VERSION)
     const generateBtn = document.getElementById("generateQRBtn");
     const walkinBtn = document.getElementById("walkinBtn");
     const startCamBtn = document.getElementById("startCamBtn");
     const manualProcessBtn = document.getElementById("manualProcess");
     const uploadQrBtn = document.getElementById("uploadQrBtn");
-    
+
     const canReg = canRegisterSilent();
     const canScn = canScanSilent();
-    
+
     if(generateBtn) generateBtn.disabled = !canReg;
     if(walkinBtn) walkinBtn.disabled = !canReg;
     if(startCamBtn) startCamBtn.disabled = !canScn;
     if(manualProcessBtn) manualProcessBtn.disabled = !canScn;
     if(uploadQrBtn) uploadQrBtn.disabled = !canScn;
-    
+
     if(isPro()) {
         maxLimit = 0;
         modeText = "Unlimited";
@@ -1123,6 +1164,168 @@ async function secureLoad(){
 
 window.saveStore = secureSave;
 
+const VMS_APPEND_RETRY_QUEUE_KEY = "vms_append_retry_queue";
+const VMS_APPEND_DEAD_LETTER_KEY = "vms_append_dead_letter_queue";
+const VMS_MUTATION_FINGERPRINT_KEY = "vms_mutation_fingerprint_cache";
+const MAX_QUEUE_BYTES = 240000;
+const MAX_FINGERPRINT_CACHE = 600;
+const MAX_DEAD_LETTER = 80;
+const HYDRATION_MUTEX = { hydrating:false, mutationDepth:0, token:null };
+const mutationLocks = new Map();
+
+function getApproxBytes(value){ try { return new Blob([JSON.stringify(value)]).size; } catch { return JSON.stringify(value || []).length; } }
+function pruneArrayByBytes(items, maxItems, maxBytes){
+    let pruned = (Array.isArray(items) ? items : []).slice(-maxItems);
+    while(pruned.length > 1 && getApproxBytes(pruned) > maxBytes) pruned.shift();
+    return pruned;
+}
+function isValidMutationEnvelope(mutation){
+    if(!mutation || typeof mutation !== "object") return false;
+    const event = mutation.event || mutation;
+    const action = normalizeAction(event.action || mutation.action);
+    return !!(event.mutationId || mutation.mutationId) && Number.isFinite(Number(event.eventTs || mutation.eventTs || event.time || mutation.time || 0)) && Number(event.version || mutation.version || 0) >= 1 && !!(event.mutationSource || mutation.mutationSource || event.deviceId || mutation.deviceId) && (action === ACTION_TYPES.CHECK_IN || action === ACTION_TYPES.CHECK_OUT || action === ACTION_TYPES.REGISTER || action === ACTION_TYPES.WALK_IN);
+}
+function makeSyncEnvelope(event, meta = {}){ return { event: cloneSafe(event), syncMeta: { ...meta, retry:Number(meta.retry || 0), queuedAt:Number(meta.queuedAt || getEventTimestamp()), queuedAtWIB: meta.queuedAtWIB || getWIBISO(), syncStatus:meta.syncStatus || "PENDING_SYNC" } }; }
+function unwrapSyncEnvelope(item){ return item?.event ? { ...item.event, ...(item.syncMeta || {}) } : item; }
+function logSyncMetric(type, payload={}){ console.log(JSON.stringify({ type, updatedAt:getWIBISO(), ...payload })); }
+
+function loadJsonArray(key){ return safeParseJSON(localStorage.getItem(key), []); }
+function saveJsonArray(key, value){ try{ localStorage.setItem(key, JSON.stringify(value)); }catch(e){ console.warn("LOCAL_QUEUE_SAVE_FAIL", { key, reason:e?.message || e, updatedAt:getWIBISO() }); } }
+function getMutationSource(){ return `${localStorage.getItem("vms_device_id") || "unknown"}:${BROWSER_ID}`; }
+function createMutationId(prefix="mut") { return `${prefix}_${getEventTimestamp()}_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2,10)}`; }
+function visitorFingerprint(data){
+    return [data?.mutationId || "", data?.reg || "", data?.deviceId || localStorage.getItem("vms_device_id") || "", data?.eventTs || data?.updatedAt || getEventTimestamp()]
+        .map(v => String(v).trim().toLowerCase()).join("|");
+}
+function isDuplicateMutation(fingerprint){
+    const now = getEventTimestamp();
+    const cache = safeParseJSON(localStorage.getItem(VMS_MUTATION_FINGERPRINT_KEY), {});
+    Object.keys(cache).forEach(k => { if(now - Number(cache[k] || 0) > DUPLICATE_REJECTION_WINDOW_MS) delete cache[k]; });
+    const entries = Object.entries(cache).sort((a,b)=>Number(a[1]||0)-Number(b[1]||0));
+    while(entries.length >= MAX_FINGERPRINT_CACHE){ const [oldKey] = entries.shift(); delete cache[oldKey]; }
+    if(cache[fingerprint] && now - Number(cache[fingerprint]) <= DUPLICATE_REJECTION_WINDOW_MS) {
+        localStorage.setItem(VMS_MUTATION_FINGERPRINT_KEY, JSON.stringify(cache));
+        logSyncMetric("duplicateRejects", { mutationId:fingerprint });
+        return true;
+    }
+    cache[fingerprint] = now;
+    localStorage.setItem(VMS_MUTATION_FINGERPRINT_KEY, JSON.stringify(cache));
+    return false;
+}
+function stampMutationEntity(entity, mutationId, source = getMutationSource()){
+    const prevVersion = Number(entity?.version || 0);
+    const eventTs = Number(entity?.eventTs || getEventTimestamp());
+    return { ...entity, version: prevVersion + 1, eventTs, updatedAt: eventTs, updatedAtWIB: getWIBISO(eventTs), mutationSource: source, mutationId, requestFingerprint: entity?.requestFingerprint || "" };
+}
+function mutationPriorityTuple(entity){
+    return [
+        Number(entity?.version || 0),
+        Number(entity?.eventTs || 0),
+        Number(entity?.updatedAt || 0),
+        String(entity?.mutationSource || ""),
+        String(entity?.mutationId || entity?.lastMutationId || "")
+    ];
+}
+function compareMutationPriority(a, b){
+    const aa = mutationPriorityTuple(a);
+    const bb = mutationPriorityTuple(b);
+    for(let i=0;i<aa.length;i++){
+        if(typeof aa[i] === "number" && aa[i] !== bb[i]) return aa[i] - bb[i];
+        if(typeof aa[i] === "string" && aa[i] !== bb[i]) return aa[i].localeCompare(bb[i]);
+    }
+    return 0;
+}
+function shouldAcceptVisitorOverwrite(current, incoming){
+    if(!current) return true;
+    const accept = compareMutationPriority(incoming, current) > 0;
+    if(!accept) logSyncMetric("occRejects", { mutationId:incoming?.mutationId || "", mutationSource:incoming?.mutationSource || "", entity:"visitor" });
+    return accept;
+}
+async function withClientMutationLock(lockName, buttons, fn){
+    if(HYDRATION_MUTEX.hydrating || HYDRATION_MODE.active){ toast("Sinkronisasi sedang memulihkan data, coba lagi sebentar", "warning"); return null; }
+    const now = getEventTimestamp();
+    const prev = mutationLocks.get(lockName);
+    if(prev && (now - Number(prev.startedAt || 0)) < MUTATION_DEBOUNCE_MS){
+        toast("Proses masih berjalan, mohon tunggu sebentar", "warning");
+        return null;
+    }
+    HYDRATION_MUTEX.mutationDepth++;
+    mutationLocks.set(lockName, { startedAt: now });
+    const btns = (Array.isArray(buttons) ? buttons : [buttons]).filter(Boolean);
+    const oldDisabled = btns.map(b => b.disabled);
+    btns.forEach(b => b.disabled = true);
+    try{ return await fn(); }
+    finally{
+        btns.forEach((b,i) => b.disabled = oldDisabled[i]);
+        mutationLocks.delete(lockName);
+        HYDRATION_MUTEX.mutationDepth = Math.max(0, HYDRATION_MUTEX.mutationDepth - 1);
+    }
+}
+function updateVisitorSyncBadge(){
+    const q = loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY);
+    let badge = document.getElementById("syncStatusBadge");
+    if(!badge){
+        badge = document.createElement("div");
+        badge.id = "syncStatusBadge";
+        badge.style.cssText = "position:fixed;right:18px;bottom:72px;z-index:1001;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;background:#065f46;color:white;box-shadow:0 8px 20px rgba(0,0,0,.12);";
+        document.body.appendChild(badge);
+    }
+    if(q.length){ badge.textContent = `UNSYNCED ${q.length}`; badge.style.background = "#b45309"; }
+    else { badge.textContent = "SYNCED"; badge.style.background = "#065f46"; }
+}
+function queueAppendRetry(mutation){
+    if(!isValidMutationEnvelope(mutation)){ queueDeadLetter(mutation, "poison_append_mutation"); logSyncMetric("queueFailures", { reason:"poison_append_mutation" }); return; }
+    const q = loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY);
+    const event = mutation.event || mutation;
+    const id = event?.mutationId || mutation?.mutationId || mutation?.gasReplayId || mutation?.sequenceId;
+    if(id && q.some(x => ((x.event || x).mutationId || x.gasReplayId || x.sequenceId) === id)) return;
+    q.push(makeSyncEnvelope(event, { syncStatus:"PENDING_SYNC", retry: Number(mutation?.retry || mutation?.syncMeta?.retry || 0) }));
+    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes(q, MAX_QUEUE, MAX_QUEUE_BYTES));
+    logSyncMetric("queueDepth", { queue:"append", depth:q.length });
+    updateVisitorSyncBadge();
+}
+function markAppendSynced(id){
+    const q = loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY).filter(x => ((x.event || x).mutationId || x.gasReplayId || x.sequenceId) !== id);
+    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes(q, MAX_QUEUE, MAX_QUEUE_BYTES));
+    updateVisitorSyncBadge();
+}
+function queueDeadLetter(mutation, reason){
+    const dlq = loadJsonArray(VMS_APPEND_DEAD_LETTER_KEY);
+    dlq.push(makeSyncEnvelope(mutation?.event || mutation || {}, { syncStatus:"DEAD_LETTER", reason, failedAt:getEventTimestamp(), failedAtWIB:getWIBISO() }));
+    saveJsonArray(VMS_APPEND_DEAD_LETTER_KEY, pruneArrayByBytes(dlq, MAX_DEAD_LETTER, MAX_QUEUE_BYTES));
+    updateVisitorSyncBadge();
+}
+function saveVisitor(siteKey, data, reg, sourceAction){
+    if(HYDRATION_MUTEX.hydrating || HYDRATION_MODE.active) return false;
+    const mutationId = data.mutationId || createMutationId("visitor");
+    const eventTs = Number(data.eventTs || getEventTimestamp());
+    const candidateBase = { ...data, reg, mutationId, eventTs, deviceId: data.deviceId || localStorage.getItem("vms_device_id") || "unknown" };
+    const fingerprint = data.requestFingerprint || visitorFingerprint(candidateBase);
+    if(isDuplicateMutation(fingerprint)){
+        toast("⚠️ Replay mutation identik terdeteksi. Data tidak disimpan ulang.", "warning");
+        return false;
+    }
+    const current = visitors[siteKey] || null;
+    const candidate = stampMutationEntity({ ...(current || {}), ...candidateBase, requestFingerprint:fingerprint, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC", sourceAction:normalizeAction(sourceAction) }, mutationId);
+    if(!shouldAcceptVisitorOverwrite(current, candidate)){
+        console.warn("VISITOR_OCC_REJECT", { siteKey, currentVersion:Number(current?.version||0), incomingVersion:Number(candidate.version||0), currentTs:Number(current?.eventTs||current?.updatedAt||0), incomingTs:Number(candidate.eventTs||candidate.updatedAt||0), mutationId });
+        return false;
+    }
+    visitors[siteKey] = candidate;
+    return true;
+}
+window.saveVisitor = saveVisitor;
+window.updateVisitorSyncBadge = updateVisitorSyncBadge;
+
+function scheduleCentralSync(reason="mutation"){
+    const run = () => {
+        if(typeof window.smartSync === "function") window.smartSync(reason);
+        else if(typeof window.saveToCloud === "function") window.saveToCloud();
+    };
+    setTimeout(run, 0);
+    setTimeout(run, 1500);
+}
+
 // ============================================================
 // GLOBAL ERROR HANDLER
 // ============================================================
@@ -1143,7 +1346,7 @@ window.onunhandledrejection = function(e) {
     const QR_SECRET = "VmsEnt2026!";
     let processingRegs = new Set();
     let isManualProcessing = false;
-    
+
     let deviceId = localStorage.getItem('vms_device_id');
     if(!deviceId){
         deviceId = 'dev_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
@@ -1166,7 +1369,8 @@ window.onunhandledrejection = function(e) {
     window.toast = toast;
 
     await secureLoad();
-    
+    updateVisitorSyncBadge();
+
     function generateReg(){ return "REG"+Date.now()+Math.floor(Math.random() * 10000); }
 
     async function generateSignature(payload){
@@ -1187,7 +1391,7 @@ window.onunhandledrejection = function(e) {
         const sig = await generateSignature(payload);
         return btoa(JSON.stringify({ payload, sig, ts }));
     }
-    
+
     async function parseQR(raw){
         try{
             const decoded = JSON.parse(atob(raw));
@@ -1253,16 +1457,26 @@ window.onunhandledrejection = function(e) {
     let siteKey = SITE_ID + "_" + regRaw;
     let v = visitors[siteKey];
 
+    const normalizedAction = normalizeAction(action);
+    const mutationId = createMutationId("log");
+    const eventTs = getEventTimestamp();
     const newLog = {
         reg: regRaw,
         name: v?.nama || regRaw,
         company: v?.perusahaan || '',
         category: v?.kategori || 'UMUM',
-        action,
-        time: Date.now(),
+        action: normalizedAction,
+        time: eventTs,
+        eventTs,
+        logTime: getWIBISO(eventTs),
         site: SITE_ID,
         deviceId: localStorage.getItem("vms_device_id"),
-        hash: btoa(regRaw + action + Date.now())
+        version: Number(v?.version || 0) + 1,
+        updatedAt: eventTs,
+        updatedAtWIB: getWIBISO(eventTs),
+        mutationSource: getMutationSource(),
+        mutationId,
+        hash: btoa(regRaw + normalizedAction + eventTs + mutationId)
     };
 
     logs.unshift(newLog);
@@ -1274,37 +1488,67 @@ window.onunhandledrejection = function(e) {
 }
 
     async function appendScanLogToGoogleSheet(log, visitor){
-        if(!log || (log.action !== "CHECK_IN" && log.action !== "CHECK_OUT")) return;
-        try{
-            const payload = {
-                logs: [{
-                    reg: log.reg,
-                    nama: visitor?.nama || log.name || log.reg,
-                    perusahaan: visitor?.perusahaan || log.company || "",
-                    action: log.action,
-                    logTime: new Date(log.time || Date.now()).toISOString(),
-                    site: log.site || SITE_ID,
-                    deviceId: log.deviceId || localStorage.getItem("vms_device_id") || "",
-                    kategori: visitor?.kategori || log.category || "",
-                    pic: visitor?.pic || "",
-                    start: visitor?.startDate || "",
-                    exp: visitor?.expDate || "",
-                    status: log.action
-                }]
-            };
+        const action = normalizeAction(log?.action);
+        if(!log || (action !== ACTION_TYPES.CHECK_IN && action !== ACTION_TYPES.CHECK_OUT)) return;
+        const row = {
+            reg: log.reg,
+            nama: visitor?.nama || log.name || log.reg,
+            perusahaan: visitor?.perusahaan || log.company || "",
+            action,
+            eventTs: Number(log.eventTs || log.time || log.updatedAt || getEventTimestamp()),
+            logTime: log.logTime || getWIBISO(log.eventTs || log.time || log.updatedAt || getEventTimestamp()),
+            site: log.site || SITE_ID,
+            deviceId: log.deviceId || localStorage.getItem("vms_device_id") || "",
+            kategori: visitor?.kategori || log.category || "",
+            pic: visitor?.pic || "",
+            start: visitor?.startDate || "",
+            exp: visitor?.expDate || "",
+            status: action,
+            version: Number(log.version || 1),
+            updatedAt: Number(log.updatedAt || log.eventTs || getEventTimestamp()),
+            updatedAtWIB: log.updatedAtWIB || getWIBISO(log.updatedAt || log.eventTs || getEventTimestamp()),
+            mutationSource: log.mutationSource || getMutationSource(),
+            mutationId: log.mutationId || createMutationId("sheet"),
+            requestFingerprint: log.requestFingerprint || `${log.mutationId || ""}|${log.reg}|${log.deviceId || localStorage.getItem("vms_device_id") || ""}|${log.eventTs || log.time || log.updatedAt || ""}`
+        };
+        if(!isValidMutationEnvelope(row)){ queueDeadLetter(row, "poison_sheet_row"); return false; }
+        const payload = { logs: [row], mutationId: row.mutationId, requestFingerprint: row.requestFingerprint, expectedCount: 1 };
+        const retryBudget = 3;
+        for(let attempt = 0; attempt < retryBudget; attempt++){
             const controller = new AbortController();
-            setTimeout(() => controller.abort(), 8000);
-            const res = await fetch(WORKER_BASE_URL + "/sheet-append", {
-                method:"POST",
-                headers:{ "Content-Type":"application/json" },
-                body: JSON.stringify(payload),
-                signal: controller.signal
-            });
-            if(!res.ok) console.warn("CHECK_SCAN_SHEET_APPEND_FAIL", res.status);
-        }catch(e){
-            console.warn("CHECK_SCAN_SHEET_APPEND_FAIL", e?.message || e);
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            try{
+                const res = await fetch(WORKER_BASE_URL + "/sheet-append", {
+                    method:"POST",
+                    headers:{ "Content-Type":"application/json" },
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                const result = await res.json().catch(()=>null);
+                const ackIds = Array.isArray(result?.mutationIds) ? result.mutationIds : [];
+                const skippedIds = Array.isArray(result?.skippedMutationIds) ? result.skippedMutationIds : [];
+                const fingerprints = Array.isArray(result?.requestFingerprints) ? result.requestFingerprints : [];
+                const exactAck = (ackIds.includes(row.mutationId) || skippedIds.includes(row.mutationId)) && Number(result?.ackCount || (ackIds.length + skippedIds.length)) === 1 && fingerprints.includes(row.requestFingerprint);
+                if(res.ok && result?.ok !== false && result?.ack === true && exactAck){
+                    logSyncMetric("syncLatency", { mutationId:row.mutationId, latencyMs:getEventTimestamp() - Number(row.eventTs || getEventTimestamp()) });
+                    markAppendSynced(row.mutationId);
+                    updateVisitorSyncBadge();
+                    return true;
+                }
+                if(res.ok && result?.ack === true && !exactAck) logSyncMetric("gasAckMismatch", { mutationId:row.mutationId, ackCount:Number(result?.ackCount || 0) });
+                if(res.status >= 400 && res.status < 500 && res.status !== 429) break;
+            }catch(e){
+                clearTimeout(timeoutId);
+                console.warn("CHECK_SCAN_SHEET_APPEND_FAIL", { attempt, reason:e?.message || e, mutationId:row.mutationId, updatedAt:getWIBISO() });
+            }
+            const jitter = Math.floor(Math.random() * 300);
+            await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, attempt), 5000) + jitter));
         }
+        queueAppendRetry(row);
+        return false;
     }
+    window.appendScanLogToGoogleSheet = appendScanLogToGoogleSheet;
 
 
     async function ensureJsPDFReady(){
@@ -1477,7 +1721,7 @@ window.onunhandledrejection = function(e) {
 
     let previewData = null;
     let isDownloading = false;
-    
+
     function showPreview(reg, data){
         previewData = { reg, data };
         let modal = document.createElement('div');
@@ -1525,7 +1769,7 @@ window.onunhandledrejection = function(e) {
     }
 
     const originalGenerateQRHandler = document.getElementById('generateQRBtn').onclick;
-    document.getElementById('generateQRBtn').onclick = async () => {
+    document.getElementById('generateQRBtn').onclick = async () => withClientMutationLock(`${REGISTER_LOCK}:generateQR`, document.getElementById('generateQRBtn'), async () => {
         if(!canRegister()) return;
         if(originalGenerateQRHandler) await originalGenerateQRHandler();
         else {
@@ -1538,14 +1782,14 @@ window.onunhandledrejection = function(e) {
             if(tujuan === "Lainnya") tujuan = custom || "Custom";
             let pic = document.getElementById('regPic').value;
             let dept = document.getElementById('regDept').value;
-            let startDate = document.getElementById('regStartDate').value || new Date().toISOString().slice(0,10);
+            let startDate = document.getElementById('regStartDate').value || getWIBDate();
             let expDate = document.getElementById('regExpDate').value;
             let badgeMode = document.getElementById('badgeMode')?.value || "PORTRAIT";
             if(!nama || !perusahaan || !pic || !dept || !expDate){ toast("Lengkapi semua field wajib","error"); return; }
             let reg = generateReg();
             let foto = "";
             let file = document.getElementById('regPhotoFile').files[0];
-            if(file){ 
+            if(file){
                 let reader = await new Promise(r=>{let fr=new FileReader(); fr.onload=()=>r(fr.result); fr.readAsDataURL(file);});
                 let img = new Image();
                 img.src = reader;
@@ -1559,24 +1803,26 @@ window.onunhandledrejection = function(e) {
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 foto = canvas.toDataURL("image/jpeg", 0.4);
             }
-            let data = { nama, perusahaan, kategori, tujuan, pic, dept, startDate, expDate, badgeMode, foto, sessions:[], currentStatus:"OUT", updatedAt: Date.now(), version: 1, deviceId: deviceId, site: SITE_ID };
+            let data = { nama, perusahaan, kategori, tujuan, pic, dept, startDate, expDate, badgeMode, foto, sessions:[], currentStatus:"OUT", deviceId: deviceId, site: SITE_ID, mutationId:createMutationId("register"), mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" };
             let siteKey = SITE_ID + "_" + reg;
-            visitors[siteKey] = data;
-            addLog(reg, "REGISTER");
+            if(!saveVisitor(siteKey, data, reg, ACTION_TYPES.REGISTER)) return;
+            data = visitors[siteKey];
+            addLog(reg, ACTION_TYPES.REGISTER);
             toast(`✅ ${nama} terdaftar (${reg})`,"success");
             showPreview(reg, data);
-            document.getElementById('regName').value = ""; 
-            document.getElementById('regCompany').value = ""; 
-            document.getElementById('regPic').value = ""; 
-            document.getElementById('regDept').value = ""; 
-            document.getElementById('regPhotoFile').value = ""; 
+            document.getElementById('regName').value = "";
+            document.getElementById('regCompany').value = "";
+            document.getElementById('regPic').value = "";
+            document.getElementById('regDept').value = "";
+            document.getElementById('regPhotoFile').value = "";
             document.getElementById('previewPhotoThumb').src = "";
-            renderDashboard(); 
+            renderDashboard();
             renderLogTable();
             secureSave();
+            scheduleCentralSync("register");
         }
         updateMonetizationUI();
-    };
+    });
 
     async function capturePhoto(){
         return new Promise(async(resolve)=>{
@@ -1586,36 +1832,36 @@ window.onunhandledrejection = function(e) {
             document.body.appendChild(modalDiv);
             let video = modalDiv.querySelector('#camVideoWalk');
             let stream = await navigator.mediaDevices.getUserMedia({video:true});
-            video.srcObject = stream; 
+            video.srcObject = stream;
             await video.play();
             modalDiv.querySelector('#takeWalkBtn').onclick = () => {
                 let canvas = modalDiv.querySelector('#canvasWalk');
-                canvas.width = video.videoWidth; 
+                canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
                 canvas.getContext('2d').drawImage(video,0,0);
-                canvas.toBlob(blob=>{ 
-                    stream.getTracks().forEach(t=>t.stop()); 
-                    modalDiv.remove(); 
-                    resolve(new File([blob],'walkin.jpg',{type:'image/jpeg'})); 
+                canvas.toBlob(blob=>{
+                    stream.getTracks().forEach(t=>t.stop());
+                    modalDiv.remove();
+                    resolve(new File([blob],'walkin.jpg',{type:'image/jpeg'}));
                 },'image/jpeg',0.8);
             };
-            modalDiv.querySelector('#closeWalkBtn').onclick = () => { 
-                stream.getTracks().forEach(t=>t.stop()); 
-                modalDiv.remove(); 
-                resolve(null); 
+            modalDiv.querySelector('#closeWalkBtn').onclick = () => {
+                stream.getTracks().forEach(t=>t.stop());
+                modalDiv.remove();
+                resolve(null);
             };
         });
     }
-    
+
     const originalWalkinHandler = document.getElementById('walkinBtn').onclick;
-    document.getElementById('walkinBtn').onclick = async () => {
+    document.getElementById('walkinBtn').onclick = async () => withClientMutationLock(`${REGISTER_LOCK}:walkin`, document.getElementById('walkinBtn'), async () => {
         if(!canRegister()) return;
         if(originalWalkinHandler) await originalWalkinHandler();
         else {
             toast("Ambil foto untuk walk-in","info");
             let photoFile = await capturePhoto();
             let fotoBase64 = "";
-            if(photoFile){ 
+            if(photoFile){
                 let reader = await new Promise(r=>{let fr=new FileReader(); fr.onload=()=>r(fr.result); fr.readAsDataURL(photoFile);});
                 let img = new Image();
                 img.src = reader;
@@ -1630,38 +1876,40 @@ window.onunhandledrejection = function(e) {
                 fotoBase64 = canvas.toDataURL("image/jpeg", 0.4);
             }
             let reg = generateReg();
-            let now = new Date(); 
-            let exp = new Date(now); 
-            exp.setDate(exp.getDate()+1);
-            let walkData = { 
-                nama: `WALK-IN ${now.toLocaleString()}`, 
-                perusahaan: "Guest Visitor", 
-                kategori: "UMUM", 
-                tujuan: "Immediate Visit", 
-                pic: "Reception", 
-                dept: "Umum", 
-                startDate: now.toISOString().slice(0,10), 
-                expDate: exp.toISOString().slice(0,10), 
+            let nowTs = getEventTimestamp();
+            let expTs = nowTs + 86400000;
+            let walkData = {
+                nama: `WALK-IN ${formatWIB(nowTs)}`,
+                perusahaan: "Guest Visitor",
+                kategori: "UMUM",
+                tujuan: "Immediate Visit",
+                pic: "Reception",
+                dept: "Umum",
+                startDate: getWIBDate(nowTs),
+                expDate: getWIBDate(expTs),
                 badgeMode: document.getElementById('badgeMode')?.value || "PORTRAIT",
-                foto: fotoBase64, 
-                sessions:[], 
+                foto: fotoBase64,
+                sessions:[],
                 currentStatus:"OUT",
-                updatedAt: Date.now(),
-                version: 1,
                 deviceId: deviceId,
-                site: SITE_ID
+                site: SITE_ID,
+                mutationId: createMutationId("walkin"),
+                mutationSource: getMutationSource(),
+                syncStatus: "PENDING_SYNC"
             };
             let siteKey = SITE_ID + "_" + reg;
-            visitors[siteKey] = walkData;
-            addLog(reg, "WALK-IN");
+            if(!saveVisitor(siteKey, walkData, reg, ACTION_TYPES.WALK_IN)) return;
+            walkData = visitors[siteKey];
+            addLog(reg, ACTION_TYPES.WALK_IN);
             toast(`Walk-in registered ${reg}`,"success");
             showPreview(reg, walkData);
-            renderDashboard(); 
+            renderDashboard();
             renderLogTable();
             secureSave();
+            scheduleCentralSync("walkin");
         }
         updateMonetizationUI();
-    };
+    });
 
     let scannerInstance = null;
     let isScanning = false;
@@ -1732,16 +1980,16 @@ window.onunhandledrejection = function(e) {
     }
 
     const originalStartCamHandler = document.getElementById('startCamBtn').onclick;
-    document.getElementById('startCamBtn').onclick = async () => { 
+    document.getElementById('startCamBtn').onclick = async () => {
         if(!canScan()) return;
-        const container = document.getElementById('cameraPreview'); 
-        container.innerHTML = ''; 
-        await stopScanner(); 
-        await cleanupScanner(); 
-        await startScanner(); 
+        const container = document.getElementById('cameraPreview');
+        container.innerHTML = '';
+        await stopScanner();
+        await cleanupScanner();
+        await startScanner();
     };
     document.getElementById('stopCamBtn').onclick = async () => { await stopScanner(); await cleanupScanner(); toast("Kamera berhenti", "info"); };
-    
+
     document.getElementById('uploadQrBtn').onclick = () => document.getElementById('uploadQrFile').click();
     const originalUploadHandler = document.getElementById('uploadQrFile').onchange;
     document.getElementById('uploadQrFile').onchange = async (e) => {
@@ -1766,19 +2014,19 @@ window.onunhandledrejection = function(e) {
             document.getElementById("temp-reader").innerHTML = "";
         } catch(err){ console.error(err); toast("QR tidak terbaca / file tidak valid", "error"); }
     };
-    
+
     async function processScan(qrText){
-        let mode = document.getElementById('scanMode').value;
+        let mode = normalizeAction(document.getElementById('scanMode').value);
         let payload = await parseQR(qrText);
         if(!payload){ toast("QR tidak valid (bukan dari sistem ini)","error"); return; }
         let reg = payload.reg;
-        
-        if(lastScanTime[reg] && Date.now() - lastScanTime[reg] < 350){
+
+        if(lastScanTime[reg] && getEventTimestamp() - lastScanTime[reg] < MUTATION_DEBOUNCE_MS){
             toast("Scan terlalu cepat","warning");
             return;
         }
-        lastScanTime[reg] = Date.now();
-        
+        lastScanTime[reg] = getEventTimestamp();
+
         if(processingRegs.has(reg)){ toast("Sedang diproses, tunggu sebentar","warning"); return; }
         processingRegs.add(reg);
         try {
@@ -1788,76 +2036,84 @@ window.onunhandledrejection = function(e) {
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
             if(exp < new Date()){ toast("QR sudah expired","error"); return; }
-            if(mode === "CHECK_IN"){
-                if(!visitor.sessions) visitor.sessions = [];
-                visitor.sessions.push({ checkIn: Date.now(), checkOut: null });
-                visitors[siteKey] = { ...visitor, currentStatus: "IN", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_IN");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
-                toast(`✅ CHECK-IN ${visitor.nama} berhasil`,"success");
-            } else {
-                if(!visitor.sessions) visitor.sessions = [];
-                let openSession = null;
-                for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
-                if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: Date.now(), checkOut: Date.now() }); }
-                else { openSession.checkOut = Date.now(); }
-                visitors[siteKey] = { ...visitor, currentStatus: "OUT", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_OUT");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
-                toast(`✅ CHECK-OUT ${visitor.nama} berhasil`,"success");
-            }
-            renderDashboard(); 
+            await withClientMutationLock(mode === ACTION_TYPES.CHECK_IN ? CHECKIN_LOCK : CHECKOUT_LOCK, null, async () => {
+                const mutationId = createMutationId(mode === ACTION_TYPES.CHECK_IN ? "checkin" : "checkout");
+                const eventTs = getEventTimestamp();
+                if(mode === ACTION_TYPES.CHECK_IN){
+                    if(!visitor.sessions) visitor.sessions = [];
+                    visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
+                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                    const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
+                    await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
+                    toast(`✅ CHECK-IN ${visitor.nama} berhasil`,"success");
+                } else {
+                    if(!visitor.sessions) visitor.sessions = [];
+                    let openSession = null;
+                    for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
+                    if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: eventTs, checkInWIB:getWIBISO(eventTs), checkOut: eventTs, checkOutWIB:getWIBISO(eventTs) }); }
+                    else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
+                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                    const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
+                    await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
+                    toast(`✅ CHECK-OUT ${visitor.nama} berhasil`,"success");
+                }
+            });
+            renderDashboard();
             renderLogTable();
             secureSave();
+            scheduleCentralSync("scan");
             updateMonetizationUI();
         } finally { setTimeout(()=>processingRegs.delete(reg), 1000); }
     }
-    
+
     const originalManualHandler = document.getElementById('manualProcess').onclick;
-    document.getElementById('manualProcess').onclick = async () => {
+    document.getElementById('manualProcess').onclick = async () => withClientMutationLock(normalizeAction(document.getElementById('scanMode').value) === ACTION_TYPES.CHECK_IN ? CHECKIN_LOCK : CHECKOUT_LOCK, document.getElementById('manualProcess'), async () => {
         if(!canScan()) return;
         if(isManualProcessing){ toast("Sedang diproses","warning"); return; }
         isManualProcessing = true;
         try {
             let reg = document.getElementById('manualReg').value.trim();
-            let mode = document.getElementById('scanMode').value;
+            let mode = normalizeAction(document.getElementById('scanMode').value);
             let siteKey = SITE_ID + "_" + reg;
             let visitor = visitors[siteKey];
             if(!visitor){ toast("REG tidak ditemukan","error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
             if(exp < new Date()){ toast("QR sudah expired","error"); return; }
-            if(mode === "CHECK_IN"){
+            const mutationId = createMutationId(mode === ACTION_TYPES.CHECK_IN ? "manual_checkin" : "manual_checkout");
+            const eventTs = getEventTimestamp();
+            if(mode === ACTION_TYPES.CHECK_IN){
                 if(!visitor.sessions) visitor.sessions = [];
-                visitor.sessions.push({ checkIn: Date.now(), checkOut: null });
-                visitors[siteKey] = { ...visitor, currentStatus: "IN", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_IN");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
+                visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
+                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
+                await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                 toast(`Check-in ${visitor.nama} success`,"success");
             } else {
                 if(!visitor.sessions) visitor.sessions = [];
                 let openSession = null;
                 for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
-                if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: Date.now(), checkOut: Date.now() }); }
-                else { openSession.checkOut = Date.now(); }
-                visitors[siteKey] = { ...visitor, currentStatus: "OUT", updatedAt: Date.now(), version: (visitor.version || 0) + 1, deviceId: deviceId, site: SITE_ID };
-                const scanLog = addLog(reg, "CHECK_OUT");
-                await appendScanLogToGoogleSheet(scanLog, visitor);
+                if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: eventTs, checkInWIB:getWIBISO(eventTs), checkOut: eventTs, checkOutWIB:getWIBISO(eventTs) }); }
+                else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
+                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
+                await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                 toast(`Check-out ${visitor.nama} success`,"success");
             }
-            renderDashboard(); 
+            renderDashboard();
             renderLogTable();
             secureSave();
+            scheduleCentralSync("manual_scan");
             updateMonetizationUI();
         } finally { isManualProcessing = false; }
-    };
+    });
 
     function renderDashboard(){
         try {
             let v = Object.values(visitors);
             let active = v.filter(x=>x.currentStatus==="IN").length;
-            let today = new Date().toDateString();
-            let todayCheck = logs.filter(l=> new Date(l.time).toDateString()===today && l.action==="CHECK_IN").length;
+            let today = getWIBISO().slice(0,10);
+            let todayCheck = logs.filter(l=> getWIBISO(l.time || l.logTime).slice(0,10)===today && l.action===ACTION_TYPES.CHECK_IN).length;
             const qh = window.getSyncQueueHealth ? window.getSyncQueueHealth() : { backlog: 0 };
             document.getElementById('statsWidget').innerHTML = `
                 <div class="stat-card"><h4>Total Visitors</h4><div class="stat-number">${v.length}</div></div>
@@ -1865,8 +2121,8 @@ window.onunhandledrejection = function(e) {
                 <div class="stat-card"><h4>Check-ins Today</h4><div class="stat-number">${todayCheck}</div></div>
                 <div class="stat-card"><h4>Replay Queue</h4><div class="stat-number">${qh.backlog || 0}</div><div class="stat-change">${(qh.syncFailStreak || 0) > 0 ? `⚠️ Sync fail streak: ${qh.syncFailStreak}` : '✅ Sync healthy'}</div></div>
             `;
-            let last7 = [...Array(7)].map((_,i)=>{let d=new Date(); d.setDate(d.getDate()-i); return d.toLocaleDateString('id',{weekday:'short'});}).reverse();
-            let trend = last7.map((_,i)=>{let d=new Date(); d.setDate(d.getDate()-(6-i)); return logs.filter(l=>new Date(l.time).toDateString()===d.toDateString() && l.action==="CHECK_IN").length;});
+            let last7 = [...Array(7)].map((_,i)=>{let d=new Date(getEventTimestamp() - i*86400000); return new Intl.DateTimeFormat('id-ID',{ timeZone:WIB_TIMEZONE, weekday:'short'}).format(d);}).reverse();
+            let trend = last7.map((_,i)=>{let day = getWIBISO(getEventTimestamp() - (6-i)*86400000).slice(0,10); return logs.filter(l=>getWIBISO(l.time || l.logTime).slice(0,10)===day && l.action===ACTION_TYPES.CHECK_IN).length;});
             const trendCanvas = document.getElementById('trendChart');
             const categoryCanvas = document.getElementById('categoryChart');
             if(window.Chart && trendCanvas && categoryCanvas) {
@@ -1880,7 +2136,7 @@ window.onunhandledrejection = function(e) {
             updateMonetizationUI();
         } catch(e) { console.error("Render dashboard error:", e); }
     }
-    
+
     let __logRenderPending = false;
     let __lastLogSignature = "";
     function renderLogTable(){
@@ -1907,7 +2163,7 @@ window.onunhandledrejection = function(e) {
                 row.insertCell(3).innerText = l.company;
                 row.insertCell(4).innerHTML = `<span class="badge badge-${l.category}">${l.category}</span>`;
                 row.insertCell(5).innerText = l.action;
-                row.insertCell(6).innerText = new Date(l.time).toLocaleString();
+                row.insertCell(6).innerText = formatWIB(l.time || l.logTime);
                 row.insertCell(7).innerText = l.site || "SITE_A";
                 let btn = document.createElement('button'); btn.innerText="PDF"; btn.classList.add('btn-outline'); btn.style.padding="4px 12px"; btn.onclick = () => { let siteKey = SITE_ID + "_" + l.reg; let v = visitors[siteKey]; if(v) showPreview(l.reg, v); };
                 row.insertCell(8).appendChild(btn);
@@ -1941,19 +2197,19 @@ window.onunhandledrejection = function(e) {
         renderDashboard(); renderLogTable(); toast(`Deleted ${regs.length} records`,"success");
         updateMonetizationUI();
     };
-    document.getElementById('deleteAllBtn').onclick = () => { 
+    document.getElementById('deleteAllBtn').onclick = () => {
         if(!isAdmin()) return;
-        visitors = {}; 
+        visitors = {};
         window.visitors = visitors;
         logs.length = 0;
         window.logs = logs;
-        secureSave(); 
-        renderDashboard(); 
-        renderLogTable(); 
-        toast("All data cleared","info"); 
+        secureSave();
+        renderDashboard();
+        renderLogTable();
+        toast("All data cleared","info");
         updateMonetizationUI();
     };
-    
+
         document.getElementById('exportExcelAction').onclick = () => {
         if(isDemo()) { toast("Export tidak tersedia di DEMO mode. Upgrade license!", "error"); return; }
         try {
@@ -1970,10 +2226,10 @@ window.onunhandledrejection = function(e) {
                 const reg = siteKey.replace(SITE_ID + "_", "");
                 const now = new Date();
                 const expDate = visitor.expDate ? new Date(visitor.expDate) : null;
-                
+
                 let masaBerlakuStatus = "";
                 let keterangan = "";
-                
+
                 if (expDate) {
                     if (expDate < now) {
                         masaBerlakuStatus = "❌ EXPIRED";
@@ -1989,7 +2245,7 @@ window.onunhandledrejection = function(e) {
                 }
 
                 const hasAnyCheckIn = visitor.sessions && visitor.sessions.some(s => s.checkIn);
-                
+
                 if (!hasAnyCheckIn) {
                     keterangan += " | Belum pernah melakukan check-in";
                 } else {
@@ -2005,7 +2261,7 @@ window.onunhandledrejection = function(e) {
                     visitor.sessions.forEach((session, idx) => {
                         const checkInDate = session.checkIn ? new Date(session.checkIn) : null;
                         const checkOutDate = session.checkOut ? new Date(session.checkOut) : null;
-                        
+
                         const formatDateTime = (date) => {
                             if (!date) return "-";
                             const y = date.getFullYear();
@@ -2075,40 +2331,40 @@ window.onunhandledrejection = function(e) {
             dataForExcel.sort((a, b) => (a["Nama"] || "").localeCompare(b["Nama"] || ""));
 
             const ws = XLSX.utils.json_to_sheet(dataForExcel);
-            
+
             ws['!cols'] = [
                 {wch:25}, {wch:18}, {wch:20}, {wch:12}, {wch:20},
                 {wch:15}, {wch:15}, {wch:8}, {wch:20}, {wch:20},
                 {wch:15}, {wch:18}, {wch:18}, {wch:18}, {wch:35}
             ];
-            
+
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, "VMS_Visitor_Report");
             XLSX.writeFile(wb, `VMS_Report_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.xlsx`);
-            
+
             toast("✅ Excel berhasil di export dengan kolom keterangan lengkap", "success");
-        } catch(err) { 
-            console.error("Export error:", err); 
-            toast("Export gagal: " + err.message, "error"); 
+        } catch(err) {
+            console.error("Export error:", err);
+            toast("Export gagal: " + err.message, "error");
         }
     };
-    
+
     document.getElementById('backupAction').onclick = () => {
         if(isDemo()) { toast("Backup tidak tersedia di DEMO mode. Upgrade license!", "error"); return; }
         try { let a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify({visitors,logs,auditLogs})],{type:"application/json"})); a.download = `vms_backup_${Date.now()}.json`; a.click(); toast("Backup ready","success"); }
         catch(e) { toast("Backup gagal", "error"); }
     };
-    document.getElementById('resetDatabaseAction').onclick = () => { 
+    document.getElementById('resetDatabaseAction').onclick = () => {
         if(!isAdmin()) return;
-        visitors = {}; 
+        visitors = {};
         window.visitors = visitors;
         logs.length = 0;
         window.logs = logs;
         auditLogs = [];
-        secureSave(); 
-        renderDashboard(); 
-        renderLogTable(); 
-        toast("Database reset","info"); 
+        secureSave();
+        renderDashboard();
+        renderLogTable();
+        toast("Database reset","info");
         updateMonetizationUI();
     };
     document.getElementById('regPhotoFile').onchange = (e) => { if(e.target.files[0]){ let r=new FileReader(); r.onload=ev=>document.getElementById('previewPhotoThumb').src=ev.target.result; r.readAsDataURL(e.target.files[0]); } };
@@ -2128,7 +2384,7 @@ window.onunhandledrejection = function(e) {
     document.getElementById('mobileMenuBtn').onclick = () => { document.getElementById('mobileSidebar').classList.add('open'); document.getElementById('overlay').style.display='block'; };
     document.getElementById('overlay').onclick = () => { document.getElementById('mobileSidebar').classList.remove('open'); document.getElementById('overlay').style.display='none'; };
     window.addEventListener('resize',()=>{ if(window.innerWidth>780){ document.getElementById('mobileSidebar').classList.remove('open'); document.getElementById('overlay').style.display='none'; } });
-    
+
     document.getElementById('submitLicenseBtn').onclick = () => {
         let input = document.getElementById("licenseInput");
         if(input) applyLicenseKey(input.value);
@@ -2146,7 +2402,7 @@ renderSiteSelectors();
 setSite(SITE_ID);
 refreshLicenseFeaturesFromWorker();
 
-renderDashboard(); 
+renderDashboard();
 renderLogTable();
 updateMonetizationUI();
 
@@ -2246,7 +2502,7 @@ window.getCurrentVisitorCount = getCurrentVisitorCount;
 window.getCurrentScanCount = getCurrentScanCount;
 
 window.addEventListener("beforeunload", () => secureSave());
-    
+
     toast("🔥 HYBRID SYSTEM ACTIVE - License: " + LICENSE_MODE + " | QR Unlimited | Multi-Site Safe","success");
 })();
 </script>
@@ -2356,7 +2612,33 @@ function releaseTakeoverLock(){
 function snapshotChecksum(visitors, logs){
     try{ return checksumSimple(JSON.stringify({v:visitors||{}, l:logs||[]})); }catch{ return "0"; }
 }
+
+function beginHydrationCommit(){
+    if(HYDRATION_MUTEX.mutationDepth > 0 || HYDRATION_MUTEX.hydrating) return null;
+    const token = `${getEventTimestamp()}_${Math.random().toString(36).slice(2,8)}`;
+    HYDRATION_MUTEX.hydrating = true;
+    HYDRATION_MUTEX.token = token;
+    HYDRATION_MODE.active = true;
+    HYDRATION_MODE.token = token;
+    return token;
+}
+function endHydrationCommit(token){
+    const release = () => {
+        if(HYDRATION_MODE.token === token){
+            HYDRATION_MODE.active = false;
+            HYDRATION_MODE.token = null;
+            HYDRATION_MUTEX.hydrating = false;
+            HYDRATION_MUTEX.token = null;
+        }
+    };
+    Promise.resolve().then(() => {
+        if(typeof requestAnimationFrame === "function") requestAnimationFrame(release);
+        else setTimeout(release, 0);
+    });
+}
 function applySnapshotAtomically(snapshot){
+    const hydrationToken = beginHydrationCommit();
+    if(!hydrationToken){ logSyncMetric("hydrationRollbacks", { reason:"mutation_in_progress" }); return false; }
     const prevVisitors = cloneSafe(window.visitors || {});
     const prevLogs = cloneSafe(window.logs || []);
     try{
@@ -2373,11 +2655,15 @@ function applySnapshotAtomically(snapshot){
         markLogsReplaced(nextLogs);
         if(window.renderDashboard) window.renderDashboard();
         if(window.renderLogTable) window.renderLogTable();
+        logSyncMetric("hydrationCommits", { visitors:Object.keys(nextVisitors).length, logs:nextLogs.length });
         return true;
     }catch{
         window.visitors = prevVisitors;
         markLogsReplaced(prevLogs);
+        logSyncMetric("hydrationRollbacks", { reason:"commit_error" });
         return false;
+    } finally {
+        endHydrationCommit(hydrationToken);
     }
 }
 function ownerBootValidation(){
@@ -2492,11 +2778,12 @@ function loadRetryQueueSafe() {
 function persistRetryQueueSafe() {
     if(!isAuthoritativeOwner()) return;
 
-    const queueRaw = JSON.stringify(retryQueue.slice(-MAX_QUEUE));
+    retryQueue = pruneArrayByBytes(retryQueue.slice(-MAX_QUEUE), MAX_QUEUE, MAX_QUEUE_BYTES);
+    const queueRaw = JSON.stringify(retryQueue);
 
     try {
         localStorage.setItem(getQueueKey(), queueRaw);
-        postSyncMessage("RETRY_QUEUE_UPDATED", { queue: retryQueue.slice(-MAX_QUEUE) });
+        postSyncMessage("RETRY_QUEUE_UPDATED", { queue: retryQueue });
 
     } catch (storageErr) {
 
@@ -2566,20 +2853,14 @@ function hardPruneMemory(){
         console.log("MEMORY PRUNE", { logs: (window.logs||[]).length, retryQueue: retryQueue.length, visitors: Object.keys(window.visitors||{}).length });
     }catch(e){}
 }
-function getLogSortTs(l){ return Number(l?.sortTs || 0) || Number(l?.persistedAt || 0) || Date.parse(l?.time || l?.logTime || 0) || 0; }
+function getLogSortTs(l){ return Number(l?.eventTs || 0) || Number(l?.sortTs || 0) || Number(l?.persistedAt || 0) || Number(l?.updatedAt || 0) || (typeof l?.time === "number" ? Number(l.time) : Date.parse(l?.time || l?.logTime || 0)) || 0; }
 function shouldAcceptIncoming(local, incoming){
     if(!local) return true;
-    const lu = Number(local?.updatedAt || 0);
-    const iu = Number(incoming?.updatedAt || 0);
-    const lv = Number(local?.version || 0);
-    const iv = Number(incoming?.version || 0);
-    const lp = getLogSortTs(local);
-    const ip = getLogSortTs(incoming);
-    if(local?.mutationSource === CLIENT_EPOCH && iu <= lu) return false;
-    if(iu < lu) return false;
-    if(iv < lv) return false;
-    if(ip && lp && ip < lp) return false;
-    return true;
+    const normalizedIncoming = { ...incoming, eventTs:Number(incoming?.eventTs || getLogSortTs(incoming) || 0) };
+    const normalizedLocal = { ...local, eventTs:Number(local?.eventTs || getLogSortTs(local) || 0) };
+    const accept = compareMutationPriority(normalizedIncoming, normalizedLocal) > 0;
+    if(!accept) logSyncMetric("occRejects", { mutationId:incoming?.mutationId || incoming?.lastMutationId || "", mutationSource:incoming?.mutationSource || "", entity:"incoming" });
+    return accept;
 }
 
 // ================== BUILD PAYLOAD (ANTI NAKAL + SAFE) ==================
@@ -2663,33 +2944,45 @@ function normalizeSavePayload(input){
             kategori: value.kategori || value.category || "UMUM",
             dept: value.dept || "",
             keterangan: value.keterangan || value.note || "",
-            mutationSource: value.mutationSource || CLIENT_EPOCH,
-            updatedAt: Number(value.updatedAt || Date.now()),
-            version: Number(value.version || 1)
+            mutationSource: value.mutationSource || getMutationSource(),
+            mutationId: value.mutationId || createMutationId("visitor"),
+            eventTs: Number(value.eventTs || value.updatedAt || getEventTimestamp()),
+            updatedAt: Number(value.updatedAt || value.eventTs || getEventTimestamp()),
+            updatedAtWIB: value.updatedAtWIB || getWIBISO(value.updatedAt || value.eventTs || getEventTimestamp()),
+            version: Number(value.version || 1),
+            syncStatus: value.syncStatus || "PENDING_SYNC"
         };
         if(normalizedVisitors[key].foto && typeof normalizedVisitors[key].foto === "string" && normalizedVisitors[key].foto.length > 2000){
             normalizedVisitors[key].photoBlobKey = normalizedVisitors[key].photoBlobKey || `${key}_photo`;
             delete normalizedVisitors[key].foto;
         }
     });
-    const normalizedLogs = (Array.isArray(p.logs) ? p.logs : []).map(l => ({
-        reg: l?.reg || "",
-        nama: l?.nama || l?.name || "",
-        name: l?.name || l?.nama || "",
-        perusahaan: l?.perusahaan || l?.company || "",
-        company: l?.company || l?.perusahaan || "",
-        kategori: l?.kategori || l?.category || "UMUM",
-        category: l?.category || l?.kategori || "UMUM",
-        action: l?.action || "UNKNOWN",
-        time: typeof (l?.time || l?.logTime) === "string" ? (l?.time || l?.logTime) : new Date(l?.time || Date.now()).toISOString(),
-        logTime: typeof (l?.time || l?.logTime) === "string" ? (l?.time || l?.logTime) : new Date(l?.time || Date.now()).toISOString(),
-        sortTs: Number(l?.sortTs || 0) || Date.parse(l?.time || l?.logTime || 0) || Date.now(),
-        sequenceId: l?.sequenceId || null,
-        site: l?.site || localStorage.getItem("vms_site") || "SITE_A",
-        deviceId: l?.deviceId || localStorage.getItem("vms_device_id") || "unknown",
-        version: l?.version || VMS_RUNTIME_VERSION,
-        updatedAt: Number(l?.updatedAt || Date.now())
-    })).filter(l => l.reg && l.action);
+    const normalizedLogs = (Array.isArray(p.logs) ? p.logs : []).map(l => {
+        const eventTs = Number(l?.eventTs || (typeof l?.time === "number" ? l.time : 0) || l?.updatedAt || Date.parse(l?.time || l?.logTime || 0) || getEventTimestamp());
+        return {
+            reg: l?.reg || "",
+            nama: l?.nama || l?.name || "",
+            name: l?.name || l?.nama || "",
+            perusahaan: l?.perusahaan || l?.company || "",
+            company: l?.company || l?.perusahaan || "",
+            kategori: l?.kategori || l?.category || "UMUM",
+            category: l?.category || l?.kategori || "UMUM",
+            action: normalizeAction(l?.action || "UNKNOWN"),
+            time: eventTs,
+            eventTs,
+            logTime: l?.logTime || getWIBISO(eventTs),
+            sortTs: eventTs,
+            sequenceId: l?.sequenceId || l?.mutationId || createMutationId("seq"),
+            site: l?.site || localStorage.getItem("vms_site") || "SITE_A",
+            deviceId: l?.deviceId || localStorage.getItem("vms_device_id") || "unknown",
+            version: Number(l?.version || 1),
+            updatedAt: Number(l?.updatedAt || eventTs),
+            updatedAtWIB: l?.updatedAtWIB || getWIBISO(l?.updatedAt || eventTs),
+            mutationId: l?.mutationId || createMutationId("log"),
+            mutationSource: l?.mutationSource || getMutationSource(),
+            syncStatus: l?.syncStatus || "PENDING_SYNC"
+        };
+    }).filter(l => l.reg && l.action);
     console.log("PAYLOAD NORMALIZED", { visitors: Object.keys(normalizedVisitors).length, logs: normalizedLogs.length });
     return {
         ...p,
@@ -2700,8 +2993,8 @@ function normalizeSavePayload(input){
         site: p.site || localStorage.getItem("vms_site") || "SITE_A",
         deviceId: p.deviceId || localStorage.getItem("vms_device_id") || "unknown",
         version: p.version || VMS_RUNTIME_VERSION,
-        updatedAt: Number(p.updatedAt || Date.now()),
-        ts: Number(p.ts || Date.now())
+        updatedAt: Number(p.updatedAt || getEventTimestamp()),
+        ts: Number(p.ts || getEventTimestamp())
     };
 }
 window.normalizeSavePayload = normalizeSavePayload;
@@ -2763,10 +3056,13 @@ function validateEntityMetadata(entity, type){
     if(!entity || typeof entity !== "object") return false;
     const v = Number(entity.version);
     const u = Number(entity.updatedAt);
-    if(type === "visitor") return Number.isFinite(v) && Number.isFinite(u);
+    const e = Number(entity.eventTs || entity.time || entity.updatedAt || 0);
+    const mutationId = String(entity.mutationId || entity.lastMutationId || entity.sequenceId || "");
+    const mutationSource = String(entity.mutationSource || entity.deviceId || entity.source || "");
+    if(type === "visitor") return Number.isFinite(v) && Number.isFinite(u) && Number.isFinite(e) && !!mutationId && !!mutationSource;
     if(type === "log"){
-        const pAt = Number(entity.persistedAt || 0);
-        return Number.isFinite(v) && Number.isFinite(u) && Number.isFinite(pAt) && typeof entity.sequenceId === "string" && entity.sequenceId.length > 0;
+        const pAt = Number(entity.persistedAt || e || 0);
+        return Number.isFinite(v) && Number.isFinite(u) && Number.isFinite(e) && Number.isFinite(pAt) && !!mutationId && !!mutationSource;
     }
     return false;
 }
@@ -2949,8 +3245,12 @@ async function pullFromCloud(){
                 }).slice(0, 2000);
             }
 
+            const hydrationToken = beginHydrationCommit();
+            if(!hydrationToken) { logSyncMetric("hydrationRollbacks", { reason:"mutation_in_progress" }); return; }
             window.visitors = nextVisitors;
             markLogsReplaced(nextLogs);
+            logSyncMetric("hydrationCommits", { visitors:Object.keys(nextVisitors).length, logs:nextLogs.length });
+            endHydrationCommit(hydrationToken);
             logsSortedDirty = false;
             console.log("AUTHORITATIVE_COMMIT", { module:"Sync Runtime", visitors:Object.keys(nextVisitors).length, logs:nextLogs.length, action:"atomic_replace" });
         } catch (mergeErr) {
@@ -3040,11 +3340,15 @@ async function saveToCloudSafe(payload){
 const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
 payload.meta = meta;
 console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.keys(payload.visitors || {}).length });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(()=>controller.abort(), 10000);
         const res = await fetch(WORKER_BASE_URL + "/save",{
             method:"POST",
-            headers:{ "Content-Type":"application/json" },
-            body: JSON.stringify(payload)
+            headers:{ "Content-Type":"application/json", "x-mutation-id": payload.replayId || payload.mutationId || "" },
+            body: JSON.stringify(payload),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         if(res.ok){
             lastSyncTime = payload.ts || Date.now();
@@ -3085,7 +3389,7 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
                 retry: 0
             });
             retryQueue.sort((a, b) => (a.payload?.ts || 0) - (b.payload?.ts || 0));
-            retryQueue = retryQueue.slice(-MAX_QUEUE);
+            retryQueue = pruneArrayByBytes(retryQueue.slice(-MAX_QUEUE), MAX_QUEUE, MAX_QUEUE_BYTES);
             persistRetryQueueSafe();
         }
         hardPruneMemory();
@@ -3110,7 +3414,7 @@ setInterval(async ()=>{
         return;
     }
 
-    const backoff = Math.min(3000 * Math.pow(2, item.retry), 30000);
+    const backoff = Math.min(3000 * Math.pow(2, item.retry), 30000) + Math.floor(Math.random() * 750);
 
     if(Date.now() - item.time < backoff) return;
 
@@ -3123,6 +3427,32 @@ setInterval(async ()=>{
     }
 
 }, 3000);
+
+setInterval(async ()=>{
+    if(!navigator.onLine) return;
+    const q = loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY);
+    if(!q.length) { updateVisitorSyncBadge(); return; }
+    const item = q[0];
+    const event = unwrapSyncEnvelope(item);
+    const meta = item.syncMeta || item;
+    if(!isValidMutationEnvelope(item)){
+        markAppendSynced(event.mutationId || item.mutationId || item.gasReplayId || item.sequenceId);
+        queueDeadLetter(event, "poison_retry_queue");
+        logSyncMetric("queueFailures", { reason:"poison_retry_queue" });
+        return;
+    }
+    if(Number(meta.retry || 0) >= 8){
+        markAppendSynced(event.mutationId || item.mutationId || item.gasReplayId || item.sequenceId);
+        queueDeadLetter(event, "retry_budget_exhausted");
+        return;
+    }
+    const backoff = Math.min(2000 * Math.pow(2, Number(meta.retry || 0)), 60000) + Math.floor(Math.random() * 750);
+    logSyncMetric("averageRetryDelay", { queue:"append", retry:Number(meta.retry || 0), delayMs:backoff });
+    if(getEventTimestamp() - Number(meta.queuedAt || 0) < backoff) return;
+    item.syncMeta = { ...(item.syncMeta || {}), retry:Number(meta.retry || 0) + 1, queuedAt:getEventTimestamp(), queuedAtWIB:getWIBISO() };
+    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes([item, ...q.slice(1)], MAX_QUEUE, MAX_QUEUE_BYTES));
+    if(window.appendScanLogToGoogleSheet) await window.appendScanLogToGoogleSheet(event, event);
+}, 5000);
 
 // ================== SMART SYNC ==================
 function smartSync(type="normal"){
@@ -3506,12 +3836,12 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
         localStorage.removeItem("vms_token");
         localStorage.removeItem("vms_user");
         localStorage.removeItem("vms_role");
-        
+
         detectMode();
-        
+
         const loginOverlay = document.getElementById("loginOverlay");
         const appLayout = document.getElementById("appLayout");
-        
+
         if (currentMode === "PRO") {
             if (loginOverlay) loginOverlay.style.display = "flex";
             if (appLayout) appLayout.style.display = "none";
@@ -3519,7 +3849,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             if (loginOverlay) loginOverlay.style.display = "none";
             if (appLayout) appLayout.style.display = "flex";
         }
-        
+
         showToast("Logged out", "info");
         if (window.renderDashboard) window.renderDashboard();
         if (window.renderLogTable) window.renderLogTable();
@@ -3529,9 +3859,9 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     async function validateSession() {
         const userStr = localStorage.getItem("vms_user");
         if (!userStr) return false;
-        
+
         detectMode();
-        
+
         if (currentMode === "DEMO") {
             if (!localStorage.getItem("vms_user")) {
                 localStorage.setItem("vms_user", JSON.stringify({ username: "demo", role: "OPERATOR" }));
@@ -3539,7 +3869,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             }
             return true;
         }
-        
+
         if (currentMode === "PRO" && onlineStatus) {
             const token = localStorage.getItem("vms_token");
             if (token) {
@@ -3561,7 +3891,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             }
             return false;
         }
-        
+
         return true;
     }
 
@@ -3569,10 +3899,10 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     window.hybridInitSession = async function() {
         detectMode();
         await checkOnline();
-        
+
         const loginOverlay = document.getElementById("loginOverlay");
         const appLayout = document.getElementById("appLayout");
-        
+
         if (currentMode === "DEMO") {
             if (loginOverlay) loginOverlay.style.display = "none";
             if (appLayout) appLayout.style.display = "flex";
@@ -3585,7 +3915,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             if (window.renderLogTable) window.renderLogTable();
             return true;
         }
-        
+
         if (currentMode === "BASIC") {
             if (loginOverlay) loginOverlay.style.display = "none";
             if (appLayout) appLayout.style.display = "flex";
@@ -3599,7 +3929,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             if (window.renderLogTable) window.renderLogTable();
             return true;
         }
-        
+
         if (currentMode === "PRO") {
             await validateSession();
             if (loginOverlay) loginOverlay.style.display = "none";
@@ -3613,7 +3943,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             if (window.renderLogTable) window.renderLogTable();
             return true;
         }
-        
+
         return false;
     };
 
@@ -3651,7 +3981,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
     // ========== STATUS INDICATOR ==========
     function addStatusIndicator() {
         if (document.getElementById("hybridStatusIndicator")) return;
-        
+
         const indicator = document.createElement("div");
         indicator.id = "hybridStatusIndicator";
         indicator.style.cssText = `
@@ -3661,7 +3991,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             pointer-events: none; backdrop-filter: blur(4px);
         `;
         document.body.appendChild(indicator);
-        
+
         async function updateIndicator() {
             const mode = detectMode();
             await checkOnline();
@@ -3669,7 +3999,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             const modeIcon = mode === "PRO" ? "🔴" : (mode === "BASIC" ? "🔵" : "🟠");
             indicator.innerHTML = `${icon} ${modeIcon} ${mode} | ${onlineStatus ? "ONLINE" : "OFFLINE"}`;
         }
-        
+
         updateIndicator();
         setInterval(updateIndicator, 10000);
     }
@@ -3696,7 +4026,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             if (window.renderDashboard) window.renderDashboard();
             if (window.renderLogTable) window.renderLogTable();
         });
-        
+
         window.addEventListener("offline", async () => {
             await checkOnline();
             showToast("🟡 MODE OFFLINE - Menggunakan data lokal", "warning");
@@ -3712,18 +4042,18 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
         await safeForceInit();
         await syncUsersToServer();
         await window.hybridInitSession();
-        
+
         addStatusIndicator();
         overrideLoginButton();
         overrideLogoutButtons();
         monitorOnlineStatus();
-        
+
         setInterval(async () => {
             await checkOnline();
             if (onlineStatus) await syncUsersToServer();
         }, 30000);
     }
-    
+
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", start);
     } else {

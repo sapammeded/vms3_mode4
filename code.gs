@@ -1,5 +1,5 @@
 const SHEET_TIMEZONE = 'Asia/Jakarta';
-const ACTION_TYPES = Object.freeze({ CHECK_IN: 'CHECK_IN', CHECK_OUT: 'CHECK_OUT' });
+const ACTION_TYPES = Object.freeze({ CHECK_IN: 'CHECK_IN', CHECK_OUT: 'CHECK_OUT', REGISTER: 'REGISTER', WALK_IN: 'WALK_IN' });
 const MUTATION_ID_COLUMN = 14;
 const PROCESSED_PROPERTY_KEY = 'vms_processed_sheet_mutation_ids';
 const MAX_PROCESSED_IDS = 5000;
@@ -35,8 +35,8 @@ function normalizeAction(action) {
   const raw = String(action || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
   if (['IN', 'CHECKIN', 'CHECK_IN'].indexOf(raw) >= 0) return ACTION_TYPES.CHECK_IN;
   if (['OUT', 'CHECKOUT', 'CHECK_OUT'].indexOf(raw) >= 0) return ACTION_TYPES.CHECK_OUT;
-  if (['REGISTER', 'REGISTRATION'].indexOf(raw) >= 0) return 'REGISTER';
-  if (['WALK_IN', 'WALKIN', 'WALK_IN_CEPAT'].indexOf(raw) >= 0) return 'WALK_IN';
+  if (['REGISTER', 'REGISTRATION'].indexOf(raw) >= 0) return ACTION_TYPES.REGISTER;
+  if (['WALK_IN', 'WALKIN', 'WALK_IN_CEPAT'].indexOf(raw) >= 0) return ACTION_TYPES.WALK_IN;
   console.warn(JSON.stringify({ type: 'INVALID_ACTION', raw: action, normalized: raw || 'UNKNOWN', updatedAt: getWIBISO() }));
   return raw || 'UNKNOWN';
 }
@@ -269,26 +269,34 @@ function buildVisitorSnapshotLogs_(visitors) {
   }).filter(function(log) { return log.reg && log.mutationId; });
 }
 
+function pick_(obj, keys, fallback) {
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    if (obj && obj[key] !== undefined && obj[key] !== null && obj[key] !== '') return obj[key];
+  }
+  return fallback;
+}
+
 function buildRow_(log) {
-  const action = normalizeAction(log.action);
+  const action = normalizeAction(pick_(log, ['action', 'Action'], ''));
   const eventTs = Number(log.eventTs || log.time || log.updatedAt || getEventTimestamp());
   return [
-    log.reg || '',
-    log.nama || log.name || '',
-    log.perusahaan || log.company || '',
+    pick_(log, ['reg', 'REG', 'Reg'], ''),
+    pick_(log, ['nama', 'name', 'Nama'], ''),
+    pick_(log, ['perusahaan', 'company', 'Perusahaan'], ''),
     action,
     formatWIB(eventTs),
-    log.site || '',
-    log.deviceId || '',
-    log.kategori || log.category || '',
-    log.pic || '',
-    log.start || log.startDate || '',
-    log.exp || log.expDate || '',
-    log.status || action,
-    log.version || 1,
-    log.mutationId || '',
-    log.mutationSource || '',
-    log.requestFingerprint || ''
+    pick_(log, ['site', 'Site'], ''),
+    pick_(log, ['deviceId', 'deviceID', 'DeviceId'], ''),
+    pick_(log, ['kategori', 'category', 'Kategori'], ''),
+    pick_(log, ['pic', 'PIC'], ''),
+    pick_(log, ['start', 'startDate'], ''),
+    pick_(log, ['exp', 'expDate'], ''),
+    pick_(log, ['status', 'currentStatus'], action),
+    pick_(log, ['version'], 1),
+    pick_(log, ['mutationId'], ''),
+    pick_(log, ['mutationSource'], ''),
+    pick_(log, ['requestFingerprint'], '')
   ];
 }
 
@@ -345,6 +353,7 @@ function appendRowsIdempotent_(logs) {
       mutationIds.push(mutationId);
       requestFingerprints.push(log.requestFingerprint || '');
       seen.add(mutationId);
+      structuredLog_(String(log.action).replace(/[^A-Z_]/g, '') + '_APPENDED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: log.reg });
     });
 
     if (rows.length) {
@@ -374,7 +383,7 @@ function doPost(e) {
     const visitorLogs = body && body.visitors && typeof body.visitors === 'object' ? buildVisitorSnapshotLogs_(body.visitors) : [];
     const normalized = logs.concat(visitorLogs)
       .map(function(log, index) { return normalizeMutation_(Object.assign({}, log, { action: normalizeAction(log && log.action) }), index); })
-      .filter(function(log) { return log.reg && log.mutationId && (log.action === ACTION_TYPES.CHECK_IN || log.action === ACTION_TYPES.CHECK_OUT || log.action === 'REGISTER' || log.action === 'WALK_IN'); });
+      .filter(function(log) { return log.reg && log.mutationId && (log.action === ACTION_TYPES.CHECK_IN || log.action === ACTION_TYPES.CHECK_OUT || log.action === ACTION_TYPES.REGISTER || log.action === ACTION_TYPES.WALK_IN); });
     const result = appendRowsIdempotent_(normalized);
     const ackIds = result.mutationIds.concat(result.skippedMutationIds);
     return jsonResponse_({ ok: true, ack: true, rowsAppended: result.rowsAppended, mutationIds: result.mutationIds, skippedMutationIds: result.skippedMutationIds, staleMutationIds: result.staleMutationIds || [], staleCount: result.staleCount || 0, versionRejectedMutationIds: result.versionRejectedMutationIds || [], versionRejectedCount: result.versionRejectedCount || 0, ackMutationIds: ackIds, requestFingerprints: result.requestFingerprints || [], ackCount: ackIds.length, updatedAt: getWIBISO() });

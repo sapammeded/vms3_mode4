@@ -301,7 +301,7 @@ function normalizeAction(action){
     if(["IN", "CHECKIN", "CHECK_IN"].includes(raw)) return ACTION_TYPES.CHECK_IN;
     if(["OUT", "CHECKOUT", "CHECK_OUT"].includes(raw)) return ACTION_TYPES.CHECK_OUT;
     if(["WALK_IN", "WALKIN", "WALK_IN_CEPAT"].includes(raw)) return ACTION_TYPES.WALK_IN;
-    if(raw === "REGISTER") return ACTION_TYPES.REGISTER;
+    if(["REGISTER", "REGISTRATION"].includes(raw)) return ACTION_TYPES.REGISTER;
     console.warn("ACTION_NORMALIZATION_INVALID", { raw: action, updatedAt: getWIBISO() });
     return raw || "UNKNOWN";
 }
@@ -1261,8 +1261,154 @@ async function withClientMutationLock(lockName, buttons, fn){
         HYDRATION_MUTEX.mutationDepth = Math.max(0, HYDRATION_MUTEX.mutationDepth - 1);
     }
 }
+const VMS_PHOTO_DB_NAME = "vms_photo_store";
+const VMS_PHOTO_STORE_NAME = "photos";
+const VMS_PHOTO_LS_PREFIX = "vms_photo_";
+function openVisitorPhotoDB(){
+    return new Promise((resolve, reject) => {
+        if(!window.indexedDB) { reject(new Error("indexeddb_unavailable")); return; }
+        const req = indexedDB.open(VMS_PHOTO_DB_NAME, 1);
+        req.onupgradeneeded = () => {
+            const db = req.result;
+            if(!db.objectStoreNames.contains(VMS_PHOTO_STORE_NAME)) db.createObjectStore(VMS_PHOTO_STORE_NAME);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error || new Error("indexeddb_open_failed"));
+    });
+}
+async function compressPhotoForThumbnail(dataUrl, maxWidth = 240){
+    if(!dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:image")) return "";
+    try{
+        const img = new Image();
+        img.src = dataUrl;
+        await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; });
+        const scale = Math.min(1, maxWidth / Math.max(1, img.width));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.58);
+    }catch(e){
+        console.warn(JSON.stringify({ type:"PHOTO_THUMBNAIL_FAILED", reason:e?.message || String(e), updatedAt:getWIBISO() }));
+        return dataUrl.length <= 12000 ? dataUrl : "";
+    }
+}
+async function saveVisitorPhoto(siteKey, dataUrl){
+    if(!siteKey || !dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:image")) return "";
+    const photoBlobKey = `${VMS_PHOTO_LS_PREFIX}${siteKey}`;
+    try{
+        const db = await openVisitorPhotoDB();
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(VMS_PHOTO_STORE_NAME, "readwrite");
+            tx.objectStore(VMS_PHOTO_STORE_NAME).put({ dataUrl, updatedAt:getEventTimestamp() }, photoBlobKey);
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error || new Error("indexeddb_write_failed"));
+        });
+        db.close?.();
+        logSyncMetric("PHOTO_BACKUP_SAVED", { siteKey, photoBlobKey, medium:"indexeddb" });
+        return photoBlobKey;
+    }catch(e){
+        try{
+            localStorage.setItem(photoBlobKey, dataUrl);
+            logSyncMetric("PHOTO_BACKUP_SAVED", { siteKey, photoBlobKey, medium:"localStorage" });
+            return photoBlobKey;
+        }catch(lsErr){
+            console.warn(JSON.stringify({ type:"PHOTO_BACKUP_FAILED", siteKey, reason:lsErr?.message || e?.message || String(lsErr), updatedAt:getWIBISO() }));
+            return "";
+        }
+    }
+}
+async function loadVisitorPhoto(visitor, siteKey){
+    const key = visitor?.photoBlobKey || (siteKey ? `${VMS_PHOTO_LS_PREFIX}${siteKey}` : "");
+    if(key){
+        try{
+            const db = await openVisitorPhotoDB();
+            const value = await new Promise((resolve, reject) => {
+                const tx = db.transaction(VMS_PHOTO_STORE_NAME, "readonly");
+                const req = tx.objectStore(VMS_PHOTO_STORE_NAME).get(key);
+                req.onsuccess = () => resolve(req.result?.dataUrl || req.result || "");
+                req.onerror = () => reject(req.error || new Error("indexeddb_read_failed"));
+            });
+            db.close?.();
+            if(value) return value;
+        }catch(e){}
+        try{
+            const cached = localStorage.getItem(key);
+            if(cached) return cached;
+        }catch(e){}
+    }
+    return (visitor?.foto && String(visitor.foto).startsWith("data:image")) ? visitor.foto : "";
+}
+async function getVisitorPhotoForPDF(reg, visitor){
+    const siteKey = visitor?.site && reg ? `${visitor.site}_${reg}` : (reg ? `${SITE_ID}_${reg}` : "");
+    const photo = await loadVisitorPhoto(visitor, siteKey);
+    if(!photo) logSyncMetric("PDF_PHOTO_MISSING", { reg, siteKey });
+    return photo;
+}
+function cleanPdfText(value, fallback = "-"){
+    const text = String(value === undefined || value === null || value === "" ? fallback : value).replace(/\s+/g, " ").trim();
+    return text || fallback;
+}
+function addImageContain(doc, imageData, x, y, w, h){
+    if(!imageData || typeof imageData !== "string" || !imageData.startsWith("data:image")) return false;
+    try{
+        const props = doc.getImageProperties(imageData);
+        const ratio = Math.min(w / props.width, h / props.height);
+        const iw = props.width * ratio;
+        const ih = props.height * ratio;
+        const ix = x + (w - iw) / 2;
+        const iy = y + (h - ih) / 2;
+        const fmt = /png/i.test(props.fileType || imageData.slice(0, 30)) ? "PNG" : "JPEG";
+        doc.addImage(imageData, fmt, ix, iy, iw, ih);
+        return true;
+    }catch(e){
+        try{ doc.addImage(imageData, "JPEG", x, y, w, h); return true; }catch(_){ return false; }
+    }
+}
+function drawSectionTitle(doc, text, x, y){
+    doc.setFont(undefined, "bold");
+    doc.setFontSize(6.2);
+    doc.setTextColor(31,78,74);
+    doc.text(String(text).toUpperCase(), x, y);
+    doc.setDrawColor(203,213,225);
+    doc.line(x, y + 1.5, x + 38, y + 1.5);
+}
+function drawKeyValue(doc, label, value, x, y, width){
+    doc.setFont(undefined, "normal");
+    doc.setFontSize(4.7);
+    doc.setTextColor(100,116,139);
+    doc.text(cleanPdfText(label), x, y);
+    doc.setFont(undefined, "bold");
+    doc.setFontSize(5.4);
+    doc.setTextColor(15,23,42);
+    const lines = doc.splitTextToSize(cleanPdfText(value), width);
+    doc.text(lines.slice(0, 2), x, y + 3.3, { lineHeightFactor:1.05 });
+    return y + 3.3 + Math.min(lines.length, 2) * 2.2;
+}
+function drawCorporateHeader(doc, title, subtitle, w, accentColor){
+    doc.setFillColor(...accentColor);
+    doc.roundedRect(0, 0, w, 12, 2, 2, 'F');
+    doc.setTextColor(255,255,255);
+    doc.setFont(undefined, 'bold');
+    doc.setFontSize(7.5);
+    doc.text(cleanPdfText(title), w / 2, 5.2, { align:'center' });
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(4.8);
+    doc.text(cleanPdfText(subtitle), w / 2, 9.1, { align:'center' });
+}
+function drawCorporateFooter(doc, deviceId, w, h){
+    doc.setFillColor(241,245,249);
+    doc.rect(0, h - 7, w, 7, 'F');
+    doc.setTextColor(71,85,105);
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(4.2);
+    doc.text(`Generated ${formatWIB(getEventTimestamp(), { dateStyle:'short', timeStyle:'medium' })}`, 3, h - 3.8);
+    doc.text(`Device ${cleanPdfText(deviceId, 'unknown')}`, w - 3, h - 3.8, { align:'right' });
+}
 function updateVisitorSyncBadge(){
-    const q = loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY);
+    const health = window.getSyncQueueHealth ? window.getSyncQueueHealth() : { appendQueueDepth: loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY).length, cloudRetryQueueDepth: 0, deadLetterCount: loadJsonArray(VMS_APPEND_DEAD_LETTER_KEY).length, lastPullTs: 0, lastSyncTime: 0, syncFailStreak: 0, online: navigator.onLine };
+    const queueDepth = Number(health.appendQueueDepth || 0) + Number(health.cloudRetryQueueDepth || 0);
     let badge = document.getElementById("syncStatusBadge");
     if(!badge){
         badge = document.createElement("div");
@@ -1270,8 +1416,15 @@ function updateVisitorSyncBadge(){
         badge.style.cssText = "position:fixed;right:18px;bottom:72px;z-index:1001;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;background:#065f46;color:white;box-shadow:0 8px 20px rgba(0,0,0,.12);";
         document.body.appendChild(badge);
     }
-    if(q.length){ badge.textContent = `UNSYNCED ${q.length}`; badge.style.background = "#b45309"; }
-    else { badge.textContent = "SYNCED"; badge.style.background = "#065f46"; }
+    let state = "SYNCED";
+    let color = "#065f46";
+    if(!health.online && queueDepth){ state = "OFFLINE QUEUED"; color = "#b45309"; }
+    else if(Number(health.syncFailStreak || 0) > 0 || Number(health.deadLetterCount || 0) > 0){ state = "SYNC ERROR"; color = "#991b1b"; }
+    else if(queueDepth){ state = "UNSYNCED"; color = "#b45309"; }
+    const lastPullLabel = health.lastPullTs ? formatWIB(Number(health.lastPullTs), { dateStyle:"short", timeStyle:"medium" }).split(" ").slice(-1)[0] : "-";
+    badge.textContent = `${state} | LAST PULL: ${lastPullLabel} WIB | QUEUE: ${queueDepth}`;
+    badge.style.background = color;
+    badge.title = JSON.stringify(health);
 }
 function queueAppendRetry(mutation){
     if(!isValidMutationEnvelope(mutation)){ queueDeadLetter(mutation, "poison_append_mutation"); logSyncMetric("queueFailures", { reason:"poison_append_mutation" }); return; }
@@ -1635,12 +1788,7 @@ window.onunhandledrejection = function(e) {
 
             doc.setFillColor(248,250,252);
             doc.rect(0, 0, badgeW, badgeH, 'F');
-            doc.setFillColor(...accentColor);
-            doc.roundedRect(0, 0, badgeW, 10, 2, 2, 'F');
-            doc.setTextColor(255,255,255);
-            doc.setFont(undefined, 'bold');
-            doc.setFontSize(8);
-            doc.text("VISITOR BADGE", badgeW / 2, 6.5, { align:"center" });
+            drawCorporateHeader(doc, "VISITOR BADGE", cleanPdfText(data.perusahaan || "SAPAM MEDED"), badgeW, accentColor);
 
             doc.setDrawColor(...accentColor);
             doc.setLineWidth(0.5);
@@ -1648,11 +1796,13 @@ window.onunhandledrejection = function(e) {
 
             const qrPayload = await buildQR(reg, data);
             const qrBase64 = await generateQRImage(qrPayload);
+            const pdfPhoto = await getVisitorPhotoForPDF(reg, data);
             const addPhoto = (x, y, size) => {
-                if(data.foto && data.foto.startsWith('data')){
-                    try{ doc.addImage(data.foto, 'JPEG', x, y, size, size); return; }
-                    catch(e){ try{ doc.addImage(data.foto, 'PNG', x, y, size, size); return; }catch(imgErr){} }
-                }
+                doc.setFillColor(255,255,255);
+                doc.roundedRect(x - 1, y - 1, size + 2, size + 2, 2, 2, 'F');
+                doc.setDrawColor(203,213,225);
+                doc.roundedRect(x - 1, y - 1, size + 2, size + 2, 2, 2, 'S');
+                if(addImageContain(doc, pdfPhoto, x, y, size, size)) return;
                 doc.setFillColor(226,232,240);
                 doc.roundedRect(x, y, size, size, 2, 2, 'F');
                 doc.setTextColor(100,116,139);
@@ -1707,9 +1857,10 @@ window.onunhandledrejection = function(e) {
             }
 
             doc.setTextColor(71,85,105);
-            doc.setFont(undefined, 'normal');
+            doc.setFont(undefined, 'bold');
             doc.setFontSize(5);
-            doc.text(`Valid ${cleanText(data.expDate, '-')}`, badgeW / 2, badgeH - 4, { align:"center" });
+            doc.text(`Valid ${cleanText(data.expDate, '-')}`, badgeW / 2, badgeH - 9, { align:"center" });
+            drawCorporateFooter(doc, localStorage.getItem("vms_device_id") || data.deviceId || "unknown", badgeW, badgeH);
 
             const success = forceDownloadPDF(doc, `BADGE_${reg}_${badgeMode}.pdf`);
             if(!success){ toast("Download gagal. Gunakan browser Chrome.", "error"); return false; }
@@ -1805,6 +1956,11 @@ window.onunhandledrejection = function(e) {
             }
             let data = { nama, perusahaan, kategori, tujuan, pic, dept, startDate, expDate, badgeMode, foto, sessions:[], currentStatus:"OUT", deviceId: deviceId, site: SITE_ID, mutationId:createMutationId("register"), mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" };
             let siteKey = SITE_ID + "_" + reg;
+            if(foto){
+                const photoBlobKey = await saveVisitorPhoto(siteKey, foto);
+                data.photoBlobKey = photoBlobKey || data.photoBlobKey;
+                data.foto = await compressPhotoForThumbnail(foto);
+            }
             if(!saveVisitor(siteKey, data, reg, ACTION_TYPES.REGISTER)) return;
             data = visitors[siteKey];
             addLog(reg, ACTION_TYPES.REGISTER);
@@ -1818,8 +1974,8 @@ window.onunhandledrejection = function(e) {
             document.getElementById('previewPhotoThumb').src = "";
             renderDashboard();
             renderLogTable();
-            secureSave();
-            scheduleCentralSync("register");
+            await secureSave();
+            await forceCentralSync("register", { visitorKeys:[siteKey], includeLogs:true });
         }
         updateMonetizationUI();
     });
@@ -1898,6 +2054,11 @@ window.onunhandledrejection = function(e) {
                 syncStatus: "PENDING_SYNC"
             };
             let siteKey = SITE_ID + "_" + reg;
+            if(fotoBase64){
+                const photoBlobKey = await saveVisitorPhoto(siteKey, fotoBase64);
+                walkData.photoBlobKey = photoBlobKey || walkData.photoBlobKey;
+                walkData.foto = await compressPhotoForThumbnail(fotoBase64);
+            }
             if(!saveVisitor(siteKey, walkData, reg, ACTION_TYPES.WALK_IN)) return;
             walkData = visitors[siteKey];
             addLog(reg, ACTION_TYPES.WALK_IN);
@@ -1905,8 +2066,8 @@ window.onunhandledrejection = function(e) {
             showPreview(reg, walkData);
             renderDashboard();
             renderLogTable();
-            secureSave();
-            scheduleCentralSync("walkin");
+            await secureSave();
+            await forceCentralSync("walkin", { visitorKeys:[siteKey], includeLogs:true });
         }
         updateMonetizationUI();
     });
@@ -2060,8 +2221,8 @@ window.onunhandledrejection = function(e) {
             });
             renderDashboard();
             renderLogTable();
-            secureSave();
-            scheduleCentralSync("scan");
+            await secureSave();
+            await forceCentralSync("scan", { visitorKeys:[siteKey], includeLogs:true });
             updateMonetizationUI();
         } finally { setTimeout(()=>processingRegs.delete(reg), 1000); }
     }
@@ -2102,8 +2263,8 @@ window.onunhandledrejection = function(e) {
             }
             renderDashboard();
             renderLogTable();
-            secureSave();
-            scheduleCentralSync("manual_scan");
+            await secureSave();
+            await forceCentralSync("manual_scan", { visitorKeys:[siteKey], includeLogs:true });
             updateMonetizationUI();
         } finally { isManualProcessing = false; }
     });
@@ -2845,9 +3006,8 @@ function hardPruneMemory(){
         const now = Date.now();
         Object.entries(window.visitors || {}).forEach(([k,v])=>{
             if(v?.deletedAt && (now - Number(v.deletedAt||0)) > THIRTY_DAYS) delete window.visitors[k];
-            if(v?.foto && typeof v.foto === "string" && v.foto.length > 2000){
-                v.photoBlobKey = v.photoBlobKey || `${k}_photo`;
-                delete v.foto;
+            if(v?.foto && typeof v.foto === "string" && v.foto.length > 12000){
+                saveVisitorPhoto(k, v.foto).then(key => { if(key){ v.photoBlobKey = key; compressPhotoForThumbnail(v.foto).then(t => { if(t) v.foto = t; }); } });
             }
         });
         console.log("MEMORY PRUNE", { logs: (window.logs||[]).length, retryQueue: retryQueue.length, visitors: Object.keys(window.visitors||{}).length });
@@ -2952,9 +3112,9 @@ function normalizeSavePayload(input){
             version: Number(value.version || 1),
             syncStatus: value.syncStatus || "PENDING_SYNC"
         };
-        if(normalizedVisitors[key].foto && typeof normalizedVisitors[key].foto === "string" && normalizedVisitors[key].foto.length > 2000){
-            normalizedVisitors[key].photoBlobKey = normalizedVisitors[key].photoBlobKey || `${key}_photo`;
-            delete normalizedVisitors[key].foto;
+        if(normalizedVisitors[key].foto && typeof normalizedVisitors[key].foto === "string" && normalizedVisitors[key].foto.length > 12000){
+            normalizedVisitors[key].photoBlobKey = normalizedVisitors[key].photoBlobKey || `${VMS_PHOTO_LS_PREFIX}${key}`;
+            normalizedVisitors[key].foto = normalizedVisitors[key].foto.slice(0, 12000).startsWith("data:image") ? normalizedVisitors[key].foto : "";
         }
     });
     const normalizedLogs = (Array.isArray(p.logs) ? p.logs : []).map(l => {
@@ -2998,6 +3158,62 @@ function normalizeSavePayload(input){
     };
 }
 window.normalizeSavePayload = normalizeSavePayload;
+
+function buildTargetedCentralPayload(options = {}){
+    const base = buildPayload();
+    const visitorKeys = Array.isArray(options.visitorKeys) ? options.visitorKeys.filter(Boolean) : [];
+    if(visitorKeys.length){
+        base.visitors = {};
+        visitorKeys.forEach(key => { if((window.visitors || {})[key]) base.visitors[key] = (window.visitors || {})[key]; });
+    }
+    if(options.includeLogs){
+        const regs = new Set(visitorKeys.map(key => String(key).split("_").slice(1).join("_")).filter(Boolean));
+        base.logs = (window.logs || []).filter(log => !regs.size || regs.has(log.reg)).slice(0, 100);
+    } else if(visitorKeys.length) {
+        base.logs = [];
+    }
+    return normalizeSavePayload(base);
+}
+async function forceCentralSync(reason, options = {}){
+    const payload = buildTargetedCentralPayload(options);
+    if(!payload.licenseKey || ((!payload.visitors || !Object.keys(payload.visitors).length) && (!payload.logs || !payload.logs.length))) return false;
+    if(!navigator.onLine){
+        pendingSyncPayload = payload;
+        await persistPendingSyncPayloadAtomic(payload);
+        logSyncMetric("VISITOR_PUSH_QUEUED", { reason, visitors:Object.keys(payload.visitors || {}).length, logs:(payload.logs || []).length });
+        updateVisitorSyncBadge();
+        return false;
+    }
+    try{
+        const pushed = await saveToCloudSafe(payload);
+        if(pushed){
+            logSyncMetric("VISITOR_PUSH_SUCCESS", { reason, visitors:Object.keys(payload.visitors || {}).length, logs:(payload.logs || []).length });
+            await ensureInitialCloudHydration("post-" + reason);
+            return true;
+        }
+        pendingSyncPayload = payload;
+        await persistPendingSyncPayloadAtomic(payload);
+        logSyncMetric("VISITOR_PUSH_QUEUED", { reason, visitors:Object.keys(payload.visitors || {}).length, logs:(payload.logs || []).length });
+        updateVisitorSyncBadge();
+        return false;
+    }catch(e){
+        pendingSyncPayload = payload;
+        await persistPendingSyncPayloadAtomic(payload);
+        logSyncMetric("VISITOR_PUSH_FAILED", { reason, error:e?.message || String(e) });
+        return false;
+    }
+}
+async function ensureInitialCloudHydration(reason = "startup"){
+    const licenseKey = localStorage.getItem("vms_license_key") || "";
+    if(!licenseKey || !navigator.onLine || HYDRATION_MUTEX.hydrating || HYDRATION_MODE.active) return false;
+    await requestPullFromCloud(reason);
+    if(window.renderDashboard) window.renderDashboard();
+    if(window.renderLogTable) window.renderLogTable();
+    updateVisitorSyncBadge();
+    return true;
+}
+window.forceCentralSync = forceCentralSync;
+window.ensureInitialCloudHydration = ensureInitialCloudHydration;
 
 async function requestPullFromCloud(reason="normal"){
     if(!isAuthoritativeOwner()) { postSyncMessage("SYNC_START", { reason }); return; }
@@ -3260,6 +3476,7 @@ async function pullFromCloud(){
         } finally {
             releaseLock("merge");
         }
+        logSyncMetric("DEVICE_PULL_MERGED", { visitors: Object.keys(incomingVisitors).length, logs: incomingLogs.length, serverTs: lastPullTs });
         console.log("PULL MERGED", { visitors: Object.keys(incomingVisitors).length, logs: incomingLogs.length, serverTs: lastPullTs });
         hardPruneMemory();
         if(window.renderDashboard) window.renderDashboard();
@@ -3290,7 +3507,13 @@ async function saveToCloudSafe(payload){
 
     if (!payload.licenseKey) return;
 
-    if(isSyncing || !navigator.onLine || isLockActive(saveLock) || isLockActive(mergeLock)) return;
+    if(isSyncing || !navigator.onLine || isLockActive(saveLock) || isLockActive(mergeLock)) {
+        pendingSyncPayload = payload;
+        await persistPendingSyncPayloadAtomic(payload);
+        logSyncMetric("VISITOR_PUSH_QUEUED", { reason:"save_busy_or_offline", visitors:Object.keys(payload.visitors || {}).length, logs:(payload.logs || []).length });
+        updateVisitorSyncBadge();
+        return false;
+    }
 
     const pullStale = !lastPullTs || (Date.now() - lastPullStartTs > 5000 && Date.now() - lastPullTs > 15000);
     if (pullStale && !isPulling) {
@@ -3326,13 +3549,20 @@ async function saveToCloudSafe(payload){
     }
     if(window.VMS_SYNC_MUTEX?.active) {
         pendingSyncPayload = payload;
-        return;
+        await persistPendingSyncPayloadAtomic(payload);
+        logSyncMetric("VISITOR_PUSH_QUEUED", { reason:"sync_mutex_active", visitors:Object.keys(payload.visitors || {}).length, logs:(payload.logs || []).length });
+        updateVisitorSyncBadge();
+        return false;
     }
     window.VMS_SYNC_MUTEX = { active:true, owner:"saveToCloudSafe", startedAt:Date.now() };
 
     if(!acquireLock("save")) {
+        pendingSyncPayload = payload;
+        await persistPendingSyncPayloadAtomic(payload);
         window.VMS_SYNC_MUTEX = { active:false, owner:null, startedAt:0 };
-        return;
+        logSyncMetric("VISITOR_PUSH_QUEUED", { reason:"save_lock_busy", visitors:Object.keys(payload.visitors || {}).length, logs:(payload.logs || []).length });
+        updateVisitorSyncBadge();
+        return false;
     }
     isSyncing = true;
 
@@ -3355,6 +3585,7 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
             lastSaveTs = Date.now();
             lastPayloadHash = hash + "::" + fingerprint;
             syncFailStreak = 0;
+            logSyncMetric("VISITOR_PUSH_SUCCESS", { reason:"saveToCloudSafe", visitors:Object.keys(payload.visitors || {}).length, logs:(payload.logs || []).length });
             setTimeout(() => { requestPullFromCloud("post-save"); }, 250);
             postSyncMessage("SYNC_DONE", { ok:true });
             hardPruneMemory();
@@ -3368,6 +3599,8 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
                 retryQueue.shift();
                 persistRetryQueueSafe();
             }
+            updateVisitorSyncBadge();
+            return true;
         }else{
             throw new Error("Bad response");
         }
@@ -3393,6 +3626,7 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
             persistRetryQueueSafe();
         }
         hardPruneMemory();
+        logSyncMetric("VISITOR_PUSH_FAILED", { reason:e?.message || "unknown", retryQueueDepth:retryQueue.length });
 
     } finally {
         isSyncing = false;
@@ -3473,7 +3707,17 @@ window.saveToCloud = function(){
 
 window.smartSync = smartSync;
 window.getSyncQueueHealth = function(){
-    return { backlog: retryQueue.length, lastSyncTime, isSyncing, syncFailStreak };
+    return {
+        backlog: retryQueue.length + loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY).length,
+        appendQueueDepth: loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY).length,
+        cloudRetryQueueDepth: retryQueue.length,
+        deadLetterCount: loadJsonArray(VMS_APPEND_DEAD_LETTER_KEY).length,
+        lastPullTs,
+        lastSyncTime,
+        isSyncing,
+        syncFailStreak,
+        online: navigator.onLine
+    };
 };
 
 // ================== HOOK ==================
@@ -3499,6 +3743,7 @@ if(window.processScan){
 window.addEventListener("online", ()=>{
     if(!isAuthoritativeOwner()) { maybeTakeOwnership(); return; }
     smartSync();
+    ensureInitialCloudHydration("online");
 });
 
 // ================== CLOSE APP ==================
@@ -3579,7 +3824,7 @@ window.addEventListener("load", async ()=>{
     }catch(e){}
     retryQueue = loadRetryQueueSafe();
     smartSync();
-    requestPullFromCloud("startup");
+    await ensureInitialCloudHydration("startup");
     (function schedulePull(){
         const delay = document.hidden ? 60000 : 7000;
         setTimeout(async ()=>{ await requestPullFromCloud("scheduled"); schedulePull(); }, delay);
@@ -3634,7 +3879,7 @@ window.addEventListener("visibilitychange", ()=>{
 
     maybeTakeOwnership(true);
 
-    requestPullFromCloud("visible");
+    ensureInitialCloudHydration("visible");
 });
 
 console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");

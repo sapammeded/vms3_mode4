@@ -515,6 +515,8 @@
             padding: 2px 6px;
             border-radius: 6px;
         }
+
+        .login-overlay.hidden { display: none !important; }
     </style>
 </head>
 <body>
@@ -1071,8 +1073,10 @@
             
             const currentToken = token || localStorage.getItem("vms_admin_token");
             if (currentToken) {
-                headers["x-token"] = currentToken;
-                console.log(`[API_CALL] Using token: ${currentToken.substring(0, 20)}...`);
+                const cleanToken = String(currentToken).trim();
+                headers["Authorization"] = "Bearer " + cleanToken;
+                headers["x-token"] = cleanToken;
+                console.log(`[API_CALL] Using bearer token: ${cleanToken.substring(0, 20)}...`);
             }
             
             const url = API_URL + endpoint;
@@ -1166,8 +1170,10 @@
                 localStorage.setItem("vms_admin_role", data.role);
                 
                 const loginOverlay = document.getElementById("loginOverlay");
-                
-                if (loginOverlay) loginOverlay.classList.add("hidden");
+                if (loginOverlay) {
+                    loginOverlay.classList.add("hidden");
+                    loginOverlay.style.display = "none";
+                }
                 
                 const topUsername = document.getElementById("topUsername");
                 const sidebarUsername = document.getElementById("sidebarUsername");
@@ -1191,6 +1197,7 @@
             showToast("Login error: " + err.message, "error");
         }
     }
+
 
     function logout() {
         token = null;
@@ -2165,19 +2172,24 @@
         const savedToken = localStorage.getItem("vms_admin_token");
         const savedUser = localStorage.getItem("vms_admin_user");
         const savedRole = localStorage.getItem("vms_admin_role");
+        const loginOverlay = document.getElementById("loginOverlay");
         
         if (savedToken && savedUser) {
             token = savedToken;
             currentUser = { username: savedUser, role: savedRole || "ADMIN" };
-            document.getElementById("loginOverlay").classList.add("hidden");
+            if (loginOverlay) {
+                loginOverlay.classList.add("hidden");
+                loginOverlay.style.display = "none";
+            }
             document.getElementById("topUsername").innerText = savedUser;
             document.getElementById("sidebarUsername").innerText = savedUser;
             document.getElementById("topRole").innerText = savedRole || "ADMIN";
             document.getElementById("sidebarRole").innerText = savedRole || "ADMIN";
             startRefresh();
             loadAllData();
-        } else {
-            document.getElementById("loginOverlay").classList.remove("hidden");
+        } else if (loginOverlay) {
+            loginOverlay.style.display = "flex";
+            loginOverlay.classList.remove("hidden");
         }
         
         if (serverClockTimer) clearInterval(serverClockTimer);
@@ -2196,6 +2208,7 @@
             }
         });
     }
+
 
     init();
 </script>

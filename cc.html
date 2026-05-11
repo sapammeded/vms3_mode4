@@ -515,6 +515,8 @@
             padding: 2px 6px;
             border-radius: 6px;
         }
+
+        .login-overlay.hidden { display: none !important; }
     </style>
 </head>
 <body>
@@ -1071,8 +1073,10 @@
             
             const currentToken = token || localStorage.getItem("vms_admin_token");
             if (currentToken) {
-                headers["x-token"] = currentToken;
-                console.log(`[API_CALL] Using token: ${currentToken.substring(0, 20)}...`);
+                const cleanToken = String(currentToken).trim();
+                headers["Authorization"] = "Bearer " + cleanToken;
+                headers["x-token"] = cleanToken;
+                console.log(`[API_CALL] Using bearer token: ${cleanToken.substring(0, 20)}...`);
             }
             
             const url = API_URL + endpoint;
@@ -1166,8 +1170,10 @@
                 localStorage.setItem("vms_admin_role", data.role);
                 
                 const loginOverlay = document.getElementById("loginOverlay");
-                
-                if (loginOverlay) loginOverlay.classList.add("hidden");
+                if (loginOverlay) {
+                    loginOverlay.classList.add("hidden");
+                    loginOverlay.style.display = "none";
+                }
                 
                 const topUsername = document.getElementById("topUsername");
                 const sidebarUsername = document.getElementById("sidebarUsername");
@@ -1191,6 +1197,7 @@
             showToast("Login error: " + err.message, "error");
         }
     }
+
 
     function logout() {
         token = null;
@@ -1584,41 +1591,57 @@
         const maxDevices = document.getElementById("genMaxDevices").value;
         const address = document.getElementById("genAddress").value;
         const notes = document.getElementById("genNotes").value;
-        
+        const currentToken = token || localStorage.getItem("vms_admin_token") || "";
+
         if (!companyName || !pic || !phone || !email) {
             showToast("Please fill all required fields", "error");
             return;
         }
-        
+
         showToast("Generating license...", "info");
-        
-        const data = await apiCall("/generate-license", {
-            method: "POST",
-            body: JSON.stringify({
-                companyName, pic, phone, email, address,
-                package: pkg,
-                customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
-                notes
-            })
-        });
-        
-        if (data && data.ok) {
-            showToast(`License generated for ${companyName}`, "success");
-            
-            await navigator.clipboard.writeText(data.licenseKey);
-            showToast(`License key copied to clipboard: ${data.licenseKey}`, "success");
-            
-            document.getElementById("genCompanyName").value = "";
-            document.getElementById("genPic").value = "";
-            document.getElementById("genPhone").value = "";
-            document.getElementById("genEmail").value = "";
-            document.getElementById("genAddress").value = "";
-            document.getElementById("genNotes").value = "";
-            document.getElementById("genMaxDevices").value = "";
-            
-            loadCompanies();
-        } else {
-            showToast(data?.error || "Failed to generate license", "error");
+
+        try {
+            const res = await fetch(`${API_URL}/admin/generate-license`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + String(currentToken).trim(),
+                    "x-token": String(currentToken).trim()
+                },
+                credentials: "omit",
+                body: JSON.stringify({
+                    companyName,
+                    pic,
+                    phone,
+                    email,
+                    package: pkg,
+                    customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
+                    address,
+                    notes
+                })
+            });
+            const data = await res.json().catch(() => ({ ok: false, error: "Invalid server response" }));
+
+            if (data && data.ok) {
+                showToast("License Generated Successfully!", "success");
+
+                document.getElementById("genCompanyName").value = "";
+                document.getElementById("genPic").value = "";
+                document.getElementById("genPhone").value = "";
+                document.getElementById("genEmail").value = "";
+                document.getElementById("genPackage").value = "DEMO";
+                document.getElementById("genMaxDevices").value = "";
+                document.getElementById("genAddress").value = "";
+                document.getElementById("genNotes").value = "";
+
+                loadAllData();
+                switchTab('companies');
+            } else {
+                showToast(data?.error || "Failed to generate license", "error");
+            }
+        } catch (err) {
+            console.error("[GENERATE_LICENSE] Exception:", err);
+            showToast("Failed to generate license: " + err.message, "error");
         }
     }
 
@@ -2165,19 +2188,24 @@
         const savedToken = localStorage.getItem("vms_admin_token");
         const savedUser = localStorage.getItem("vms_admin_user");
         const savedRole = localStorage.getItem("vms_admin_role");
+        const loginOverlay = document.getElementById("loginOverlay");
         
         if (savedToken && savedUser) {
             token = savedToken;
             currentUser = { username: savedUser, role: savedRole || "ADMIN" };
-            document.getElementById("loginOverlay").classList.add("hidden");
+            if (loginOverlay) {
+                loginOverlay.classList.add("hidden");
+                loginOverlay.style.display = "none";
+            }
             document.getElementById("topUsername").innerText = savedUser;
             document.getElementById("sidebarUsername").innerText = savedUser;
             document.getElementById("topRole").innerText = savedRole || "ADMIN";
             document.getElementById("sidebarRole").innerText = savedRole || "ADMIN";
             startRefresh();
             loadAllData();
-        } else {
-            document.getElementById("loginOverlay").classList.remove("hidden");
+        } else if (loginOverlay) {
+            loginOverlay.style.display = "flex";
+            loginOverlay.classList.remove("hidden");
         }
         
         if (serverClockTimer) clearInterval(serverClockTimer);
@@ -2196,6 +2224,7 @@
             }
         });
     }
+
 
     init();
 </script>

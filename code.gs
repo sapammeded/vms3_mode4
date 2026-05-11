@@ -11,6 +11,11 @@ const MAX_FUTURE_SKEW = 1000 * 60 * 10;
 const GAS_SIGNATURE_SECRET_PROPERTY = 'VMS_GAS_HMAC_SECRET';
 const SIGNATURE_MIGRATION_MODE_PROPERTY = 'VMS_SIGNATURE_MIGRATION_MODE';
 const LOG_SHEET_PREFIX = 'VMS_LOG_';
+const SHEET_STATUS_COLUMN = 12;
+const SHEET_VERSION_COLUMN = 13;
+const SHEET_MUTATION_SOURCE_COLUMN = 15;
+const SHEET_REQUEST_FINGERPRINT_COLUMN = 16;
+const SHEET_ACTIVITY_LOG_COLUMN = 17;
 
 function getEventTimestamp() {
   return new Date().getTime();
@@ -209,9 +214,21 @@ function verifyRequestSignature_(body) {
   return { ok: ok, migration: false, reason: ok ? 'OK' : 'INVALID_SIGNATURE' };
 }
 
+function parseEventTimestamp_(value, fallback) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Number(fallback || getEventTimestamp());
+}
+
 function normalizeMutation_(log, index) {
   const now = getEventTimestamp();
-  const eventTs = Number(log.eventTs || log.time || log.updatedAt || now);
+  const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, now);
   const prevVersion = Number(log.prevVersion || log.previousVersion || 0);
   const version = Math.max(1, Number(log.version || (prevVersion + 1)));
   return Object.assign({}, log, {
@@ -277,9 +294,55 @@ function pick_(obj, keys, fallback) {
   return fallback;
 }
 
+function getActivityActionLabel_(action) {
+  const normalized = normalizeAction(action);
+  if (normalized === ACTION_TYPES.CHECK_IN) return 'IN';
+  if (normalized === ACTION_TYPES.CHECK_OUT) return 'OUT';
+  if (normalized === ACTION_TYPES.WALK_IN) return 'WALK_IN';
+  return normalized;
+}
+
+function getActivityEntry_(log) {
+  const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
+  const hhmm = Utilities.formatDate(new Date(eventTs), SHEET_TIMEZONE, 'HH:mm');
+  return '[' + hhmm + ' ' + getActivityActionLabel_(log.action) + ']';
+}
+
+function getDailyKey_(log) {
+  const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
+  return Utilities.formatDate(new Date(eventTs), SHEET_TIMEZONE, 'yyyy-MM-dd');
+}
+
+function findDailyRowByReg_(sheet, reg) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return 0;
+  const target = String(reg || '').trim();
+  if (!target) return 0;
+  const values = sheet.getRange(1, 1, lastRow, 1).getValues();
+  for (var i = 0; i < values.length; i++) {
+    if (String(values[i][0] || '').trim() === target) return i + 1;
+  }
+  return 0;
+}
+
+function appendActivityToExistingRow_(sheet, rowNumber, log) {
+  const action = normalizeAction(log.action);
+  const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
+  const existingActivity = String(sheet.getRange(rowNumber, SHEET_ACTIVITY_LOG_COLUMN).getValue() || '').trim();
+  const nextActivity = (existingActivity ? existingActivity + ' ' : '') + getActivityEntry_(log);
+  sheet.getRange(rowNumber, 4).setValue(action);
+  sheet.getRange(rowNumber, 5).setValue(formatWIB(eventTs));
+  sheet.getRange(rowNumber, SHEET_STATUS_COLUMN).setValue(pick_(log, ['status', 'currentStatus'], action));
+  sheet.getRange(rowNumber, SHEET_VERSION_COLUMN).setValue(pick_(log, ['version'], 1));
+  sheet.getRange(rowNumber, MUTATION_ID_COLUMN).setValue(pick_(log, ['mutationId'], ''));
+  sheet.getRange(rowNumber, SHEET_MUTATION_SOURCE_COLUMN).setValue(pick_(log, ['mutationSource'], ''));
+  sheet.getRange(rowNumber, SHEET_REQUEST_FINGERPRINT_COLUMN).setValue(pick_(log, ['requestFingerprint'], ''));
+  sheet.getRange(rowNumber, SHEET_ACTIVITY_LOG_COLUMN).setValue(nextActivity);
+}
+
 function buildRow_(log) {
   const action = normalizeAction(pick_(log, ['action', 'Action'], ''));
-  const eventTs = Number(log.eventTs || log.time || log.updatedAt || getEventTimestamp());
+  const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
   return [
     pick_(log, ['reg', 'REG', 'Reg'], ''),
     pick_(log, ['nama', 'name', 'Nama'], ''),
@@ -296,7 +359,8 @@ function buildRow_(log) {
     pick_(log, ['version'], 1),
     pick_(log, ['mutationId'], ''),
     pick_(log, ['mutationSource'], ''),
-    pick_(log, ['requestFingerprint'], '')
+    pick_(log, ['requestFingerprint'], ''),
+    getActivityEntry_(Object.assign({}, log, { action: action, eventTs: eventTs }))
   ];
 }
 
@@ -310,61 +374,86 @@ function appendRowsIdempotent_(logs) {
     const stateSheet = getOrCreateStateSheet_();
     const stateMap = loadEntityStateMap_(stateSheet);
     const seen = getCachedProcessedSet_(legacySheet, ledgerSheet);
-    const rows = [];
     const ledgerLogs = [];
     const mutationIds = [];
     const skippedMutationIds = [];
     const staleMutationIds = [];
     const versionRejectedMutationIds = [];
     const requestFingerprints = [];
+    const dailyRowCache = {};
+    let rowsAppended = 0;
+    let rowsUpdated = 0;
 
     logs.forEach(function(inputLog, index) {
-      const log = normalizeMutation_(inputLog, index);
-      const mutationId = String(log.mutationId || '').trim();
-      if (!mutationId) return;
-      const replay = validateReplayWindow_(log);
-      if (!replay.ok) {
-        staleMutationIds.push(mutationId);
-        structuredLog_('STALE_EVENT_SKIPPED', { mutationId: mutationId, mutationSource: log.mutationSource, eventTs: log.eventTs });
-        return;
-      }
-      if (seen.has(mutationId) || hasLedgerMutation_(ledgerSheet, mutationId)) {
-        skippedMutationIds.push(mutationId);
+      try {
+        const log = normalizeMutation_(inputLog, index);
+        const mutationId = String(log.mutationId || '').trim();
+        if (!mutationId) {
+          structuredLog_('MUTATION_MAPPING_SKIPPED', { mutationId: '', mutationSource: 'gas', reason: 'mutationId_missing', index: index });
+          return;
+        }
+        const replay = validateReplayWindow_(log);
+        if (!replay.ok) {
+          staleMutationIds.push(mutationId);
+          structuredLog_('STALE_EVENT_SKIPPED', { mutationId: mutationId, mutationSource: log.mutationSource, eventTs: log.eventTs });
+          return;
+        }
+        if (seen.has(mutationId) || hasLedgerMutation_(ledgerSheet, mutationId)) {
+          skippedMutationIds.push(mutationId);
+          requestFingerprints.push(log.requestFingerprint || '');
+          seen.add(mutationId);
+          structuredLog_('DUPLICATE_MUTATION_SKIPPED', { mutationId: mutationId, mutationSource: log.mutationSource });
+          return;
+        }
+        const versionCheck = validateEntityVersion_(log, stateMap);
+        if (!versionCheck.ok) {
+          versionRejectedMutationIds.push(mutationId);
+          structuredLog_('VERSION_CONFLICT_REJECTED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: log.reg, version: log.version });
+          return;
+        }
+        if (versionCheck.replay) {
+          skippedMutationIds.push(mutationId);
+          requestFingerprints.push(log.requestFingerprint || '');
+          seen.add(mutationId);
+          structuredLog_('VERSION_REPLAY_ACCEPTED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: log.reg, version: log.version });
+          return;
+        }
+
+        const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
+        const appendSheet = getDailyLogSheet_(eventTs);
+        const reg = String(log.reg || '').trim();
+        const dailyKey = getDailyKey_(log) + '|' + reg;
+        let rowNumber = dailyRowCache[dailyKey] || findDailyRowByReg_(appendSheet, reg);
+
+        if (rowNumber) {
+          appendActivityToExistingRow_(appendSheet, rowNumber, log);
+          rowsUpdated++;
+          structuredLog_('DAILY_ACTIVITY_UPDATED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: reg, row: rowNumber, day: getDailyKey_(log), activity: getActivityEntry_(log) });
+        } else {
+          const row = buildRow_(log);
+          rowNumber = appendSheet.getLastRow() + 1;
+          appendSheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+          dailyRowCache[dailyKey] = rowNumber;
+          rowsAppended++;
+          structuredLog_('DAILY_ACTIVITY_ROW_CREATED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: reg, row: rowNumber, day: getDailyKey_(log), activity: getActivityEntry_(log) });
+        }
+
+        ledgerLogs.push(log);
+        mutationIds.push(mutationId);
         requestFingerprints.push(log.requestFingerprint || '');
         seen.add(mutationId);
-        structuredLog_('DUPLICATE_MUTATION_SKIPPED', { mutationId: mutationId, mutationSource: log.mutationSource });
-        return;
+        structuredLog_(String(log.action).replace(/[^A-Z_]/g, '') + '_APPENDED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: log.reg });
+      } catch (rowErr) {
+        structuredLog_('MUTATION_MAPPING_ERROR', { mutationId: inputLog && inputLog.mutationId || '', mutationSource: inputLog && (inputLog.mutationSource || inputLog.deviceId) || 'gas', index: index, reason: rowErr && rowErr.message || String(rowErr) });
       }
-      const versionCheck = validateEntityVersion_(log, stateMap);
-      if (!versionCheck.ok) {
-        versionRejectedMutationIds.push(mutationId);
-        structuredLog_('VERSION_CONFLICT_REJECTED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: log.reg, version: log.version });
-        return;
-      }
-      if (versionCheck.replay) {
-        skippedMutationIds.push(mutationId);
-        requestFingerprints.push(log.requestFingerprint || '');
-        seen.add(mutationId);
-        structuredLog_('VERSION_REPLAY_ACCEPTED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: log.reg, version: log.version });
-        return;
-      }
-      rows.push(buildRow_(log));
-      ledgerLogs.push(log);
-      mutationIds.push(mutationId);
-      requestFingerprints.push(log.requestFingerprint || '');
-      seen.add(mutationId);
-      structuredLog_(String(log.action).replace(/[^A-Z_]/g, '') + '_APPENDED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: log.reg });
     });
 
-    if (rows.length) {
-      const appendEventTs = ledgerLogs.reduce(function(max, log) { return Math.max(max, Number(log.eventTs || 0)); }, 0);
-      const appendSheet = getDailyLogSheet_(appendEventTs);
-      appendSheet.getRange(appendSheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    if (ledgerLogs.length) {
       appendLedgerEntries_(ledgerSheet, ledgerLogs);
       updateEntityState_(stateSheet, stateMap, ledgerLogs);
     }
     saveProcessedIds_(Array.from(seen));
-    return { rowsAppended: rows.length, mutationIds: mutationIds, skippedMutationIds: skippedMutationIds, staleMutationIds: staleMutationIds, staleCount: staleMutationIds.length, versionRejectedMutationIds: versionRejectedMutationIds, versionRejectedCount: versionRejectedMutationIds.length, requestFingerprints: requestFingerprints };
+    return { rowsAppended: rowsAppended, rowsUpdated: rowsUpdated, mutationIds: mutationIds, skippedMutationIds: skippedMutationIds, staleMutationIds: staleMutationIds, staleCount: staleMutationIds.length, versionRejectedMutationIds: versionRejectedMutationIds, versionRejectedCount: versionRejectedMutationIds.length, requestFingerprints: requestFingerprints };
   } finally {
     structuredLog_('LOCK_RELEASED', { mutationId: '', mutationSource: 'gas', lock: 'sheet_append' });
     lock.releaseLock();
@@ -381,12 +470,22 @@ function doPost(e) {
     }
     const logs = Array.isArray(body.logs) ? body.logs : [];
     const visitorLogs = body && body.visitors && typeof body.visitors === 'object' ? buildVisitorSnapshotLogs_(body.visitors) : [];
-    const normalized = logs.concat(visitorLogs)
-      .map(function(log, index) { return normalizeMutation_(Object.assign({}, log, { action: normalizeAction(log && log.action) }), index); })
-      .filter(function(log) { return log.reg && log.mutationId && (log.action === ACTION_TYPES.CHECK_IN || log.action === ACTION_TYPES.CHECK_OUT || log.action === ACTION_TYPES.REGISTER || log.action === ACTION_TYPES.WALK_IN); });
+    const normalized = [];
+    logs.concat(visitorLogs).forEach(function(log, index) {
+      try {
+        const mapped = normalizeMutation_(Object.assign({}, log, { action: normalizeAction(log && log.action) }), index);
+        if (mapped.reg && mapped.mutationId && (mapped.action === ACTION_TYPES.CHECK_IN || mapped.action === ACTION_TYPES.CHECK_OUT || mapped.action === ACTION_TYPES.REGISTER || mapped.action === ACTION_TYPES.WALK_IN)) {
+          normalized.push(mapped);
+        } else {
+          structuredLog_('GAS_LOG_MAPPING_SKIPPED', { mutationId: mapped.mutationId || '', mutationSource: mapped.mutationSource || 'gas', reg: mapped.reg || '', action: mapped.action || '', index: index });
+        }
+      } catch (mapErr) {
+        structuredLog_('GAS_LOG_MAPPING_ERROR', { mutationId: log && log.mutationId || '', mutationSource: log && (log.mutationSource || log.deviceId) || 'gas', index: index, reason: mapErr && mapErr.message || String(mapErr) });
+      }
+    });
     const result = appendRowsIdempotent_(normalized);
     const ackIds = result.mutationIds.concat(result.skippedMutationIds);
-    return jsonResponse_({ ok: true, ack: true, rowsAppended: result.rowsAppended, mutationIds: result.mutationIds, skippedMutationIds: result.skippedMutationIds, staleMutationIds: result.staleMutationIds || [], staleCount: result.staleCount || 0, versionRejectedMutationIds: result.versionRejectedMutationIds || [], versionRejectedCount: result.versionRejectedCount || 0, ackMutationIds: ackIds, requestFingerprints: result.requestFingerprints || [], ackCount: ackIds.length, updatedAt: getWIBISO() });
+    return jsonResponse_({ ok: true, ack: true, rowsAppended: result.rowsAppended, rowsUpdated: result.rowsUpdated || 0, mutationIds: result.mutationIds, skippedMutationIds: result.skippedMutationIds, staleMutationIds: result.staleMutationIds || [], staleCount: result.staleCount || 0, versionRejectedMutationIds: result.versionRejectedMutationIds || [], versionRejectedCount: result.versionRejectedCount || 0, ackMutationIds: ackIds, requestFingerprints: result.requestFingerprints || [], ackCount: ackIds.length, updatedAt: getWIBISO() });
   } catch (err) {
     console.error(JSON.stringify({ type: 'GAS_APPEND_FAIL', reason: err && err.message || String(err), updatedAt: getWIBISO() }));
     return jsonResponse_({ ok: false, ack: false, mutationIds: [], skippedMutationIds: [], staleMutationIds: [], staleCount: 0, versionRejectedMutationIds: [], versionRejectedCount: 0, ackMutationIds: [], error: err && err.message || String(err), updatedAt: getWIBISO() });

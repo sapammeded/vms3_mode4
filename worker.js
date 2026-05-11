@@ -23,6 +23,53 @@ const VISITOR_MANIFEST_TTL_MS = 30 * 86400000;
 const REPLAY_PROCESSED_TTL_MS = 36 * 3600000;
 const REPLAY_FAILED_TTL_MS = 2 * 86400000;
 const REPLAY_DEAD_LETTER_TTL_MS = 14 * 86400000;
+const ACTION_TYPES = Object.freeze({ CHECK_IN: 'CHECK_IN', CHECK_OUT: 'CHECK_OUT', REGISTER: 'REGISTER', WALK_IN: 'WALK_IN' });
+const WIB_TIMEZONE = 'Asia/Jakarta';
+
+function getEventTimestamp(){ return Date.now(); }
+// Backward-compatible alias only. Epoch timestamps are UTC/universal; WIB is applied only when formatting.
+function getWIBTimestamp(){ return getEventTimestamp(); }
+function getWIBISO(input = getEventTimestamp()) {
+    const d = input instanceof Date ? input : new Date(input);
+    const parts = new Intl.DateTimeFormat('sv-SE', { timeZone: WIB_TIMEZONE, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).formatToParts(d)
+        .reduce((acc, part) => { if (part.type !== 'literal') acc[part.type] = part.value; return acc; }, {});
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+07:00`;
+}
+function formatWIB(input = getEventTimestamp()) {
+    return new Intl.DateTimeFormat('id-ID', { timeZone: WIB_TIMEZONE, dateStyle:'medium', timeStyle:'medium' }).format(input instanceof Date ? input : new Date(input));
+}
+function normalizeAction(action) {
+    const raw = String(action || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+    if (['IN', 'CHECKIN', 'CHECK_IN'].includes(raw)) return ACTION_TYPES.CHECK_IN;
+    if (['OUT', 'CHECKOUT', 'CHECK_OUT'].includes(raw)) return ACTION_TYPES.CHECK_OUT;
+    if (['WALK_IN', 'WALKIN', 'WALK_IN_CEPAT'].includes(raw)) return ACTION_TYPES.WALK_IN;
+    if (['REGISTER', 'REGISTRATION'].includes(raw)) return ACTION_TYPES.REGISTER;
+    console.log(JSON.stringify({ type:'INVALID_ACTION', raw: action, normalized: raw || 'UNKNOWN', updatedAt: getWIBISO() }));
+    return raw || 'UNKNOWN';
+}
+function isSheetAppendAction(action) {
+    const normalized = normalizeAction(action);
+    return normalized === ACTION_TYPES.CHECK_IN ||
+           normalized === ACTION_TYPES.CHECK_OUT ||
+           normalized === ACTION_TYPES.REGISTER ||
+           normalized === ACTION_TYPES.WALK_IN;
+}
+
+function stampWorkerMutation(entity, mutationSource = getWorkerOriginNode()) {
+    const mutationId = entity?.mutationId || crypto.randomUUID();
+    const eventTs = Number(entity?.eventTs || entity?.time || entity?.updatedAt || getEventTimestamp());
+    return {
+        ...entity,
+        action: entity?.action ? normalizeAction(entity.action) : entity?.action,
+        eventTs,
+        time: typeof entity?.time === 'number' ? entity.time : eventTs,
+        version: Math.max(1, Number(entity?.version || 0)),
+        updatedAt: Number(entity?.updatedAt || eventTs),
+        updatedAtWIB: entity?.updatedAtWIB || getWIBISO(entity?.updatedAt || eventTs),
+        mutationId,
+        mutationSource: entity?.mutationSource || mutationSource
+    };
+}
 
 // ==================== MAIN HANDLER ====================
 export default {
@@ -343,32 +390,54 @@ export default {
             if (path === '/sheet-append' && request.method === 'POST') {
                 const body = await request.json();
                 const rows = Array.isArray(body.logs) ? body.logs : [];
-                console.log(JSON.stringify({ type:"SHEET_APPEND_ACTION_DEBUG", rows: rows.map(log => ({ reg: log?.reg || '', action: log?.action || '' })).slice(0, 10), updatedAt: Date.now() }));
+                console.log(JSON.stringify({ type:"SHEET_APPEND_ACTION_DEBUG", rows: rows.map(log => ({ reg: log?.reg || '', action: log?.action || '', normalizedAction: normalizeAction(log?.action) })).slice(0, 10), updatedAt: getWIBISO() }));
+                const invalidRows = [];
                 const gasLogs = rows
-                    .filter(log => log && log.reg && (log.action === 'CHECK_IN' || log.action === 'CHECK_OUT'))
-                    .map(log => ({
-                        reg: sanitizeText(log.reg, 80),
-                        nama: sanitizeText(log.nama || log.name || '', 160),
-                        perusahaan: sanitizeText(log.perusahaan || log.company || '', 160),
-                        action: sanitizeText(log.action, 40),
-                        logTime: log.logTime || log.time || Date.now(),
-                        site: sanitizeText(log.site || '', 80),
-                        deviceId: sanitizeText(log.deviceId || '', 120),
-                        kategori: sanitizeText(log.kategori || log.category || '', 80),
-                        pic: sanitizeText(log.pic || '', 120),
-                        start: sanitizeText(log.start || log.startDate || '', 80),
-                        exp: sanitizeText(log.exp || log.expDate || '', 80),
-                        status: sanitizeText(log.status || log.action || '', 80)
-                    }));
-                const ok = await appendLogsToSheet(gasLogs);
-                return new Response(JSON.stringify({ ok, rowsAppended: ok ? gasLogs.length : 0 }), { headers: corsHeaders });
+                    .map(log => ({ raw: log, action: normalizeAction(log?.action) }))
+                    .filter(({ raw, action }) => {
+                        const valid = raw && raw.reg && isSheetAppendAction(action);
+                        if(!valid) invalidRows.push({ reg: raw?.reg || '', action: raw?.action || '', normalizedAction: action });
+                        return valid;
+                    })
+                    .map(({ raw, action }) => stampWorkerMutation({
+                        reg: sanitizeText(raw.reg, 80),
+                        nama: sanitizeText(raw.nama || raw.name || '', 160),
+                        perusahaan: sanitizeText(raw.perusahaan || raw.company || '', 160),
+                        action,
+                        eventTs: Number(raw.eventTs || raw.time || raw.updatedAt || getEventTimestamp()),
+                        logTime: raw.logTime || getWIBISO(raw.eventTs || raw.time || raw.updatedAt || getEventTimestamp()),
+                        site: sanitizeText(raw.site || '', 80),
+                        deviceId: sanitizeText(raw.deviceId || '', 120),
+                        kategori: sanitizeText(raw.kategori || raw.category || '', 80),
+                        pic: sanitizeText(raw.pic || '', 120),
+                        start: sanitizeText(raw.start || raw.startDate || '', 80),
+                        exp: sanitizeText(raw.exp || raw.expDate || '', 80),
+                        status: action,
+                        version: Number(raw.version || 1),
+                        updatedAt: Number(raw.updatedAt || raw.eventTs || raw.time || getEventTimestamp()),
+                        updatedAtWIB: raw.updatedAtWIB || getWIBISO(raw.updatedAt || raw.eventTs || raw.time || getEventTimestamp()),
+                        mutationId: sanitizeText(raw.mutationId || body.mutationId || crypto.randomUUID(), 120),
+                        mutationSource: sanitizeText(raw.mutationSource || raw.deviceId || getWorkerOriginNode(), 160),
+                        requestFingerprint: sanitizeText(raw.requestFingerprint || body.requestFingerprint || `${raw.mutationId || body.mutationId || ''}|${raw.reg}|${raw.deviceId || ''}|${raw.eventTs || raw.time || raw.updatedAt || ''}`, 240),
+                        syncStatus: 'PENDING_SYNC'
+                    }, getWorkerOriginNode()));
+                if(invalidRows.length) console.log(JSON.stringify({ type:"SHEET_APPEND_INVALID_ACTION", invalidRows, updatedAt:getWIBISO() }));
+                const appendAck = gasLogs.length ? await appendLogsToSheetWithAck(gasLogs, env) : { ok:false, ack:false, mutationIds:[], skippedMutationIds:[], rowsAppended:0 };
+                if(!appendAck.ok && gasLogs.length){
+                    const pendingQueue = await getData(env, 'pending_gas_queue');
+                    await saveData(env, 'pending_gas_queue', mergeGasQueueUnique(pendingQueue, gasLogs).slice(-getPendingQueueLimit('PRO')));
+                }
+                return new Response(JSON.stringify({ ...appendAck, syncStatus: appendAck.ok ? 'SYNCED' : 'PENDING_SYNC', invalidRows: invalidRows.length }), { headers: corsHeaders, status: appendAck.ok || !gasLogs.length ? 200 : 202 });
             }
 
             // ==================== CHECK-IN / CHECK-OUT MODULE ====================
             if (path === '/checkin' && request.method === 'POST') {
                 const body = await request.json();
                 const { licenseKey, deviceId, action, location } = body;
-                const normalizedAction = (action === 'OUT' ? 'OUT' : 'IN');
+                const normalizedAction = normalizeAction(action || ACTION_TYPES.CHECK_IN);
+                if (normalizedAction !== ACTION_TYPES.CHECK_IN && normalizedAction !== ACTION_TYPES.CHECK_OUT) {
+                    return new Response(JSON.stringify({ ok: false, message: 'Invalid action', action, normalizedAction }), { headers: corsHeaders, status: 400 });
+                }
                 
                 const companies = await getData(env, 'companies');
                 const company = companies.find(c => c.licenseKey === licenseKey);
@@ -392,13 +461,14 @@ export default {
                     companyName: sanitizeText(company.companyName, 120),
                     action: normalizedAction,
                     location: location || null,
-                    timestamp: Date.now(),
-                    type: normalizedAction === 'IN' ? 'CHECK_IN' : 'CHECK_OUT'
+                    timestamp: getEventTimestamp(),
+                    timestampWIB: getWIBISO(),
+                    type: normalizedAction
                 };
                 activities.unshift(activity);
                 await saveData(env, 'activities', activities.slice(0, 5000));
                 
-                device.lastSeen = Date.now();
+                device.lastSeen = getEventTimestamp();
                 await saveData(env, 'devices', devices);
                 
                 return new Response(JSON.stringify({ ok: true, activity: activity }), { headers: corsHeaders });
@@ -1142,19 +1212,25 @@ export default {
                     const incomingLimit = Math.min(logs.length, maxIncomingLogs);
                     for (let i = 0; i < incomingLimit; i++) {
                         const l = logs[i];
-                        if (!l || !l.reg || !l.action || !(l.time || l.logTime)) continue;
-                        const logTime = l.time || l.logTime;
-                        const normalizedTime = typeof logTime === "string" ? logTime : new Date(logTime).toISOString();
-                        normalizedLogs.push(sanitizeLogEntity({
+                        const action = normalizeAction(l?.action);
+                        if (!l || !l.reg || !action || !(l.time || l.logTime)) continue;
+                        if (action !== ACTION_TYPES.CHECK_IN && action !== ACTION_TYPES.CHECK_OUT && action !== ACTION_TYPES.REGISTER && action !== ACTION_TYPES.WALK_IN) {
+                            console.log(JSON.stringify({ type:"INVALID_ACTION", raw:l.action, normalizedAction:action, reg:l.reg, updatedAt:getWIBISO() }));
+                            continue;
+                        }
+                        const eventTs = Number(l.eventTs || (typeof l.time === "number" ? l.time : 0) || l.updatedAt || Date.parse(l.time || l.logTime || 0) || getEventTimestamp());
+                        normalizedLogs.push(sanitizeLogEntity(stampWorkerMutation({
                             ...l,
-                            time: normalizedTime,
-                            logTime: normalizedTime,
-                            sequenceId: l.sequenceId || null,
+                            action,
+                            eventTs,
+                            time: eventTs,
+                            logTime: l.logTime || getWIBISO(eventTs),
+                            sequenceId: l.sequenceId || l.mutationId || null,
                             licenseKey,
                             companyId: company.id,
                             companyName: sanitizeText(company.companyName, 120),
-                            mutationId
-                        }));
+                            mutationId: l.mutationId || mutationId
+                        }, l.mutationSource || body.deviceId || getWorkerOriginNode())));
                     }
                     if (logs.length > maxIncomingLogs) {
                         console.log(JSON.stringify({ type:"LOG_BATCH_TRUNCATED", licenseKey, received: logs.length, processed: maxIncomingLogs, updatedAt: Date.now() }));
@@ -1228,8 +1304,9 @@ export default {
                                 gasReplayId: generateGasReplayId(log)
                             });
                         }
-                        const gasOk = await appendLogsToSheet(gasLogs);
+                        const gasOk = await appendLogsToSheet(gasLogs, env);
                         if (!gasOk) {
+                            console.log(JSON.stringify({ type:"GAS_ACTIVITY_APPEND_FAILED", count:gasLogs.length, updatedAt:getWIBISO() }));
                             const pendingQueue = await getData(env, 'pending_gas_queue');
                             const mergedQueue = mergeGasQueueUnique(pendingQueue, gasLogs);
                             const queueLimit = getPendingQueueLimit(company.package);
@@ -1256,6 +1333,18 @@ export default {
                 }
 
                 if(visitors && Object.keys(acceptedVisitors).length > 0){
+                    const visitorEvents = buildVisitorSheetEventsFromAcceptedVisitors(acceptedVisitors, licenseKey, body, company);
+                    if(visitorEvents.length){
+                        console.log(JSON.stringify({ type:"CENTRAL_VISITOR_ACCEPTED", count:visitorEvents.length, mutationIds:visitorEvents.map(v => v.mutationId).slice(0, 20), updatedAt:getWIBISO() }));
+                        const visitorAppendAck = await appendLogsToSheetWithAck(visitorEvents, env);
+                        if(!visitorAppendAck.ok){
+                            console.log(JSON.stringify({ type:"GAS_REGISTER_APPEND_FAILED", count:visitorEvents.length, reason:visitorAppendAck.error || "ack_failed", updatedAt:getWIBISO() }));
+                            const pendingQueue = await getData(env, 'pending_gas_queue');
+                            const mergedQueue = mergeGasQueueUnique(pendingQueue, visitorEvents.map(log => ({ ...log, gasReplayId: generateGasReplayId(log) })));
+                            const queueLimit = getPendingQueueLimit(company.package);
+                            await saveDataOrThrow(env, 'pending_gas_queue', mergedQueue.slice(-queueLimit));
+                        }
+                    }
                     await appendVisitorsToSheet(env, licenseKey, acceptedVisitors);
                 }
                 
@@ -1402,7 +1491,8 @@ export default {
                 processingQueue = mergeGasQueueUnique(processingQueue, batch);
                 await saveData(env, 'pending_gas_queue', remainingPending.slice(-queueLimit));
                 await saveData(env, 'processing_gas_queue', processingQueue.slice(-queueLimit));
-                const gasOk = await pushLogsToGoogleScript(batch);
+                const gasOk = await pushLogsToGoogleScript(batch, { hmacSecret: env.VMS_GAS_HMAC_SECRET || env.GAS_HMAC_SECRET || "" });
+                console.log(JSON.stringify({ type: gasOk ? "PENDING_GAS_REPLAY_SENT" : "PENDING_GAS_REPLAY_FAILED", registerCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.REGISTER || normalizeAction(log.action) === ACTION_TYPES.WALK_IN).length, activityCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.CHECK_IN || normalizeAction(log.action) === ACTION_TYPES.CHECK_OUT).length, updatedAt:getWIBISO() }));
                 if (!gasOk) {
                     processingQueue = await getData(env, 'processing_gas_queue');
                     const retryQueue = mergeGasQueueUnique(remainingPending, processingQueue);
@@ -2858,9 +2948,72 @@ function pruneMutationLocks() {
     }
 }
 
-async function appendLogsToSheet(logs) {
-    if(!Array.isArray(logs) || logs.length === 0) return true;
-    return pushLogsToGoogleScript(clonePayloadSafe(logs));
+function normalizeSheetLogsForAppend(logs) {
+    if(!Array.isArray(logs) || logs.length === 0) return [];
+    return logs.map(log => {
+        const eventTs = Number(log?.eventTs || (typeof log?.time === 'number' ? log.time : 0) || log?.updatedAt || Date.parse(log?.time || log?.logTime || 0) || getEventTimestamp());
+        return stampWorkerMutation({ ...log, eventTs, time: eventTs, action: normalizeAction(log.action), logTime: log.logTime || getWIBISO(eventTs), syncStatus: log.syncStatus || 'PENDING_SYNC' }, log.mutationSource || log.deviceId || getWorkerOriginNode());
+    }).filter(log => isSheetAppendAction(log.action) && log.mutationId);
+}
+
+async function appendLogsToSheetWithAck(logs, env = null) {
+    const normalizedLogs = normalizeSheetLogsForAppend(logs);
+    if (!normalizedLogs.length) return { ok:true, ack:true, rowsAppended:0, mutationIds:[], skippedMutationIds:[], ackMutationIds:[] };
+    const result = await pushLogsToGoogleScript(clonePayloadSafe(normalizedLogs), { detailed:true, hmacSecret: env?.VMS_GAS_HMAC_SECRET || env?.GAS_HMAC_SECRET || '' });
+    const expectedIds = normalizedLogs.map(log => String(log.mutationId)).filter(Boolean);
+    const expectedFingerprints = normalizedLogs.map(log => String(log.requestFingerprint || '')).filter(Boolean);
+    const ackIds = new Set([...(result.mutationIds || []), ...(result.skippedMutationIds || []), ...(result.ackMutationIds || [])].map(String));
+    const ackFingerprints = new Set([...(result.requestFingerprints || []), ...(result.ackFingerprints || [])].map(String));
+    const exactAck = expectedIds.every(id => ackIds.has(id)) && Number(result.ackCount || ackIds.size) === expectedIds.length && expectedFingerprints.every(fp => ackFingerprints.has(fp));
+    if(!exactAck) console.log(JSON.stringify({ type:"GAS_ACK_MISMATCH", expectedIds, result, updatedAt:getWIBISO() }));
+    return { ...result, ok: !!(result.ok && result.ack && exactAck), exactAck, expectedMutationIds: expectedIds };
+}
+
+async function appendLogsToSheet(logs, env = null) {
+    const result = await appendLogsToSheetWithAck(logs, env);
+    return !!result.ok;
+}
+
+function buildVisitorSheetEventsFromAcceptedVisitors(acceptedVisitors, licenseKey, body = {}, company = {}) {
+    return Object.entries(acceptedVisitors || {}).map(([key, visitor]) => {
+        const keyParts = String(key || '').split('_');
+        const reg = sanitizeText(visitor?.reg || keyParts.slice(1).join('_') || '', 80);
+        const eventTs = Number(visitor?.eventTs || visitor?.updatedAt || getEventTimestamp());
+        const action = isSheetAppendAction(visitor?.sourceAction) ? normalizeAction(visitor.sourceAction) : (String(visitor?.nama || visitor?.name || '').toUpperCase().startsWith('WALK-IN') ? ACTION_TYPES.WALK_IN : ACTION_TYPES.REGISTER);
+        const mutationId = sanitizeText(visitor?.mutationId || visitor?.lastMutationId || `visitor_${reg}_${eventTs}`, 120);
+        return sanitizeLogEntity(stampWorkerMutation({
+            reg,
+            nama: sanitizeText(visitor?.nama || visitor?.name || '', 160),
+            name: sanitizeText(visitor?.name || visitor?.nama || '', 160),
+            perusahaan: sanitizeText(visitor?.perusahaan || visitor?.company || '', 160),
+            company: sanitizeText(visitor?.company || visitor?.perusahaan || '', 160),
+            tujuan: sanitizeText(visitor?.tujuan || visitor?.purpose || '', 200),
+            purpose: sanitizeText(visitor?.purpose || visitor?.tujuan || '', 200),
+            kategori: sanitizeText(visitor?.kategori || visitor?.category || 'UMUM', 80),
+            pic: sanitizeText(visitor?.pic || visitor?.PIC || '', 120),
+            start: sanitizeText(visitor?.start || visitor?.startDate || '', 80),
+            exp: sanitizeText(visitor?.exp || visitor?.expDate || '', 80),
+            status: sanitizeText(visitor?.currentStatus || visitor?.status || action, 80),
+            action,
+            eventTs,
+            time: eventTs,
+            logTime: visitor?.logTime || getWIBISO(eventTs),
+            site: sanitizeText(visitor?.site || keyParts[0] || body.site || 'SITE_A', 80),
+            deviceId: sanitizeText(visitor?.deviceId || body.deviceId || '', 120),
+            licenseKey,
+            companyId: company?.id || '',
+            companyName: sanitizeText(company?.companyName || '', 120),
+            version: Math.max(1, Number(visitor?.version || 1)),
+            updatedAt: Number(visitor?.updatedAt || eventTs),
+            updatedAtWIB: visitor?.updatedAtWIB || getWIBISO(visitor?.updatedAt || eventTs),
+            mutationId,
+            mutationSource: sanitizeText(visitor?.mutationSource || visitor?.deviceId || body.deviceId || getWorkerOriginNode(), 160),
+            requestFingerprint: sanitizeText(visitor?.requestFingerprint || [mutationId, reg, visitor?.deviceId || body.deviceId || '', eventTs].join('|'), 240),
+            sequenceId: visitor?.sequenceId || mutationId,
+            persistedAt: Number(visitor?.persistedAt || getEventTimestamp()),
+            syncStatus: 'PENDING_SYNC'
+        }, visitor?.mutationSource || body.deviceId || getWorkerOriginNode()));
+    }).filter(log => log.reg && isSheetAppendAction(log.action) && log.mutationId);
 }
 
 function visitorSnapshotFingerprint(visitor) {
@@ -2887,7 +3040,7 @@ async function appendVisitorsToSheet(env, licenseKey, visitors) {
         return true;
     }
 
-    const ok = await pushVisitorsToGoogleScript(clonePayloadSafe(changedVisitors));
+    const ok = await pushVisitorsToGoogleScript(clonePayloadSafe(changedVisitors), { hmacSecret: env?.VMS_GAS_HMAC_SECRET || env?.GAS_HMAC_SECRET || '' });
     if(ok) {
         // PRUNE STATE: Prevent KV Bloating
         const MAX_SNAPSHOT_STATE = 50000;
@@ -2900,7 +3053,7 @@ async function appendVisitorsToSheet(env, licenseKey, visitors) {
     return ok;
 }
 
-async function pushVisitorsToGoogleScript(visitors) {
+async function pushVisitorsToGoogleScript(visitors, options = {}) {
     const timeoutMs = 9000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -2912,10 +3065,17 @@ async function pushVisitorsToGoogleScript(visitors) {
             updatedAt: Date.now(),
             visitors
         };
+        const headers = { 'Content-Type': 'application/json' };
+        let requestBody = JSON.stringify(payload);
+        if (options.hmacSecret) {
+            const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
+            headers['x-vms-signature'] = signature;
+            requestBody = JSON.stringify({ ...payload, signature });
+        }
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+            headers,
+            body: requestBody,
             signal: controller.signal
         });
         const result = await res.json().catch(() => null);
@@ -2943,31 +3103,58 @@ async function pushVisitorsToGoogleScript(visitors) {
     }
 }
 
-async function pushLogsToGoogleScript(logs) {
+async function hmacSha256Hex(message, secret) {
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+    return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function pushLogsToGoogleScript(logs, options = {}) {
+    const detailed = !!options.detailed;
     const timeoutMs = 9000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const fail = (extra = {}) => detailed ? { ok:false, ack:false, rowsAppended:0, mutationIds:[], skippedMutationIds:[], ackMutationIds:[], ...extra } : false;
     try {
         const payload = {
             source: 'vms-worker',
             mode: 'append-only',
             version: PATCH_VERSION,
-            updatedAt: Date.now(),
-            logs
+            updatedAt: getEventTimestamp(),
+            updatedAtWIB: getWIBISO(),
+            logs: logs.map(log => {
+                const eventTs = Number(log.eventTs || (typeof log.time === 'number' ? log.time : 0) || log.updatedAt || Date.parse(log.time || log.logTime || 0) || getEventTimestamp());
+                return { ...log, eventTs, time:eventTs, action: normalizeAction(log.action), logTime: log.logTime || getWIBISO(eventTs), syncStatus: log.syncStatus || 'PENDING_SYNC' };
+            })
         };
+        const headers = { 'Content-Type': 'application/json' };
+        let requestBody = JSON.stringify(payload);
+        if (options.hmacSecret) {
+            const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
+            headers['x-vms-signature'] = signature;
+            requestBody = JSON.stringify({ ...payload, signature });
+        }
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+            headers,
+            body: requestBody,
             signal: controller.signal
         });
         const result = await res.json().catch(() => null);
-        if (!res.ok || result?.ok === false) {
+        if (!res.ok || result?.ok === false || result?.ack !== true) {
             globalThis.__vms_metrics.gasFail++;
             globalThis.__vms_metrics.lastGasFailAt = Date.now();
             console.error('[GAS] Append logical failure:', { status: res.status, result });
-            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", status: res.status, result, updatedAt: Date.now() }));
-            return false;
+            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", status: res.status, result, updatedAt: getEventTimestamp() }));
+            return fail({ status: res.status, result });
+        }
+        if(detailed) {
+            const mutationIds = Array.isArray(result.mutationIds) ? result.mutationIds : [];
+            const skippedMutationIds = Array.isArray(result.skippedMutationIds) ? result.skippedMutationIds : [];
+            const ackMutationIds = Array.isArray(result.ackMutationIds) ? result.ackMutationIds : mutationIds.concat(skippedMutationIds);
+            const requestFingerprints = Array.isArray(result.requestFingerprints) ? result.requestFingerprints : [];
+            const ackCount = Number(result.ackCount || ackMutationIds.length);
+            return { ok:true, ack:true, rowsAppended:Number(result.rowsAppended || 0), mutationIds, skippedMutationIds, ackMutationIds, requestFingerprints, ackCount };
         }
         return true;
     } catch (error) {
@@ -2975,12 +3162,12 @@ async function pushLogsToGoogleScript(logs) {
         globalThis.__vms_metrics.lastGasFailAt = Date.now();
         if (error?.name === 'AbortError') {
             console.error('[GAS] Append timed out after ms:', timeoutMs);
-            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", reason:"timeout", timeoutMs, updatedAt: Date.now() }));
-            return false;
+            console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", reason:"timeout", timeoutMs, updatedAt: getEventTimestamp() }));
+            return fail({ reason:'timeout' });
         }
         console.error('[GAS] Append request error:', error);
-        console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", reason:error?.message || "request_error", updatedAt: Date.now() }));
-        return false;
+        console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", reason:error?.message || "request_error", updatedAt: getEventTimestamp() }));
+        return fail({ reason:error?.message || 'request_error' });
     } finally {
         clearTimeout(timeoutId);
     }
@@ -3101,12 +3288,17 @@ function normalizeGasQueueEntries(queue) {
     const normalized = [];
     for (const item of queue) {
         if (!item || typeof item !== 'object') continue;
+        const action = normalizeAction(item.action);
+        if(!isSheetAppendAction(action)) {
+            console.log(JSON.stringify({ type:"PENDING_GAS_QUEUE_REJECT", action:item.action || '', normalizedAction:action, reg:item.reg || '', updatedAt:getWIBISO() }));
+            continue;
+        }
         const persistedAt = Number(item.persistedAt || Date.now());
         const updatedAt = Number(item.updatedAt || persistedAt);
         const version = Math.max(1, Number(item.version || 0));
-        const sequenceId = item.sequenceId || generateSequenceId(item.licenseKey || 'unknown', persistedAt);
-        const gasReplayId = item.gasReplayId || generateGasReplayId({ sequenceId });
-        normalized.push({ ...item, version, updatedAt, persistedAt, sequenceId, gasReplayId });
+        const sequenceId = item.sequenceId || item.mutationId || generateSequenceId(item.licenseKey || 'unknown', persistedAt);
+        const gasReplayId = item.gasReplayId || generateGasReplayId({ ...item, sequenceId });
+        normalized.push({ ...item, action, version, updatedAt, persistedAt, sequenceId, gasReplayId });
     }
     return dedupGasQueueByReplayId(normalized);
 }

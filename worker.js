@@ -2,7 +2,7 @@
 // Cloudflare Worker untuk VMS SAPAM MEDED
 // KV Namespace: VMS_STORAGE
 
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzCqfCikED6q_QR-SzUqNQ9FA40xBVc4DEVMFuxGilihA9C9FugUOPzWQJU2oO9n1y3jA/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxYkjSOy6JCuCf2yjGgWtubmA18E1J3MHB9Z1J_YCT59A5yvkneHAGJycHYsi9oN9WbWw/exec';
 const PATCH_VERSION = '1.0.17';
 const SYNC_ENGINE = 'V5-TITAN';
 const SYNC_STRATEGY = 'OCC';

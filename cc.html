@@ -1591,41 +1591,57 @@
         const maxDevices = document.getElementById("genMaxDevices").value;
         const address = document.getElementById("genAddress").value;
         const notes = document.getElementById("genNotes").value;
-        
+        const currentToken = token || localStorage.getItem("vms_admin_token") || "";
+
         if (!companyName || !pic || !phone || !email) {
             showToast("Please fill all required fields", "error");
             return;
         }
-        
+
         showToast("Generating license...", "info");
-        
-        const data = await apiCall("/generate-license", {
-            method: "POST",
-            body: JSON.stringify({
-                companyName, pic, phone, email, address,
-                package: pkg,
-                customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
-                notes
-            })
-        });
-        
-        if (data && data.ok) {
-            showToast(`License generated for ${companyName}`, "success");
-            
-            await navigator.clipboard.writeText(data.licenseKey);
-            showToast(`License key copied to clipboard: ${data.licenseKey}`, "success");
-            
-            document.getElementById("genCompanyName").value = "";
-            document.getElementById("genPic").value = "";
-            document.getElementById("genPhone").value = "";
-            document.getElementById("genEmail").value = "";
-            document.getElementById("genAddress").value = "";
-            document.getElementById("genNotes").value = "";
-            document.getElementById("genMaxDevices").value = "";
-            
-            loadCompanies();
-        } else {
-            showToast(data?.error || "Failed to generate license", "error");
+
+        try {
+            const res = await fetch(`${API_URL}/admin/generate-license`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + String(currentToken).trim(),
+                    "x-token": String(currentToken).trim()
+                },
+                credentials: "omit",
+                body: JSON.stringify({
+                    companyName,
+                    pic,
+                    phone,
+                    email,
+                    package: pkg,
+                    customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
+                    address,
+                    notes
+                })
+            });
+            const data = await res.json().catch(() => ({ ok: false, error: "Invalid server response" }));
+
+            if (data && data.ok) {
+                showToast("License Generated Successfully!", "success");
+
+                document.getElementById("genCompanyName").value = "";
+                document.getElementById("genPic").value = "";
+                document.getElementById("genPhone").value = "";
+                document.getElementById("genEmail").value = "";
+                document.getElementById("genPackage").value = "DEMO";
+                document.getElementById("genMaxDevices").value = "";
+                document.getElementById("genAddress").value = "";
+                document.getElementById("genNotes").value = "";
+
+                loadAllData();
+                switchTab('companies');
+            } else {
+                showToast(data?.error || "Failed to generate license", "error");
+            }
+        } catch (err) {
+            console.error("[GENERATE_LICENSE] Exception:", err);
+            showToast("Failed to generate license: " + err.message, "error");
         }
     }
 

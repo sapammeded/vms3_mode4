@@ -201,9 +201,9 @@ function hexHmacSha256_(message, secret) {
 function verifyRequestSignature_(body) {
   const props = PropertiesService.getScriptProperties();
   const secret = props.getProperty(GAS_SIGNATURE_SECRET_PROPERTY) || '';
-  const migrationMode = props.getProperty(SIGNATURE_MIGRATION_MODE_PROPERTY) !== 'false';
+  const migrationMode = props.getProperty(SIGNATURE_MIGRATION_MODE_PROPERTY) === 'true';
   const signature = String(body && (body.signature || body.vmsSignature || body.hmac || '') || '').trim().toLowerCase();
-  if (!secret) return { ok: true, migration: true, reason: 'SECRET_NOT_CONFIGURED' };
+  if (!secret) return { ok: migrationMode, migration: migrationMode, reason: 'SECRET_NOT_CONFIGURED' };
   if (!signature) return { ok: migrationMode, migration: migrationMode, reason: 'SIGNATURE_MISSING' };
   const copy = Object.assign({}, body);
   delete copy.signature;

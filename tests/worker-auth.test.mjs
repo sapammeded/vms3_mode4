@@ -85,7 +85,7 @@ class MemoryKV {
   }
 }
 
-test('pull returns license-wide visitors even when a device passes a site log filter and high since cursor', async () => {
+test('full visitor pull returns license-wide visitors with site log filter and high since cursor', async () => {
   const licenseKey = 'LIC-SHARED';
   const now = Date.now();
   const env = {
@@ -105,11 +105,36 @@ test('pull returns license-wide visitors even when a device passes a site log fi
     })
   };
 
-  const res = await worker.fetch(new Request(`https://example.test/pull?licenseKey=${licenseKey}&since=${now + 60000}&site=SITE_B`), env, {});
+  const res = await worker.fetch(new Request(`https://example.test/pull?licenseKey=${licenseKey}&since=${now + 60000}&site=SITE_B&fullVisitors=1`), env, {});
   assert.equal(res.status, 200);
   const body = await res.json();
 
   assert.equal(body.ok, true);
   assert.equal(body.visitors['SITE_A_REG-1'].nama, 'Visitor A');
   assert.equal(body.visitors['SITE_B_REG-2'].nama, 'Visitor B');
+});
+
+
+test('incremental visitor pull does not resend unchanged visitors with high since cursor', async () => {
+  const licenseKey = 'LIC-INCREMENTAL';
+  const now = Date.now();
+  const env = {
+    VMS_STORAGE: new MemoryKV({
+      admins: [{ username: 'admin', token: 'token', lastLogin: now }],
+      companies: [{ id: 'company-1', licenseKey, companyName: 'Shared Co', package: 'PRO', expiredAt: now + 86400000 }],
+      [`visitors_manifest_${licenseKey}`]: [
+        { key: `visitors_${licenseKey}_SITE_A_s00`, site: 'SITE_A', updatedAt: now }
+      ],
+      [`visitors_${licenseKey}_SITE_A_s00`]: {
+        'SITE_A_REG-1': { reg: 'REG-1', nama: 'Visitor A', site: 'SITE_A', licenseKey, updatedAt: now, version: 1 }
+      }
+    })
+  };
+
+  const res = await worker.fetch(new Request(`https://example.test/pull?licenseKey=${licenseKey}&since=${now + 60000}&site=SITE_B`), env, {});
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.visitors, {});
 });

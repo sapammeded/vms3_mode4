@@ -1082,11 +1082,19 @@
             const url = API_URL + endpoint;
             console.log(`[API_CALL] ${options.method || 'GET'} ${url}`);
             
-            const res = await fetch(url, {
-                ...options,
-                headers,
-                credentials: 'omit'
-            });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), Number(options.timeoutMs || 12000));
+            let res;
+            try {
+                res = await fetch(url, {
+                    ...options,
+                    headers,
+                    credentials: 'omit',
+                    signal: options.signal || controller.signal
+                });
+            } finally {
+                clearTimeout(timeoutId);
+            }
             
             console.log(`[API_CALL] Response status: ${res.status}`);
             
@@ -1115,7 +1123,7 @@
             
         } catch (e) {
             console.error(`[API_CALL] Network error for ${endpoint}:`, e);
-            showToast("Network error: " + e.message, "error");
+            showToast((e?.name === "AbortError" ? "Request timeout: " : "Network error: ") + e.message, "error");
             return null;
         }
     }

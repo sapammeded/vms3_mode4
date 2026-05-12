@@ -1411,11 +1411,14 @@ export default {
                     return json({ ok: false, message: 'Invalid licenseKey' }, 403);
                 }
                 // Pull visitor registrations at license scope so every approved device for the
-                // same company can scan badges registered by any other site/device. The `site`
-                // query parameter remains a log filter only; visitor filtering is opt-in via
-                // `visitorSite` for admin/debug use cases.
+                // same company can scan badges registered by any other site/device. Normal pulls
+                // remain incremental for network stability; explicit full visitor pulls are used
+                // only for startup/scan-miss recovery. The `site` query parameter remains a log
+                // filter only; visitor filtering is opt-in via `visitorSite` for admin/debug use.
                 const visitorSiteFilter = url.searchParams.get('visitorSite') || "";
-                const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, visitorSiteFilter, 0, MAX_PULL_VISITORS_DEFAULT);
+                const fullVisitorPull = ['1', 'true', 'yes'].includes(String(url.searchParams.get('fullVisitors') || '').toLowerCase());
+                const visitorSince = fullVisitorPull ? 0 : since;
+                const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, visitorSiteFilter, visitorSince, MAX_PULL_VISITORS_DEFAULT);
                 const visitors = {};
                 const MAX_PULL_VISITORS = MAX_PULL_VISITORS_DEFAULT;
                 let visitorCount = 0;
@@ -1423,6 +1426,7 @@ export default {
                     if (visitorCount >= MAX_PULL_VISITORS) return;
                     if (v?.licenseKey !== licenseKey) return;
                     if (visitorSiteFilter && !(key.startsWith(`${visitorSiteFilter}_`) || v?.site === visitorSiteFilter)) return;
+                    if (!fullVisitorPull && !(Number(v?.updatedAt || 0) >= visitorSince || Number(v?.lastSync || 0) >= visitorSince)) return;
                     const current = visitors[key];
                     if (shouldPreferEntity(current, v)) {
                         if (!current) visitorCount++;
@@ -3161,17 +3165,21 @@ function buildGoogleScriptPayload(mode, data = {}) {
 
 async function pushVisitorsToGoogleScript(visitors, options = {}) {
     const timeoutMs = 9000;
+    if (!options.hmacSecret) {
+        globalThis.__vms_metrics.gasFail++;
+        globalThis.__vms_metrics.lastGasFailAt = Date.now();
+        console.log(JSON.stringify({ type:"GAS_SIGNATURE_CONFIG_MISSING", mode:"visitor-snapshot", action:"blocked_unsigned_request", updatedAt: Date.now() }));
+        return false;
+    }
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
         const payload = buildGoogleScriptPayload('visitor-snapshot', { visitors });
         const headers = { 'Content-Type': 'application/json' };
         let requestBody = JSON.stringify(payload);
-        if (options.hmacSecret) {
-            const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
-            headers['x-vms-signature'] = signature;
-            requestBody = JSON.stringify({ ...payload, signature });
-        }
+        const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
+        headers['x-vms-signature'] = signature;
+        requestBody = JSON.stringify({ ...payload, signature });
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
             headers,
@@ -3212,18 +3220,22 @@ async function hmacSha256Hex(message, secret) {
 async function pushLogsToGoogleScript(logs, options = {}) {
     const detailed = !!options.detailed;
     const timeoutMs = 9000;
+    const fail = (extra = {}) => detailed ? { ok:false, ack:false, rowsAppended:0, mutationIds:[], skippedMutationIds:[], ackMutationIds:[], ...extra } : false;
+    if (!options.hmacSecret) {
+        globalThis.__vms_metrics.gasFail++;
+        globalThis.__vms_metrics.lastGasFailAt = Date.now();
+        console.log(JSON.stringify({ type:"GAS_SIGNATURE_CONFIG_MISSING", mode:"append-only", action:"blocked_unsigned_request", updatedAt: getEventTimestamp() }));
+        return fail({ error:"GAS_SIGNATURE_CONFIG_MISSING" });
+    }
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    const fail = (extra = {}) => detailed ? { ok:false, ack:false, rowsAppended:0, mutationIds:[], skippedMutationIds:[], ackMutationIds:[], ...extra } : false;
     try {
         const payload = buildGoogleScriptPayload('append-only', { logs });
         const headers = { 'Content-Type': 'application/json' };
         let requestBody = JSON.stringify(payload);
-        if (options.hmacSecret) {
-            const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
-            headers['x-vms-signature'] = signature;
-            requestBody = JSON.stringify({ ...payload, signature });
-        }
+        const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
+        headers['x-vms-signature'] = signature;
+        requestBody = JSON.stringify({ ...payload, signature });
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
             headers,

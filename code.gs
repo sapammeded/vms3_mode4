@@ -100,10 +100,11 @@ function getLedgerMutationCache_(ledgerSheet) {
 
 function getDailyLogSheet_(eventTs) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const day = Utilities.formatDate(new Date(eventTs || getEventTimestamp()), SHEET_TIMEZONE, 'yyyy_MM_dd');
-  const name = LOG_SHEET_PREFIX + day;
-  let sheet = ss.getSheetByName(name);
-  if (!sheet) sheet = ss.insertSheet(name);
+  const sheet = ss.getSheetByName('Log');
+  if (!sheet) {
+    structuredLog_('LOG_SHEET_NOT_FOUND', { mutationId: '', mutationSource: 'gas', sheetName: 'Log', eventTs: Number(eventTs || getEventTimestamp()) });
+    throw new Error('LOG_SHEET_NOT_FOUND:Log');
+  }
   return sheet;
 }
 
@@ -368,6 +369,38 @@ function pick_(obj, keys, fallback) {
   return fallback;
 }
 
+
+
+const REQUIRED_LOG_HEADERS = Object.freeze(['Nama', 'Perusahaan', 'Tujuan', 'PIC', 'Start', 'Exp', 'Checkin', 'Checkout', 'REG', 'Action', 'LogTime', 'Status', 'Site', 'Duration', 'Kategori', 'Dept', 'Keterangan', 'Activity Log']);
+
+function validateRequiredHeaders_(headerMap) {
+  const missing = REQUIRED_LOG_HEADERS.filter(function(name) { return !headerMap || !headerMap[name]; });
+  if (missing.length) {
+    structuredLog_('HEADER_NOT_FOUND', { mutationId: '', mutationSource: 'gas', missingHeaders: missing.join(', ') });
+    throw new Error('HEADER_NOT_FOUND:' + missing.join(','));
+  }
+}
+
+function getHeaderMap_(sheet) {
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const map = {};
+  headers.forEach(function(header, idx) {
+    const key = String(header || '').trim();
+    if (key) map[key] = idx + 1;
+  });
+  return map;
+}
+
+function requiredHeaderColumn_(headerMap, name) {
+  const col = Number(headerMap && headerMap[name] || 0);
+  if (col < 1) {
+    structuredLog_('HEADER_NOT_FOUND', { mutationId: '', mutationSource: 'gas', missingHeaders: name });
+    throw new Error('HEADER_NOT_FOUND:' + name);
+  }
+  return col;
+}
+
 function getActivityActionLabel_(action) {
   const normalized = normalizeAction(action);
   if (normalized === ACTION_TYPES.CHECK_IN) return 'IN';
@@ -387,55 +420,85 @@ function getDailyKey_(log) {
   return Utilities.formatDate(new Date(eventTs), SHEET_TIMEZONE, 'yyyy-MM-dd');
 }
 
-function findDailyRowByReg_(sheet, reg) {
+
+function getSheetDateKey_(value) {
+  if (!value) return '';
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, SHEET_TIMEZONE, 'yyyy-MM-dd');
+  }
+  var str = String(value).trim();
+  if (!str) return '';
+  var dmy = str.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (dmy) return dmy[3] + '-' + dmy[2] + '-' + dmy[1];
+  var iso = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return iso[1] + '-' + iso[2] + '-' + iso[3];
+  return '';
+}
+
+function findDailyRowByReg_(sheet, reg, headerMap, dayKey) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < 1) return 0;
+  if (lastRow < 2) return 0;
   const target = String(reg || '').trim();
   if (!target) return 0;
-  const values = sheet.getRange(1, 1, lastRow, 1).getValues();
-  for (var i = 0; i < values.length; i++) {
-    if (String(values[i][0] || '').trim() === target) return i + 1;
+  const regCol = requiredHeaderColumn_(headerMap, 'REG');
+  const logTimeCol = requiredHeaderColumn_(headerMap, 'LogTime');
+  const startCol = requiredHeaderColumn_(headerMap, 'Start');
+  const regValues = sheet.getRange(2, regCol, lastRow - 1, 1).getValues();
+  const logTimeValues = sheet.getRange(2, logTimeCol, lastRow - 1, 1).getValues();
+  const startValues = sheet.getRange(2, startCol, lastRow - 1, 1).getValues();
+  for (var i = 0; i < regValues.length; i++) {
+    const rowReg = String(regValues[i][0] || '').trim();
+    const rowDay = getSheetDateKey_(logTimeValues[i][0]) || getSheetDateKey_(startValues[i][0]);
+    if (rowReg === target && rowDay === String(dayKey || '').trim()) return i + 2;
   }
   return 0;
 }
 
-function appendActivityToExistingRow_(sheet, rowNumber, log) {
+function appendActivityToExistingRow_(sheet, rowNumber, log, headerMap) {
   const action = normalizeAction(log.action);
   const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
-  const existingActivity = String(sheet.getRange(rowNumber, SHEET_ACTIVITY_LOG_COLUMN).getValue() || '').trim();
+  const activityCol = requiredHeaderColumn_(headerMap, 'Activity Log');
+  const existingActivity = String(sheet.getRange(rowNumber, activityCol).getValue() || '').trim();
   const nextActivity = (existingActivity ? existingActivity + ' ' : '') + getActivityEntry_(log);
-  sheet.getRange(rowNumber, 4).setValue(action);
-  sheet.getRange(rowNumber, 5).setValue(formatWIB(eventTs));
-  sheet.getRange(rowNumber, SHEET_STATUS_COLUMN).setValue(pick_(log, ['status', 'currentStatus'], action));
-  sheet.getRange(rowNumber, SHEET_VERSION_COLUMN).setValue(pick_(log, ['version'], 1));
-  sheet.getRange(rowNumber, MUTATION_ID_COLUMN).setValue(pick_(log, ['mutationId'], ''));
-  sheet.getRange(rowNumber, SHEET_MUTATION_SOURCE_COLUMN).setValue(pick_(log, ['mutationSource'], ''));
-  sheet.getRange(rowNumber, SHEET_REQUEST_FINGERPRINT_COLUMN).setValue(pick_(log, ['requestFingerprint'], ''));
-  sheet.getRange(rowNumber, SHEET_ACTIVITY_LOG_COLUMN).setValue(nextActivity);
+  sheet.getRange(rowNumber, requiredHeaderColumn_(headerMap, 'Action')).setValue(action);
+  sheet.getRange(rowNumber, requiredHeaderColumn_(headerMap, 'LogTime')).setValue(formatWIB(eventTs));
+  sheet.getRange(rowNumber, requiredHeaderColumn_(headerMap, 'Status')).setValue(pick_(log, ['status', 'currentStatus'], action));
+  if (action === ACTION_TYPES.CHECK_IN) {
+    const checkinCol = requiredHeaderColumn_(headerMap, 'Checkin');
+    const existingCheckin = String(sheet.getRange(rowNumber, checkinCol).getValue() || '').trim();
+    if (!existingCheckin) sheet.getRange(rowNumber, checkinCol).setValue(formatWIB(eventTs));
+  }
+  if (action === ACTION_TYPES.CHECK_OUT) sheet.getRange(rowNumber, requiredHeaderColumn_(headerMap, 'Checkout')).setValue(formatWIB(eventTs));
+  sheet.getRange(rowNumber, requiredHeaderColumn_(headerMap, 'Activity Log')).setValue(nextActivity);
+  if (headerMap['REG']) sheet.getRange(rowNumber, headerMap['REG']).setValue(pick_(log, ['reg', 'REG', 'Reg'], ''));
+  if (headerMap['Nama']) sheet.getRange(rowNumber, headerMap['Nama']).setValue(pick_(log, ['nama', 'name', 'Nama'], ''));
+  if (headerMap['Perusahaan']) sheet.getRange(rowNumber, headerMap['Perusahaan']).setValue(pick_(log, ['perusahaan', 'company', 'Perusahaan'], ''));
 }
 
-function buildRow_(log) {
+function buildRow_(log, headerMap) {
   const action = normalizeAction(pick_(log, ['action', 'Action'], ''));
   const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
-  return [
-    pick_(log, ['reg', 'REG', 'Reg'], ''),
-    pick_(log, ['nama', 'name', 'Nama'], ''),
-    pick_(log, ['perusahaan', 'company', 'Perusahaan'], ''),
-    action,
-    formatWIB(eventTs),
-    pick_(log, ['site', 'Site'], ''),
-    pick_(log, ['deviceId', 'deviceID', 'DeviceId'], ''),
-    pick_(log, ['kategori', 'category', 'Kategori'], ''),
-    pick_(log, ['pic', 'PIC'], ''),
-    pick_(log, ['start', 'startDate'], ''),
-    pick_(log, ['exp', 'expDate'], ''),
-    pick_(log, ['status', 'currentStatus'], action),
-    pick_(log, ['version'], 1),
-    pick_(log, ['mutationId'], ''),
-    pick_(log, ['mutationSource'], ''),
-    pick_(log, ['requestFingerprint'], ''),
-    getActivityEntry_(Object.assign({}, log, { action: action, eventTs: eventTs }))
-  ];
+  const maxCol = Math.max.apply(null, Object.keys(headerMap || {}).map(function(k) { return Number(headerMap[k] || 0); }).concat([1]));
+  const row = new Array(maxCol).fill('');
+  row[requiredHeaderColumn_(headerMap, 'Nama') - 1] = pick_(log, ['nama', 'name', 'Nama'], '');
+  row[requiredHeaderColumn_(headerMap, 'Perusahaan') - 1] = pick_(log, ['perusahaan', 'company', 'Perusahaan'], '');
+  row[requiredHeaderColumn_(headerMap, 'Tujuan') - 1] = pick_(log, ['tujuan', 'purpose', 'Tujuan'], '');
+  row[requiredHeaderColumn_(headerMap, 'PIC') - 1] = pick_(log, ['pic', 'PIC'], '');
+  row[requiredHeaderColumn_(headerMap, 'Start') - 1] = pick_(log, ['start', 'startDate'], '');
+  row[requiredHeaderColumn_(headerMap, 'Exp') - 1] = pick_(log, ['exp', 'expDate'], '');
+  row[requiredHeaderColumn_(headerMap, 'Checkin') - 1] = action === ACTION_TYPES.CHECK_IN ? formatWIB(eventTs) : '';
+  row[requiredHeaderColumn_(headerMap, 'Checkout') - 1] = action === ACTION_TYPES.CHECK_OUT ? formatWIB(eventTs) : '';
+  row[requiredHeaderColumn_(headerMap, 'REG') - 1] = pick_(log, ['reg', 'REG', 'Reg'], '');
+  row[requiredHeaderColumn_(headerMap, 'Action') - 1] = action;
+  row[requiredHeaderColumn_(headerMap, 'LogTime') - 1] = formatWIB(eventTs);
+  row[requiredHeaderColumn_(headerMap, 'Status') - 1] = pick_(log, ['status', 'currentStatus'], action);
+  row[requiredHeaderColumn_(headerMap, 'Site') - 1] = pick_(log, ['site', 'Site'], '');
+  row[requiredHeaderColumn_(headerMap, 'Duration') - 1] = pick_(log, ['duration', 'Duration'], '');
+  row[requiredHeaderColumn_(headerMap, 'Kategori') - 1] = pick_(log, ['kategori', 'category', 'Kategori'], '');
+  row[requiredHeaderColumn_(headerMap, 'Dept') - 1] = pick_(log, ['dept', 'Departemen', 'department'], '');
+  row[requiredHeaderColumn_(headerMap, 'Keterangan') - 1] = pick_(log, ['keterangan', 'notes', 'Keterangan'], '');
+  row[requiredHeaderColumn_(headerMap, 'Activity Log') - 1] = getActivityEntry_(Object.assign({}, log, { action: action, eventTs: eventTs }));
+  return row;
 }
 
 function appendRowsIdempotent_(logs) {
@@ -458,6 +521,9 @@ function appendRowsIdempotent_(logs) {
     const versionRejectedMutationIds = [];
     const requestFingerprints = [];
     const dailyRowCache = {};
+    const appendSheet = getDailyLogSheet_(getEventTimestamp());
+    const headerMap = getHeaderMap_(appendSheet);
+    validateRequiredHeaders_(headerMap);
     let rowsAppended = 0;
     let rowsUpdated = 0;
 
@@ -497,18 +563,18 @@ function appendRowsIdempotent_(logs) {
         }
 
         const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
-        const appendSheet = getDailyLogSheet_(eventTs);
         const reg = String(log.reg || '').trim();
         const dailyKey = getDailyKey_(log) + '|' + reg;
-        let rowNumber = dailyRowCache[dailyKey] || findDailyRowByReg_(appendSheet, reg);
+        let rowNumber = dailyRowCache[dailyKey] || findDailyRowByReg_(appendSheet, reg, headerMap, getDailyKey_(log));
 
         if (rowNumber) {
-          appendActivityToExistingRow_(appendSheet, rowNumber, log);
+          dailyRowCache[dailyKey] = rowNumber;
+          appendActivityToExistingRow_(appendSheet, rowNumber, log, headerMap);
           upsertAttendanceRow_(attendanceSheet, log, attendanceIndexCache);
           rowsUpdated++;
           structuredLog_('DAILY_ACTIVITY_UPDATED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: reg, row: rowNumber, day: getDailyKey_(log), activity: getActivityEntry_(log) });
         } else {
-          const row = buildRow_(log);
+          const row = buildRow_(log, headerMap);
           rowNumber = appendSheet.getLastRow() + 1;
           appendSheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
           dailyRowCache[dailyKey] = rowNumber;
@@ -554,7 +620,11 @@ function doPost(e) {
     logs.concat(visitorLogs).forEach(function(log, index) {
       try {
         const mapped = normalizeMutation_(Object.assign({}, log, { action: normalizeAction(log && log.action) }), index);
-        if (mapped.reg && mapped.mutationId && (mapped.action === ACTION_TYPES.CHECK_IN || mapped.action === ACTION_TYPES.CHECK_OUT || mapped.action === ACTION_TYPES.REGISTER || mapped.action === ACTION_TYPES.WALK_IN)) {
+        if (!mapped.reg || !mapped.mutationId) {
+          structuredLog_('GAS_LOG_MAPPING_ERROR', { mutationId: mapped.mutationId || '', mutationSource: mapped.mutationSource || 'gas', reg: mapped.reg || '', action: mapped.action || '', index: index, reason: 'reg_or_mutationId_missing' });
+          return;
+        }
+        if (mapped.action === ACTION_TYPES.CHECK_IN || mapped.action === ACTION_TYPES.CHECK_OUT || mapped.action === ACTION_TYPES.REGISTER || mapped.action === ACTION_TYPES.WALK_IN) {
           normalized.push(mapped);
         } else {
           structuredLog_('GAS_LOG_MAPPING_SKIPPED', { mutationId: mapped.mutationId || '', mutationSource: mapped.mutationSource || 'gas', reg: mapped.reg || '', action: mapped.action || '', index: index });

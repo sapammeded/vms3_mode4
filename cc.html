@@ -1609,25 +1609,25 @@
         showToast("Generating license...", "info");
 
         try {
-            const res = await fetch(`${API_URL}/admin/generate-license`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": "Bearer " + String(currentToken).trim(),
-                    "x-token": String(currentToken).trim()
-                },
-                credentials: "omit",
-                body: JSON.stringify({
-                    companyName,
-                    pic,
-                    phone,
-                    email,
-                    package: pkg,
-                    customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
-                    address,
-                    notes
-                })
-            });
+            const res = await fetch(`${API_URL}/generate-license`, {
+    method: "POST",
+    headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + String(currentToken).trim(),
+        "x-token": String(currentToken).trim()
+    },
+    credentials: "omit",
+    body: JSON.stringify({
+        companyName,
+        pic,
+        phone,
+        email,
+        package: pkg,
+        customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
+        address,
+        notes
+    })
+});
             const data = await res.json().catch(() => ({ ok: false, error: "Invalid server response" }));
 
             if (data && data.ok) {

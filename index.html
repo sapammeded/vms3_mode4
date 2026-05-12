@@ -1579,6 +1579,14 @@ window.onunhandledrejection = function(e) {
     });
     window.logs = logs;
 
+
+    async function fetchWithTimeout(url, options = {}, timeoutMs = 8000){
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try { return await fetch(url, { ...options, signal: controller.signal }); }
+        finally { clearTimeout(timer); }
+    }
+
     function toast(msg, type='info'){
         let t = document.createElement('div');
         t.className = `toast-msg ${type}`;
@@ -1714,21 +1722,21 @@ window.onunhandledrejection = function(e) {
         const payload = { logs: [row], mutationId: row.mutationId, requestFingerprint: row.requestFingerprint, expectedCount: 1 };
         const retryBudget = 3;
         for(let attempt = 0; attempt < retryBudget; attempt++){
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
             try{
-                const res = await fetch(WORKER_BASE_URL + "/sheet-append", {
+                const res = await fetchWithTimeout(WORKER_BASE_URL + "/sheet-append", {
                     method:"POST",
                     headers:{ "Content-Type":"application/json" },
-                    body: JSON.stringify(payload),
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
+                    body: JSON.stringify(payload)
+                }, 8000);
                 const result = await res.json().catch(()=>null);
                 const ackIds = Array.isArray(result?.mutationIds) ? result.mutationIds : [];
                 const skippedIds = Array.isArray(result?.skippedMutationIds) ? result.skippedMutationIds : [];
                 const fingerprints = Array.isArray(result?.requestFingerprints) ? result.requestFingerprints : [];
                 const exactAck = (ackIds.includes(row.mutationId) || skippedIds.includes(row.mutationId)) && Number(result?.ackCount || (ackIds.length + skippedIds.length)) === 1 && fingerprints.includes(row.requestFingerprint);
+                if(res.status === 202){
+                    toast("Pending sync ke sheet", "warning");
+                    return true;
+                }
                 if(res.ok && result?.ok !== false && result?.ack === true && exactAck){
                     logSyncMetric("syncLatency", { mutationId:row.mutationId, latencyMs:getEventTimestamp() - Number(row.eventTs || getEventTimestamp()) });
                     markAppendSynced(row.mutationId);
@@ -1738,7 +1746,6 @@ window.onunhandledrejection = function(e) {
                 if(res.ok && result?.ack === true && !exactAck) logSyncMetric("gasAckMismatch", { mutationId:row.mutationId, ackCount:Number(result?.ackCount || 0) });
                 if(res.status >= 400 && res.status < 500 && res.status !== 429) break;
             }catch(e){
-                clearTimeout(timeoutId);
                 console.warn("CHECK_SCAN_SHEET_APPEND_FAIL", { attempt, reason:e?.message || e, mutationId:row.mutationId, updatedAt:getWIBISO() });
             }
             const jitter = Math.floor(Math.random() * 300);
@@ -2227,7 +2234,7 @@ window.onunhandledrejection = function(e) {
         if(!licenseKey || !navigator.onLine) return null;
         try {
             console.log("SCANNER_FALLBACK_HYDRATION", { reg, mode:"targeted_lookup", updatedAt:getWIBISO() });
-            const res = await fetch(`${WORKER_BASE_URL}/lookup-reg?licenseKey=${encodeURIComponent(licenseKey)}&reg=${encodeURIComponent(String(reg||"").trim())}`);
+            const res = await fetchWithTimeout(`${WORKER_BASE_URL}/lookup-reg?licenseKey=${encodeURIComponent(licenseKey)}&reg=${encodeURIComponent(String(reg||"").trim())}`, {}, 8000);
             if(!res.ok) return null;
             return await res.json();
         } catch { return null; }
@@ -2294,7 +2301,7 @@ window.onunhandledrejection = function(e) {
             await secureSave();
             await forceCentralSync("scan", { visitorKeys:[siteKey], includeLogs:true });
             updateMonetizationUI();
-        } finally { setTimeout(()=>processingRegs.delete(reg), 1000); }
+        } finally { processingRegs.delete(reg); }
     }
 
     const originalManualHandler = document.getElementById('manualProcess').onclick;

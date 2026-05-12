@@ -700,6 +700,7 @@ async function applyLicenseKey(key) {
 
         if (data && data.ok) {
             // License valid dari Worker
+            if (typeof switchLicenseLocalStore === "function") await switchLicenseLocalStore(key);
             syncRuntimeLicenseContext({ mode: data.company?.package || "PRO", features: data.features || WORKER_FEATURES, key });
             localStorage.setItem("vms_license_key", key);
             sessionStorage.setItem("vms_license_key", key);
@@ -715,9 +716,12 @@ async function applyLicenseKey(key) {
 
             // Refresh runtime langsung tanpa reload agar UI unlock mengikuti fitur Worker
             await refreshLicenseFeaturesFromWorker();
+            if (typeof secureLoad === "function") await secureLoad();
+            if (typeof requestPullFromCloud === "function") await requestPullFromCloud("license_switch", { forceFull:true });
             renderSiteSelectors();
             updateMonetizationUI();
             if (window.renderDashboard) window.renderDashboard();
+            if (window.renderLogTable) window.renderLogTable();
         } else {
             toast(data?.message || "License tidak valid", "error");
         }
@@ -1129,37 +1133,68 @@ async function signData(data){
     return btoa(String.fromCharCode(...new Uint8Array(buf)));
 }
 
+function getLicenseScopedStorageKey(base){
+    const licenseKey = (localStorage.getItem("vms_license_key") || sessionStorage.getItem("vms_license_key") || "NO_LICENSE").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80) || "NO_LICENSE";
+    return `${base}_${licenseKey}`;
+}
+
 async function secureSave(){
     try {
-        const payload = { visitors, logs, auditLogs };
+        const payload = { visitors, logs, auditLogs, licenseKey: localStorage.getItem("vms_license_key") || "" };
         const sig = await signData(payload);
-        localStorage.setItem("vms_secure", JSON.stringify({ payload, sig }));
-        localStorage.setItem("vms_visitors_backup", JSON.stringify(visitors));
+        const secureKey = getLicenseScopedStorageKey("vms_secure");
+        const backupKey = getLicenseScopedStorageKey("vms_visitors_backup");
+        localStorage.setItem(secureKey, JSON.stringify({ payload, sig }));
+        localStorage.setItem(backupKey, JSON.stringify(visitors));
+        if(!localStorage.getItem("vms_license_key")){
+            localStorage.setItem("vms_secure", JSON.stringify({ payload, sig }));
+            localStorage.setItem("vms_visitors_backup", JSON.stringify(visitors));
+        }
         if(window.updateMonetizationUI) window.updateMonetizationUI();
     } catch(e) { console.warn("Save error:", e); }
 }
 
 async function secureLoad(){
     try {
-        let raw = localStorage.getItem("vms_secure");
+        const secureKey = getLicenseScopedStorageKey("vms_secure");
+        const backupKey = getLicenseScopedStorageKey("vms_visitors_backup");
+        let raw = localStorage.getItem(secureKey);
+        if(!raw && secureKey.endsWith("_NO_LICENSE")) raw = localStorage.getItem("vms_secure");
         if(!raw) {
-            let v = localStorage.getItem("vms_visitors_backup");
+            let v = localStorage.getItem(backupKey);
+            if(!v && backupKey.endsWith("_NO_LICENSE")) v = localStorage.getItem("vms_visitors_backup");
             if(v) visitors = JSON.parse(v);
+            else { visitors = {}; logs = []; auditLogs = []; }
             return;
         }
         let parsed = JSON.parse(raw);
         let check = await signData(parsed.payload);
-        if(check === parsed.sig){
+        const activeLicense = localStorage.getItem("vms_license_key") || "";
+        if(check === parsed.sig && (!parsed.payload.licenseKey || !activeLicense || parsed.payload.licenseKey === activeLicense)){
             visitors = parsed.payload.visitors || {};
             logs = parsed.payload.logs || [];
             auditLogs = parsed.payload.auditLogs || [];
         } else {
-            console.warn("Data tamper detected! Resetting...");
+            console.warn("Data tamper/license-scope mismatch detected! Resetting runtime cache...");
             visitors = {};
             logs = [];
             auditLogs = [];
         }
     } catch(e) { console.warn("Load error:", e); }
+}
+
+async function switchLicenseLocalStore(nextLicenseKey){
+    const currentLicense = localStorage.getItem("vms_license_key") || "";
+    if(currentLicense && nextLicenseKey && currentLicense !== nextLicenseKey){
+        visitors = {};
+        logs = [];
+        auditLogs = [];
+        window.visitors = visitors;
+        window.logs = logs;
+        localStorage.removeItem("vms_pending_sync_payload");
+        localStorage.removeItem("vms_last_sync");
+        localStorage.removeItem("vms_replay_counter");
+    }
 }
 
 window.saveStore = secureSave;
@@ -1458,7 +1493,43 @@ function saveVisitor(siteKey, data, reg, sourceAction){
     visitors[siteKey] = candidate;
     return true;
 }
+
+function resolveVisitorByReg(reg){
+    const regText = String(reg || "").trim();
+    if(!regText) return { siteKey:"", visitor:null };
+    const preferredKey = SITE_ID + "_" + regText;
+    if(visitors[preferredKey]) return { siteKey:preferredKey, visitor:visitors[preferredKey] };
+    let bestKey = "";
+    let bestVisitor = null;
+    Object.entries(visitors || {}).forEach(([key, visitor]) => {
+        if(!visitor || typeof visitor !== "object") return;
+        const visitorReg = String(visitor.reg || key.split("_").slice(1).join("_") || "");
+        if(visitorReg !== regText) return;
+        if(!bestVisitor || compareMutationPriority(visitor, bestVisitor) > 0){
+            bestKey = key;
+            bestVisitor = visitor;
+        }
+    });
+    return { siteKey:bestKey, visitor:bestVisitor };
+}
+
+async function requestVisitorMissPull(reg, reason){
+    const regText = String(reg || "").trim();
+    if(!regText || !navigator.onLine) return false;
+    const now = Date.now();
+    const lastRegPull = Number(visitorMissPullCache.get(regText) || 0);
+    if(now - lastRegPull < VISITOR_MISS_PULL_COOLDOWN_MS) return false;
+    if(now - lastFullVisitorPullAt < VISITOR_MISS_PULL_GLOBAL_COOLDOWN_MS) return false;
+    visitorMissPullCache.set(regText, now);
+    lastFullVisitorPullAt = now;
+    if(pullPromise) {
+        try { await pullPromise; } catch(_) {}
+    }
+    await requestPullFromCloud(reason, { forceFull:true });
+    return true;
+}
 window.saveVisitor = saveVisitor;
+window.resolveVisitorByReg = resolveVisitorByReg;
 window.updateVisitorSyncBadge = updateVisitorSyncBadge;
 
 function scheduleCentralSync(reason="mutation"){
@@ -1570,36 +1641,15 @@ window.onunhandledrejection = function(e) {
                 return canvas.toDataURL("image/png");
             }catch(e){ console.warn("Local QR failed:", e); }
         }
-        for(let i=0;i<2;i++){
-            try{
-                const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrPayload)}`;
-                const img = new Image();
-                img.crossOrigin = "Anonymous";
-                const result = await new Promise((resolve)=>{
-                    img.onload = ()=>{
-                        const canvas = document.createElement('canvas');
-                        canvas.width = 200;
-                        canvas.height = 200;
-                        const ctx = canvas.getContext('2d');
-                        ctx.fillStyle = "white";
-                        ctx.fillRect(0,0,200,200);
-                        ctx.drawImage(img,0,0,200,200);
-                        resolve(canvas.toDataURL("image/png"));
-                    };
-                    img.onerror = ()=>resolve(null);
-                    img.src = qrUrl;
-                    setTimeout(()=>resolve(null), 3000);
-                });
-                if(result) return result;
-            } catch(e){ console.warn("Retry QR API:", i, e); }
-        }
+        console.warn("QR generation unavailable: local QRCode library failed; external QR payload upload is blocked for security.");
         return null;
     }
 
     function addLog(regRaw, action){
 
-    let siteKey = SITE_ID + "_" + regRaw;
-    let v = visitors[siteKey];
+    const resolvedVisitor = resolveVisitorByReg(regRaw);
+    let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + regRaw);
+    let v = resolvedVisitor.visitor;
 
     const normalizedAction = normalizeAction(action);
     const mutationId = createMutationId("log");
@@ -2182,9 +2232,13 @@ window.onunhandledrejection = function(e) {
         if(processingRegs.has(reg)){ toast("Sedang diproses, tunggu sebentar","warning"); return; }
         processingRegs.add(reg);
         try {
-            let siteKey = SITE_ID + "_" + reg;
-            let visitor = visitors[siteKey];
-            if(!visitor){ toast(`Visitor ${reg} tidak ditemukan`,"error"); return; }
+            let resolvedVisitor = resolveVisitorByReg(reg);
+            if(!resolvedVisitor.visitor && await requestVisitorMissPull(reg, "scan_miss")){
+                resolvedVisitor = resolveVisitorByReg(reg);
+            }
+            let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + reg);
+            let visitor = resolvedVisitor.visitor;
+            if(!visitor){ toast(`Visitor ${reg} tidak ditemukan di license ini`,"error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
             if(exp < new Date()){ toast("QR sudah expired","error"); return; }
@@ -2194,7 +2248,7 @@ window.onunhandledrejection = function(e) {
                 if(mode === ACTION_TYPES.CHECK_IN){
                     if(!visitor.sessions) visitor.sessions = [];
                     visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
-                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                     const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
                     await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                     toast(`✅ CHECK-IN ${visitor.nama} berhasil`,"success");
@@ -2204,7 +2258,7 @@ window.onunhandledrejection = function(e) {
                     for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
                     if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: eventTs, checkInWIB:getWIBISO(eventTs), checkOut: eventTs, checkOutWIB:getWIBISO(eventTs) }); }
                     else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
-                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                     const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
                     await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                     toast(`✅ CHECK-OUT ${visitor.nama} berhasil`,"success");
@@ -2226,9 +2280,13 @@ window.onunhandledrejection = function(e) {
         try {
             let reg = document.getElementById('manualReg').value.trim();
             let mode = normalizeAction(document.getElementById('scanMode').value);
-            let siteKey = SITE_ID + "_" + reg;
-            let visitor = visitors[siteKey];
-            if(!visitor){ toast("REG tidak ditemukan","error"); return; }
+            let resolvedVisitor = resolveVisitorByReg(reg);
+            if(!resolvedVisitor.visitor && await requestVisitorMissPull(reg, "manual_scan_miss")){
+                resolvedVisitor = resolveVisitorByReg(reg);
+            }
+            let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + reg);
+            let visitor = resolvedVisitor.visitor;
+            if(!visitor){ toast("REG tidak ditemukan di license ini","error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
             if(exp < new Date()){ toast("QR sudah expired","error"); return; }
@@ -2237,7 +2295,7 @@ window.onunhandledrejection = function(e) {
             if(mode === ACTION_TYPES.CHECK_IN){
                 if(!visitor.sessions) visitor.sessions = [];
                 visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
-                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                 const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
                 await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                 toast(`Check-in ${visitor.nama} success`,"success");
@@ -2247,7 +2305,7 @@ window.onunhandledrejection = function(e) {
                 for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
                 if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: eventTs, checkInWIB:getWIBISO(eventTs), checkOut: eventTs, checkOutWIB:getWIBISO(eventTs) }); }
                 else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
-                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                 const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
                 await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                 toast(`Check-out ${visitor.nama} success`,"success");
@@ -2561,37 +2619,54 @@ updateMonetizationUI();
 applyRoleVisibility();
 lockLicense();
 
-// 🔥 ANTI NAKAL ENGINE
+// 🔥 ANTI NAKAL ENGINE (network-safe: one bounded report per minute, no overlap)
+let antiNakalSendInFlight = false;
+let lastAntiNakalSendAt = 0;
 setInterval(async ()=>{
-    if(!navigator.geolocation) return;
+    const licenseKey = localStorage.getItem("vms_license_key") || "";
+    if(!licenseKey || !navigator.onLine || document.hidden || !navigator.geolocation || antiNakalSendInFlight) return;
+    if(Date.now() - lastAntiNakalSendAt < 60000) return;
+    antiNakalSendInFlight = true;
     navigator.geolocation.getCurrentPosition(
         async function(pos) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(()=>controller.abort(), 8000);
             try{
                 const meta = window.getDeviceMeta ? window.getDeviceMeta() : {};
                 await fetch(WORKER_BASE_URL + "/save",{
                     method:"POST",
                     headers:{ "Content-Type":"application/json" },
                     body: JSON.stringify({
+                        licenseKey,
                         deviceId: localStorage.getItem("vms_device_id"),
+                        site: localStorage.getItem("vms_site") || SITE_ID,
                         meta: meta,
                         anti:{
                             lat: pos.coords.latitude,
                             lng: pos.coords.longitude,
                             acc: pos.coords.accuracy,
                             license: localStorage.getItem("vms_license"),
+                            licenseKey,
                             flags: JSON.parse(localStorage.getItem("vms_anti_flags") || "[]")
                         }
-                    })
+                    }),
+                    signal: controller.signal
                 });
+                lastAntiNakalSendAt = Date.now();
             }catch(e){
-                console.log("GPS send gagal:", e);
+                console.log("GPS send gagal:", e?.name === "AbortError" ? "timeout" : e);
+            } finally {
+                clearTimeout(timeoutId);
+                antiNakalSendInFlight = false;
             }
         },
         function(error) {
+            antiNakalSendInFlight = false;
             console.warn("GPS error (interval):", error.message);
-        }
+        },
+        { maximumAge: 30000, timeout: 7000, enableHighAccuracy: false }
     );
-},5000);
+},60000);
 
 // 🔥 GPS LOOP (FIX - LANGSUNG KIRIM KE WORKER DENGAN FORMAT YANG BENAR)
 setInterval(()=>{
@@ -2682,6 +2757,8 @@ let lastPullTs = 0;
 let isPulling = false;
 let lastSaveTs = 0;
 let syncDebounceTimer = null;
+let retryIntervalInFlight = false;
+let appendRetryIntervalInFlight = false;
 const MIN_SYNC_INTERVAL = 3000;
 let pendingSyncPayload = null;
 let pullPromise = null;
@@ -2690,6 +2767,11 @@ let pullLock = null;
 let saveLock = null;
 let mergeLock = null;
 let pendingPull = false;
+let pendingPullOptions = {};
+let lastFullVisitorPullAt = 0;
+const VISITOR_MISS_PULL_COOLDOWN_MS = 15000;
+const VISITOR_MISS_PULL_GLOBAL_COOLDOWN_MS = 5000;
+const visitorMissPullCache = new Map();
 const LOCK_TIMEOUT_MS = 20000;
 let logsSortedDirty = true;
 let __logFingerprintCacheRef = null;
@@ -3207,16 +3289,26 @@ async function ensureInitialCloudHydration(reason = "startup"){
 window.forceCentralSync = forceCentralSync;
 window.ensureInitialCloudHydration = ensureInitialCloudHydration;
 
-async function requestPullFromCloud(reason="normal"){
+async function requestPullFromCloud(reason="normal", options = {}){
     if(!isAuthoritativeOwner()) { postSyncMessage("SYNC_START", { reason }); return; }
-    if (pullPromise) { pendingPull = true; return pullPromise; }
+    if (pullPromise) {
+        pendingPull = true;
+        pendingPullOptions = { ...pendingPullOptions, forceFull: !!(pendingPullOptions.forceFull || options.forceFull) };
+        return pullPromise;
+    }
+    const runOptions = { ...options };
     pullPromise = (async ()=>{
         try{
             lastPullStartTs = Date.now();
-            await pullFromCloud();
+            await pullFromCloud(runOptions);
         } finally {
             pullPromise = null;
-            if(pendingPull){ pendingPull = false; setTimeout(()=>requestPullFromCloud("queued"), 0); }
+            if(pendingPull){
+                const queuedOptions = pendingPullOptions;
+                pendingPull = false;
+                pendingPullOptions = {};
+                setTimeout(()=>requestPullFromCloud("queued", queuedOptions), 0);
+            }
         }
     })();
     return pullPromise;
@@ -3394,7 +3486,7 @@ function filterPendingPayloadAgainstCurrent(next){
     return { ...next, visitors: filteredVisitors, logs: filteredLogs };
 }
 
-async function pullFromCloud(){
+async function pullFromCloud(options = {}){
     if(!isAuthoritativeOwner()) return;
     const licenseKey = localStorage.getItem("vms_license_key");
     if(!licenseKey || !navigator.onLine) return;
@@ -3402,7 +3494,10 @@ async function pullFromCloud(){
     try{
         if(!acquireLock("pull")) return;
         isPulling = true;
-        const res = await fetch(WORKER_BASE_URL + `/pull?licenseKey=${encodeURIComponent(licenseKey)}&since=${lastPullTs}&site=${encodeURIComponent(SITE_ID)}`);
+        const forceFullVisitors = !!options.forceFull;
+        const pullSince = forceFullVisitors ? 0 : lastPullTs;
+        const fullVisitorsParam = forceFullVisitors ? "&fullVisitors=1" : "";
+        const res = await fetch(WORKER_BASE_URL + `/pull?licenseKey=${encodeURIComponent(licenseKey)}&since=${pullSince}&site=${encodeURIComponent(SITE_ID)}${fullVisitorsParam}`);
         if(!res.ok) return;
         const data = await res.json();
         const serverTs = Number(data?.serverTs || 0);
@@ -3630,32 +3725,38 @@ console.log("SYNC PUSH", { logs: payload.logs?.length || 0, visitors: Object.key
 // ================== RETRY ==================
 setInterval(async ()=>{
 
-    if(!navigator.onLine || !retryQueue.length) return;
+    if(retryIntervalInFlight || !navigator.onLine || !retryQueue.length) return;
+    retryIntervalInFlight = true;
+    try {
+        const item = retryQueue[0];
 
-    const item = retryQueue[0];
+        if(item.retry >= 5){
+            retryQueue.shift();
+            persistRetryQueueSafe();
+            return;
+        }
 
-    if(item.retry >= 5){
-        retryQueue.shift();
-        persistRetryQueueSafe();
-        return;
-    }
+        const backoff = Math.min(3000 * Math.pow(2, item.retry), 30000) + Math.floor(Math.random() * 750);
 
-    const backoff = Math.min(3000 * Math.pow(2, item.retry), 30000) + Math.floor(Math.random() * 750);
+        if(Date.now() - item.time < backoff) return;
 
-    if(Date.now() - item.time < backoff) return;
+        await saveToCloudSafe(item.payload);
 
-    await saveToCloudSafe(item.payload);
-
-    if(retryQueue.length && retryQueue[0] === item){
-        item.retry++;
-        item.time = Date.now();
-        persistRetryQueueSafe();
+        if(retryQueue.length && retryQueue[0] === item){
+            item.retry++;
+            item.time = Date.now();
+            persistRetryQueueSafe();
+        }
+    } finally {
+        retryIntervalInFlight = false;
     }
 
 }, 3000);
 
 setInterval(async ()=>{
-    if(!navigator.onLine) return;
+    if(appendRetryIntervalInFlight || !navigator.onLine) return;
+    appendRetryIntervalInFlight = true;
+    try {
     const q = loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY);
     if(!q.length) { updateVisitorSyncBadge(); return; }
     const item = q[0];
@@ -3678,6 +3779,9 @@ setInterval(async ()=>{
     item.syncMeta = { ...(item.syncMeta || {}), retry:Number(meta.retry || 0) + 1, queuedAt:getEventTimestamp(), queuedAtWIB:getWIBISO() };
     saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes([item, ...q.slice(1)], MAX_QUEUE, MAX_QUEUE_BYTES));
     if(window.appendScanLogToGoogleSheet) await window.appendScanLogToGoogleSheet(event, event);
+    } finally {
+        appendRetryIntervalInFlight = false;
+    }
 }, 5000);
 
 // ================== SMART SYNC ==================
@@ -3817,13 +3921,26 @@ window.addEventListener("load", async ()=>{
     retryQueue = loadRetryQueueSafe();
     smartSync();
     await ensureInitialCloudHydration("startup");
+    let scheduledPullInFlight = false;
     (function schedulePull(){
-        const delay = document.hidden ? 60000 : 7000;
-        setTimeout(async ()=>{ await requestPullFromCloud("scheduled"); schedulePull(); }, delay);
+        const baseDelay = document.hidden ? 120000 : 30000;
+        const jitter = Math.floor(Math.random() * 5000);
+        setTimeout(async ()=>{
+            if(!scheduledPullInFlight && navigator.onLine){
+                scheduledPullInFlight = true;
+                try { await requestPullFromCloud("scheduled"); }
+                finally { scheduledPullInFlight = false; }
+            }
+            schedulePull();
+        }, baseDelay + jitter);
     })();
+    let heartbeatInFlight = false;
     setInterval(async ()=>{
         const licenseKey = localStorage.getItem("vms_license_key");
-        if(!licenseKey || !navigator.onLine) return;
+        if(!licenseKey || !navigator.onLine || heartbeatInFlight) return;
+        heartbeatInFlight = true;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(()=>controller.abort(), 8000);
         try{
             const hb = await fetch(WORKER_BASE_URL + "/device-heartbeat", {
                 method: "POST",
@@ -3833,7 +3950,8 @@ window.addEventListener("load", async ()=>{
                     deviceId: localStorage.getItem("vms_device_id"),
                     deviceName: "VMS Field Device",
                     meta: window.getDeviceMeta ? window.getDeviceMeta() : {}
-                })
+                }),
+                signal: controller.signal
             });
             const hbData = await hb.json().catch(()=>null);
             const hbStatus = hbData?.device?.status || "";
@@ -3846,8 +3964,11 @@ window.addEventListener("load", async ()=>{
                 }
                 __invalidateState = { status: hbStatus, ts: now };
             }
-        }catch(e){}
-    }, 20000);
+        }catch(e){} finally {
+            clearTimeout(timeoutId);
+            heartbeatInFlight = false;
+        }
+    }, 30000);
 });
 window.addEventListener("visibilitychange", ()=>{
 
@@ -4407,40 +4528,110 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
 
 <script>
 const SYNC_WORKER_BASE_URL = "https://vms3modev4.sapammeded.workers.dev";
+const VMS_LEGACY_SYNC_QUEUE_KEY = "vms_legacy_sync_queue";
+const VMS_LEGACY_SYNC_STATE = window.__VMS_LEGACY_SYNC_STATE__ || {
+    syncing: false,
+    failCount: 0,
+    circuitOpenUntil: 0,
+    lastOnlineAt: navigator.onLine ? Date.now() : 0
+};
+window.__VMS_LEGACY_SYNC_STATE__ = VMS_LEGACY_SYNC_STATE;
 
-async function syncToCloud(payload) {
-    try {
-        if (!payload || !payload.deviceId) return;
-        if (!navigator.onLine) return;
+function loadLegacySyncQueue(){
+    try { return JSON.parse(localStorage.getItem(VMS_LEGACY_SYNC_QUEUE_KEY) || "[]").filter(Boolean).slice(-25); }
+    catch(_) { return []; }
+}
 
-        const lastSync = localStorage.getItem("vms_last_sync");
-        const currentHash = JSON.stringify(payload);
+function saveLegacySyncQueue(queue){
+    try { localStorage.setItem(VMS_LEGACY_SYNC_QUEUE_KEY, JSON.stringify(queue.slice(-25))); }
+    catch(e) { console.warn("LEGACY_SYNC_QUEUE_SAVE_FAIL", e?.message || e); }
+}
 
-        if (lastSync === currentHash) return;
+function queueLegacySyncPayload(payload){
+    if(!payload || !payload.deviceId) return;
+    const queue = loadLegacySyncQueue();
+    const hash = JSON.stringify(payload);
+    if(queue.some(item => item.hash === hash)) return;
+    queue.push({ payload, hash, queuedAt: Date.now(), retry: 0 });
+    saveLegacySyncQueue(queue);
+}
 
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-
-        const res = await fetch(SYNC_WORKER_BASE_URL + "/save", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(payload),
-            signal: controller.signal
-        });
-
-        clearTimeout(timeout);
-
-        if (res.ok) {
-            localStorage.setItem("vms_last_sync", currentHash);
-            console.log("SYNC SUCCESS");
-        }
-
-    } catch (err) {
-        console.warn("SYNC ERROR:", err.message);
+async function flushLegacySyncQueue(){
+    if(VMS_LEGACY_SYNC_STATE.syncing || !navigator.onLine || Date.now() < VMS_LEGACY_SYNC_STATE.circuitOpenUntil) return;
+    const queue = loadLegacySyncQueue();
+    if(!queue.length) return;
+    const item = queue.shift();
+    saveLegacySyncQueue(queue);
+    const ok = await syncToCloud(item.payload, { fromQueue:true, retry:Number(item.retry || 0) });
+    if(!ok && Number(item.retry || 0) < 5){
+        const nextQueue = loadLegacySyncQueue();
+        nextQueue.push({ ...item, retry:Number(item.retry || 0) + 1, queuedAt:Date.now() });
+        saveLegacySyncQueue(nextQueue);
     }
 }
+
+async function syncToCloud(payload, options = {}) {
+    if (!payload || !payload.deviceId) return false;
+    if (!payload.licenseKey) payload.licenseKey = localStorage.getItem("vms_license_key") || "";
+    if (!payload.licenseKey) { queueLegacySyncPayload(payload); return false; }
+    if (!navigator.onLine) { queueLegacySyncPayload(payload); return false; }
+    if (Date.now() - Number(VMS_LEGACY_SYNC_STATE.lastOnlineAt || 0) < 3000) { queueLegacySyncPayload(payload); return false; }
+    if (Date.now() < VMS_LEGACY_SYNC_STATE.circuitOpenUntil) { queueLegacySyncPayload(payload); return false; }
+    if (VMS_LEGACY_SYNC_STATE.syncing) { queueLegacySyncPayload(payload); return false; }
+
+    const lastSync = localStorage.getItem("vms_last_sync");
+    const currentHash = JSON.stringify(payload);
+    if (!options.fromQueue && lastSync === currentHash) return true;
+
+    VMS_LEGACY_SYNC_STATE.syncing = true;
+    try {
+        for(let attempt = 0; attempt < 2; attempt++){
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 7000);
+            try {
+                const res = await fetch(SYNC_WORKER_BASE_URL + "/save", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
+                });
+                if (res.ok) {
+                    clearTimeout(timeout);
+                    localStorage.setItem("vms_last_sync", currentHash);
+                    VMS_LEGACY_SYNC_STATE.failCount = 0;
+                    VMS_LEGACY_SYNC_STATE.circuitOpenUntil = 0;
+                    console.log("SYNC SUCCESS");
+                    setTimeout(flushLegacySyncQueue, 500);
+                    return true;
+                }
+                if(res.status >= 400 && res.status < 500) break;
+            } catch (err) {
+                if(err?.name !== "AbortError") console.warn("SYNC ERROR:", err.message);
+            } finally {
+                clearTimeout(timeout);
+            }
+            await new Promise(resolve => setTimeout(resolve, 500 + Math.floor(Math.random() * 500)));
+        }
+        VMS_LEGACY_SYNC_STATE.failCount++;
+        if(VMS_LEGACY_SYNC_STATE.failCount >= 3){
+            VMS_LEGACY_SYNC_STATE.circuitOpenUntil = Date.now() + Math.min(60000, 10000 * VMS_LEGACY_SYNC_STATE.failCount);
+        }
+        queueLegacySyncPayload(payload);
+        return false;
+    } finally {
+        VMS_LEGACY_SYNC_STATE.syncing = false;
+    }
+}
+
+window.addEventListener("online", () => {
+    VMS_LEGACY_SYNC_STATE.lastOnlineAt = Date.now();
+    setTimeout(flushLegacySyncQueue, 3500);
+});
+window.addEventListener("offline", () => {
+    VMS_LEGACY_SYNC_STATE.circuitOpenUntil = Date.now() + 5000;
+});
+setInterval(flushLegacySyncQueue, 30000);
+
 </script>
 
 </body>

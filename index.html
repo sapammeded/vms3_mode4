@@ -1458,7 +1458,27 @@ function saveVisitor(siteKey, data, reg, sourceAction){
     visitors[siteKey] = candidate;
     return true;
 }
+
+function resolveVisitorByReg(reg){
+    const regText = String(reg || "").trim();
+    if(!regText) return { siteKey:"", visitor:null };
+    const preferredKey = SITE_ID + "_" + regText;
+    if(visitors[preferredKey]) return { siteKey:preferredKey, visitor:visitors[preferredKey] };
+    let bestKey = "";
+    let bestVisitor = null;
+    Object.entries(visitors || {}).forEach(([key, visitor]) => {
+        if(!visitor || typeof visitor !== "object") return;
+        const visitorReg = String(visitor.reg || key.split("_").slice(1).join("_") || "");
+        if(visitorReg !== regText) return;
+        if(!bestVisitor || compareMutationPriority(visitor, bestVisitor) > 0){
+            bestKey = key;
+            bestVisitor = visitor;
+        }
+    });
+    return { siteKey:bestKey, visitor:bestVisitor };
+}
 window.saveVisitor = saveVisitor;
+window.resolveVisitorByReg = resolveVisitorByReg;
 window.updateVisitorSyncBadge = updateVisitorSyncBadge;
 
 function scheduleCentralSync(reason="mutation"){
@@ -1598,8 +1618,9 @@ window.onunhandledrejection = function(e) {
 
     function addLog(regRaw, action){
 
-    let siteKey = SITE_ID + "_" + regRaw;
-    let v = visitors[siteKey];
+    const resolvedVisitor = resolveVisitorByReg(regRaw);
+    let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + regRaw);
+    let v = resolvedVisitor.visitor;
 
     const normalizedAction = normalizeAction(action);
     const mutationId = createMutationId("log");
@@ -2182,9 +2203,14 @@ window.onunhandledrejection = function(e) {
         if(processingRegs.has(reg)){ toast("Sedang diproses, tunggu sebentar","warning"); return; }
         processingRegs.add(reg);
         try {
-            let siteKey = SITE_ID + "_" + reg;
-            let visitor = visitors[siteKey];
-            if(!visitor){ toast(`Visitor ${reg} tidak ditemukan`,"error"); return; }
+            let resolvedVisitor = resolveVisitorByReg(reg);
+            if(!resolvedVisitor.visitor && navigator.onLine){
+                await requestPullFromCloud("scan_miss", { forceFull:true });
+                resolvedVisitor = resolveVisitorByReg(reg);
+            }
+            let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + reg);
+            let visitor = resolvedVisitor.visitor;
+            if(!visitor){ toast(`Visitor ${reg} tidak ditemukan di license ini`,"error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
             if(exp < new Date()){ toast("QR sudah expired","error"); return; }
@@ -2194,7 +2220,7 @@ window.onunhandledrejection = function(e) {
                 if(mode === ACTION_TYPES.CHECK_IN){
                     if(!visitor.sessions) visitor.sessions = [];
                     visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
-                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                     const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
                     await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                     toast(`✅ CHECK-IN ${visitor.nama} berhasil`,"success");
@@ -2204,7 +2230,7 @@ window.onunhandledrejection = function(e) {
                     for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
                     if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: eventTs, checkInWIB:getWIBISO(eventTs), checkOut: eventTs, checkOutWIB:getWIBISO(eventTs) }); }
                     else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
-                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                    visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                     const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
                     await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                     toast(`✅ CHECK-OUT ${visitor.nama} berhasil`,"success");
@@ -2226,9 +2252,14 @@ window.onunhandledrejection = function(e) {
         try {
             let reg = document.getElementById('manualReg').value.trim();
             let mode = normalizeAction(document.getElementById('scanMode').value);
-            let siteKey = SITE_ID + "_" + reg;
-            let visitor = visitors[siteKey];
-            if(!visitor){ toast("REG tidak ditemukan","error"); return; }
+            let resolvedVisitor = resolveVisitorByReg(reg);
+            if(!resolvedVisitor.visitor && navigator.onLine){
+                await requestPullFromCloud("manual_scan_miss", { forceFull:true });
+                resolvedVisitor = resolveVisitorByReg(reg);
+            }
+            let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + reg);
+            let visitor = resolvedVisitor.visitor;
+            if(!visitor){ toast("REG tidak ditemukan di license ini","error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
             if(exp < new Date()){ toast("QR sudah expired","error"); return; }
@@ -2237,7 +2268,7 @@ window.onunhandledrejection = function(e) {
             if(mode === ACTION_TYPES.CHECK_IN){
                 if(!visitor.sessions) visitor.sessions = [];
                 visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
-                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                 const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
                 await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                 toast(`Check-in ${visitor.nama} success`,"success");
@@ -2247,7 +2278,7 @@ window.onunhandledrejection = function(e) {
                 for(let i = visitor.sessions.length - 1; i >= 0; i--){ if(!visitor.sessions[i].checkOut){ openSession = visitor.sessions[i]; break; } }
                 if(!openSession){ toast("Tidak ada sesi check-in aktif, tetap diproses sebagai check-out","warning"); visitor.sessions.push({ checkIn: eventTs, checkInWIB:getWIBISO(eventTs), checkOut: eventTs, checkOutWIB:getWIBISO(eventTs) }); }
                 else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
-                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
+                visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                 const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
                 await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
                 toast(`Check-out ${visitor.nama} success`,"success");
@@ -3207,13 +3238,13 @@ async function ensureInitialCloudHydration(reason = "startup"){
 window.forceCentralSync = forceCentralSync;
 window.ensureInitialCloudHydration = ensureInitialCloudHydration;
 
-async function requestPullFromCloud(reason="normal"){
+async function requestPullFromCloud(reason="normal", options = {}){
     if(!isAuthoritativeOwner()) { postSyncMessage("SYNC_START", { reason }); return; }
     if (pullPromise) { pendingPull = true; return pullPromise; }
     pullPromise = (async ()=>{
         try{
             lastPullStartTs = Date.now();
-            await pullFromCloud();
+            await pullFromCloud(options);
         } finally {
             pullPromise = null;
             if(pendingPull){ pendingPull = false; setTimeout(()=>requestPullFromCloud("queued"), 0); }
@@ -3394,7 +3425,7 @@ function filterPendingPayloadAgainstCurrent(next){
     return { ...next, visitors: filteredVisitors, logs: filteredLogs };
 }
 
-async function pullFromCloud(){
+async function pullFromCloud(options = {}){
     if(!isAuthoritativeOwner()) return;
     const licenseKey = localStorage.getItem("vms_license_key");
     if(!licenseKey || !navigator.onLine) return;
@@ -3402,7 +3433,8 @@ async function pullFromCloud(){
     try{
         if(!acquireLock("pull")) return;
         isPulling = true;
-        const res = await fetch(WORKER_BASE_URL + `/pull?licenseKey=${encodeURIComponent(licenseKey)}&since=${lastPullTs}&site=${encodeURIComponent(SITE_ID)}`);
+        const pullSince = options.forceFull ? 0 : lastPullTs;
+        const res = await fetch(WORKER_BASE_URL + `/pull?licenseKey=${encodeURIComponent(licenseKey)}&since=${pullSince}&site=${encodeURIComponent(SITE_ID)}`);
         if(!res.ok) return;
         const data = await res.json();
         const serverTs = Number(data?.serverTs || 0);

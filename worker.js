@@ -1,5 +1,5 @@
 // ==================== VMS WORKER v3.0 - HARDENED PRODUCTION ====================
-// Cloudflare Worker untuk VMS SAPAM MEDED
+// Cloudflare Worker untuk VMS SATPAM MEDED
 // KV Namespace: VMS_STORAGE
 
 const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxYkjSOy6JCuCf2yjGgWtubmA18E1J3MHB9Z1J_YCT59A5yvkneHAGJycHYsi9oN9WbWw/exec';
@@ -1410,22 +1410,23 @@ export default {
                 if (!company) {
                     return json({ ok: false, message: 'Invalid licenseKey' }, 403);
                 }
-                // Pull reads authoritative license-scoped buckets plus the shared license store.
-                // The legacy global hot visitor cache can lag/regress, so it is not merged here.
-                const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, siteFilter, since, MAX_PULL_VISITORS_DEFAULT);
+                // Pull visitor registrations at license scope so every approved device for the
+                // same company can scan badges registered by any other site/device. The `site`
+                // query parameter remains a log filter only; visitor filtering is opt-in via
+                // `visitorSite` for admin/debug use cases.
+                const visitorSiteFilter = url.searchParams.get('visitorSite') || "";
+                const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, visitorSiteFilter, 0, MAX_PULL_VISITORS_DEFAULT);
                 const visitors = {};
                 const MAX_PULL_VISITORS = MAX_PULL_VISITORS_DEFAULT;
                 let visitorCount = 0;
                 const appendPullVisitor = (key, v) => {
                     if (visitorCount >= MAX_PULL_VISITORS) return;
                     if (v?.licenseKey !== licenseKey) return;
-                    if (siteFilter && !(key.startsWith(`${siteFilter}_`) || v?.site === siteFilter)) return;
-                    if (Number(v?.updatedAt || 0) >= since || Number(v?.lastSync || 0) >= since){
-                        const current = visitors[key];
-                        if (shouldPreferEntity(current, v)) {
-                            if (!current) visitorCount++;
-                            visitors[key] = sanitizeVisitorForPull(v);
-                        }
+                    if (visitorSiteFilter && !(key.startsWith(`${visitorSiteFilter}_`) || v?.site === visitorSiteFilter)) return;
+                    const current = visitors[key];
+                    if (shouldPreferEntity(current, v)) {
+                        if (!current) visitorCount++;
+                        visitors[key] = sanitizeVisitorForPull(v);
                     }
                 };
                 for (const [key, v] of Object.entries(bucketVisitors || {})) appendPullVisitor(key, v);
@@ -3114,7 +3115,7 @@ async function appendVisitorsToSheet(env, licenseKey, visitors) {
 
     const ok = await pushVisitorsToGoogleScript(clonePayloadSafe(changedVisitors), { hmacSecret: env?.VMS_GAS_HMAC_SECRET || env?.GAS_HMAC_SECRET || '' });
     if(ok) {
-        // PRUNE STATE: Prevent KV Bloating
+        // PRUNE STATE: keep the snapshot fingerprint index bounded in KV.
         const MAX_SNAPSHOT_STATE = 50000;
         const entries = Object.entries(nextState);
         const prunedState = entries.length > MAX_SNAPSHOT_STATE
@@ -3138,7 +3139,7 @@ function buildGoogleScriptPayload(mode, data = {}) {
     };
     if (logs.length) {
         payload.logs = logs.map(log => {
-            const eventTs = Number(log.eventTs || (typeof log.time === 'number' ? log.time : 0) || log.updatedAt || Date.parse(log.time || log.logTime || 0) || getEventTimestamp());
+            const eventTs = resolveLogEventTimestamp(log);
             const mutationId = sanitizeText(log.mutationId || log.sequenceId || generateMutationId(log.licenseKey || 'unknown', log.deviceId || log.mutationSource || 'gas'), 180);
             return {
                 ...log,
@@ -3269,11 +3270,39 @@ function getPendingQueueLimit(packageName) {
     return 1000;
 }
 
+function parseTimestampMs(value) {
+    if (value instanceof Date) {
+        const ms = value.getTime();
+        return Number.isFinite(ms) ? ms : 0;
+    }
+    if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : 0;
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return 0;
+        if (/^\d+$/.test(trimmed)) {
+            const numeric = Number(trimmed);
+            return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+        }
+        const parsed = Date.parse(trimmed);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+}
+
+function resolveLogEventTimestamp(log = {}, fallback = getEventTimestamp()) {
+    return parseTimestampMs(log?.eventTs) ||
+        parseTimestampMs(log?.time) ||
+        parseTimestampMs(log?.updatedAt) ||
+        parseTimestampMs(log?.logTime) ||
+        parseTimestampMs(log?.persistedAt) ||
+        fallback;
+}
+
 function buildCanonicalLogKey(log) {
     const reg = sanitizeText(log?.reg, 80);
     const action = sanitizeText(log?.action, 40);
     const site = sanitizeText(log?.site, 80);
-    const ts = Math.floor((Date.parse(log?.time || log?.logTime || 0) || Number(log?.persistedAt || 0) || 0) / 1000);
+    const ts = Math.floor(resolveLogEventTimestamp(log, 0) / 1000);
     return `${reg}|${action}|${ts}|${site}`;
 }
 
@@ -3507,4 +3536,4 @@ async function sha256(message) {
     return hashHex;
 }
 
-export { buildGoogleScriptPayload, extractAuthToken, getLicenseStorageKey, normalizeAction };
+export { buildCanonicalLogKey, buildGoogleScriptPayload, extractAuthToken, getLicenseStorageKey, normalizeAction };

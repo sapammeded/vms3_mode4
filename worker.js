@@ -431,7 +431,7 @@ export default {
                     const pendingQueue = await getData(env, 'pending_gas_queue');
                     await saveData(env, 'pending_gas_queue', mergeGasQueueUnique(pendingQueue, gasLogs).slice(-getPendingQueueLimit('PRO')));
                 }
-                return new Response(JSON.stringify({ ...appendAck, syncStatus: appendAck.ok ? 'SYNCED' : 'PENDING_SYNC', invalidRows: invalidRows.length }), { headers: corsHeaders, status: appendAck.ok || !gasLogs.length ? 200 : 202 });
+                return new Response(JSON.stringify({ ...appendAck, syncStatus: appendAck.ok ? 'SYNCED' : 'PENDING_SYNC', invalidRows: invalidRows.length }), { headers: corsHeaders, status: 200 });
             }
 
             // ==================== CHECK-IN / CHECK-OUT MODULE ====================

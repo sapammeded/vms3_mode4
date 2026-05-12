@@ -1205,7 +1205,12 @@ const VMS_MUTATION_FINGERPRINT_KEY = "vms_mutation_fingerprint_cache";
 const MAX_QUEUE_BYTES = 240000;
 const MAX_FINGERPRINT_CACHE = 600;
 const MAX_DEAD_LETTER = 80;
-const HYDRATION_MUTEX = { hydrating:false, mutationDepth:0, token:null };
+const HYDRATION_MUTEX = { hydrating:false, mutationDepth:0, token:null, lastRun:0, owner:null };
+const MIN_INTERVAL_HYDRATION_MS = 4000;
+const HYDRATION_WATCHDOG_TIMEOUT = 25000;
+const RECONNECT_DEBOUNCE_MS = 3500;
+const HYDRATION_LEASE_KEY = "vms_hydration_leader_lease";
+window.VMS_HYDRATION_STATE = window.VMS_HYDRATION_STATE || { active:false, lastHydration:0, lastSuccess:0, failCount:0, lastMutation:"", coordinatorOwner:null };
 const mutationLocks = new Map();
 
 function getApproxBytes(value){ try { return new Blob([JSON.stringify(value)]).size; } catch { return JSON.stringify(value || []).length; } }
@@ -2217,6 +2222,17 @@ window.onunhandledrejection = function(e) {
         } catch(err){ console.error(err); toast("QR tidak terbaca / file tidak valid", "error"); }
     };
 
+    async function lookupRegAuthoritative(reg){
+        const licenseKey = localStorage.getItem("vms_license_key") || "";
+        if(!licenseKey || !navigator.onLine) return null;
+        try {
+            console.log("SCANNER_FALLBACK_HYDRATION", { reg, mode:"targeted_lookup", updatedAt:getWIBISO() });
+            const res = await fetch(`${WORKER_BASE_URL}/lookup-reg?licenseKey=${encodeURIComponent(licenseKey)}&reg=${encodeURIComponent(String(reg||"").trim())}`);
+            if(!res.ok) return null;
+            return await res.json();
+        } catch { return null; }
+    }
+
     async function processScan(qrText){
         let mode = normalizeAction(document.getElementById('scanMode').value);
         let payload = await parseQR(qrText);
@@ -2238,6 +2254,15 @@ window.onunhandledrejection = function(e) {
             }
             let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + reg);
             let visitor = resolvedVisitor.visitor;
+            if(!visitor){
+                const targeted = await lookupRegAuthoritative(reg);
+                if(targeted?.found && targeted?.visitor){
+                    visitors[targeted.siteKey] = { ...(visitors[targeted.siteKey] || {}), ...targeted.visitor };
+                    resolvedVisitor = resolveVisitorByReg(reg);
+                    siteKey = resolvedVisitor.siteKey || targeted.siteKey;
+                    visitor = resolvedVisitor.visitor || targeted.visitor;
+                }
+            }
             if(!visitor){ toast(`Visitor ${reg} tidak ditemukan di license ini`,"error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
@@ -3290,19 +3315,53 @@ window.forceCentralSync = forceCentralSync;
 window.ensureInitialCloudHydration = ensureInitialCloudHydration;
 
 async function requestPullFromCloud(reason="normal", options = {}){
+    const leaderId = localStorage.getItem("vms_device_id") || "unknown";
+    const licenseKey = localStorage.getItem("vms_license_key") || "";
+    if(licenseKey && navigator.onLine){
+        try{
+            const leaseRes = await fetch(`${WORKER_BASE_URL}/hydration-lease`, { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ licenseKey, owner:leaderId, ttlMs:15000 }) });
+            const leaseData = await leaseRes.json().catch(()=>null);
+            if(!leaseData?.acquired){ console.log("HYDRATION_ABORTED", { reason, owner: leaseData?.owner || "", updatedAt:getWIBISO() }); return false; }
+        }catch{}
+    }
+    let lease = {};
+    try { lease = JSON.parse(localStorage.getItem(HYDRATION_LEASE_KEY) || "{}"); } catch {}
+    const nowTs = Date.now();
+    if(lease.owner && lease.owner !== leaderId && Number(lease.expiresAt || 0) > nowTs){
+        console.log("HYDRATION_ABORTED", { reason, owner: lease.owner, updatedAt:getWIBISO() });
+        return false;
+    }
+    localStorage.setItem(HYDRATION_LEASE_KEY, JSON.stringify({ owner: leaderId, leaseTs: nowTs, expiresAt: nowTs + 15000 }));
     if(!isAuthoritativeOwner()) { postSyncMessage("SYNC_START", { reason }); return; }
+    const now = Date.now();
+    if(!options.forceFull && (now - Number(HYDRATION_MUTEX.lastRun || 0) < MIN_INTERVAL_HYDRATION_MS)) return pullPromise || false;
     if (pullPromise) {
         pendingPull = true;
         pendingPullOptions = { ...pendingPullOptions, forceFull: !!(pendingPullOptions.forceFull || options.forceFull) };
+        console.log("HYDRATION_COORDINATOR_LOCK", { reason, owner: HYDRATION_MUTEX.owner || "pullPromise", updatedAt:getWIBISO() });
         return pullPromise;
     }
     const runOptions = { ...options };
     pullPromise = (async ()=>{
         try{
+            HYDRATION_MUTEX.owner = reason;
+            HYDRATION_MUTEX.lastRun = now;
+            window.VMS_HYDRATION_STATE.active = true;
+            window.VMS_HYDRATION_STATE.lastHydration = now;
+            window.VMS_HYDRATION_STATE.coordinatorOwner = reason;
+            console.log("HYDRATION_START", { reason, forceFull: !!runOptions.forceFull, updatedAt:getWIBISO() });
             lastPullStartTs = Date.now();
             await pullFromCloud(runOptions);
+            window.VMS_HYDRATION_STATE.lastSuccess = Date.now();
+            window.VMS_HYDRATION_STATE.failCount = 0;
         } finally {
             pullPromise = null;
+            window.VMS_HYDRATION_STATE.active = false;
+            HYDRATION_MUTEX.owner = null;
+            let curLease = {};
+            try { curLease = JSON.parse(localStorage.getItem(HYDRATION_LEASE_KEY) || "{}"); } catch {}
+            if(curLease.owner === leaderId) localStorage.removeItem(HYDRATION_LEASE_KEY);
+            console.log("HYDRATION_COORDINATOR_RELEASE", { reason, updatedAt:getWIBISO() });
             if(pendingPull){
                 const queuedOptions = pendingPullOptions;
                 pendingPull = false;
@@ -3385,6 +3444,13 @@ function getLogEventKey(log){
     if(!log || typeof log !== "object") return "";
     if(!log.sequenceId) return "";
     return String(log.sequenceId);
+}
+
+function compactVisitorSessions(visitor){
+    if(!visitor || !Array.isArray(visitor.sessions)) return visitor;
+    if(visitor.sessions.length <= 30) return visitor;
+    visitor.sessions = visitor.sessions.sort((a,b)=>Number(b?.checkIn || 0) - Number(a?.checkIn || 0)).slice(0, 30);
+    return visitor;
 }
 
 function validateSavePayload(payload){
@@ -3495,13 +3561,16 @@ async function pullFromCloud(options = {}){
         if(!acquireLock("pull")) return;
         isPulling = true;
         const forceFullVisitors = !!options.forceFull;
-        const pullSince = forceFullVisitors ? 0 : lastPullTs;
+        const pullCursor = String(localStorage.getItem("vms_pull_cursor") || "");
+        const pullSince = forceFullVisitors ? "" : (pullCursor || String(lastPullTs || ""));
         const fullVisitorsParam = forceFullVisitors ? "&fullVisitors=1" : "";
-        const res = await fetch(WORKER_BASE_URL + `/pull?licenseKey=${encodeURIComponent(licenseKey)}&since=${pullSince}&site=${encodeURIComponent(SITE_ID)}${fullVisitorsParam}`);
+        const res = await fetch(WORKER_BASE_URL + `/pull-authoritative-state?licenseKey=${encodeURIComponent(licenseKey)}&since=${pullSince}&site=${encodeURIComponent(SITE_ID)}${fullVisitorsParam}`);
         if(!res.ok) return;
         const data = await res.json();
         const serverTs = Number(data?.serverTs || 0);
         lastPullTs = Math.max(lastPullTs, serverTs);
+        const nextCursor = String(data?.nextCursor || "");
+        if(nextCursor) localStorage.setItem("vms_pull_cursor", nextCursor);
         console.log("SYNC PULL", { since: lastPullTs, inLogs: (data?.logs || []).length });
         const incomingVisitors = data?.visitors || {};
         const incomingLogs = Array.isArray(data?.logs) ? data.logs : [];
@@ -3514,14 +3583,17 @@ async function pullFromCloud(options = {}){
             __lastKnownGoodVisitors = cloneSafe(baseVisitors);
             __lastKnownGoodLogs = cloneSafe(baseLogs);
 
+            let hydrationMutation = "";
             Object.entries(incomingVisitors).forEach(([k,v]) => {
                 if(!k || !v || typeof v !== "object") return;
                 if(!(v.reg || k.includes("_"))) return;
                 const local = nextVisitors[k];
                 if(shouldAcceptIncoming(local, v)){
-                    nextVisitors[k] = { ...local, ...v };
+                    nextVisitors[k] = compactVisitorSessions({ ...local, ...v });
+                    hydrationMutation = String(v?.mutationId || v?.lastMutationId || hydrationMutation || "");
+                    console.log("AUTHORITATIVE_OVERRIDE", { key:k, mutationId:hydrationMutation, updatedAt:getWIBISO() });
                 } else {
-                    console.warn("VISITOR_MERGE_REJECT", { module:"Sync Runtime", reason:"incoming_older", entityId:k, localVersion:Number(local?.version||0), incomingVersion:Number(v?.version||0), persistedAt:Number(v?.persistedAt||0), action:"discard" });
+                    console.warn("STALE_CACHE_SKIPPED", { module:"Sync Runtime", reason:"incoming_older", entityId:k, localVersion:Number(local?.version||0), incomingVersion:Number(v?.version||0), persistedAt:Number(v?.persistedAt||0), action:"discard" });
                 }
             });
 
@@ -3552,6 +3624,7 @@ async function pullFromCloud(options = {}){
             if(!hydrationToken) { logSyncMetric("hydrationRollbacks", { reason:"mutation_in_progress" }); return; }
             window.visitors = nextVisitors;
             markLogsReplaced(nextLogs);
+            window.VMS_HYDRATION_STATE.lastMutation = hydrationMutation || window.VMS_HYDRATION_STATE.lastMutation || "";
             logSyncMetric("hydrationCommits", { visitors:Object.keys(nextVisitors).length, logs:nextLogs.length });
             endHydrationCommit(hydrationToken);
             logsSortedDirty = false;
@@ -4570,14 +4643,41 @@ async function flushLegacySyncQueue(){
     }
 }
 
+async function hardenedLegacyFetch(url, fetchOptions = {}, retryOptions = {}) {
+    const retries = Number(retryOptions.retries || 3);
+    const timeoutMs = Number(retryOptions.timeoutMs || 8000);
+    const baseDelay = Number(retryOptions.baseDelayMs || 450);
+    let lastErr = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await fetch(url, { ...fetchOptions, signal: controller.signal });
+            if (res.ok) return res;
+            if (res.status >= 400 && res.status < 500) return res;
+            lastErr = new Error(`HTTP_${res.status}`);
+        } catch (err) {
+            lastErr = err;
+            if (err?.name === 'AbortError') console.warn('FETCH_ABORT', { url, timeoutMs });
+        } finally {
+            clearTimeout(timeout);
+        }
+        if (attempt < retries) {
+            const jitter = Math.floor(Math.random() * 180);
+            await new Promise(resolve => setTimeout(resolve, (baseDelay * Math.pow(2, attempt)) + jitter));
+        }
+    }
+    throw lastErr || new Error('FETCH_FAILED');
+}
+
 async function syncToCloud(payload, options = {}) {
     if (!payload || !payload.deviceId) return false;
     if (!payload.licenseKey) payload.licenseKey = localStorage.getItem("vms_license_key") || "";
-    if (!payload.licenseKey) { queueLegacySyncPayload(payload); return false; }
-    if (!navigator.onLine) { queueLegacySyncPayload(payload); return false; }
-    if (Date.now() - Number(VMS_LEGACY_SYNC_STATE.lastOnlineAt || 0) < 3000) { queueLegacySyncPayload(payload); return false; }
-    if (Date.now() < VMS_LEGACY_SYNC_STATE.circuitOpenUntil) { queueLegacySyncPayload(payload); return false; }
-    if (VMS_LEGACY_SYNC_STATE.syncing) { queueLegacySyncPayload(payload); return false; }
+    if (!payload.licenseKey || !navigator.onLine) { queueLegacySyncPayload(payload); return false; }
+    if (Date.now() - Number(VMS_LEGACY_SYNC_STATE.lastOnlineAt || 0) < 3000 || Date.now() < VMS_LEGACY_SYNC_STATE.circuitOpenUntil || VMS_LEGACY_SYNC_STATE.syncing) {
+        queueLegacySyncPayload(payload);
+        return false;
+    }
 
     const lastSync = localStorage.getItem("vms_last_sync");
     const currentHash = JSON.stringify(payload);
@@ -4585,36 +4685,26 @@ async function syncToCloud(payload, options = {}) {
 
     VMS_LEGACY_SYNC_STATE.syncing = true;
     try {
-        for(let attempt = 0; attempt < 2; attempt++){
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 7000);
-            try {
-                const res = await fetch(SYNC_WORKER_BASE_URL + "/save", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload),
-                    signal: controller.signal
-                });
-                if (res.ok) {
-                    clearTimeout(timeout);
-                    localStorage.setItem("vms_last_sync", currentHash);
-                    VMS_LEGACY_SYNC_STATE.failCount = 0;
-                    VMS_LEGACY_SYNC_STATE.circuitOpenUntil = 0;
-                    console.log("SYNC SUCCESS");
-                    setTimeout(flushLegacySyncQueue, 500);
-                    return true;
-                }
-                if(res.status >= 400 && res.status < 500) break;
-            } catch (err) {
-                if(err?.name !== "AbortError") console.warn("SYNC ERROR:", err.message);
-            } finally {
-                clearTimeout(timeout);
-            }
-            await new Promise(resolve => setTimeout(resolve, 500 + Math.floor(Math.random() * 500)));
+        const res = await hardenedLegacyFetch(SYNC_WORKER_BASE_URL + "/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }, { retries: 2, timeoutMs: 8000, baseDelayMs: 500 });
+
+        if (res.ok) {
+            localStorage.setItem("vms_last_sync", currentHash);
+            VMS_LEGACY_SYNC_STATE.failCount = 0;
+            VMS_LEGACY_SYNC_STATE.circuitOpenUntil = 0;
+            setTimeout(flushLegacySyncQueue, 500);
+            return true;
         }
+        if (res.status >= 400 && res.status < 500) return false;
+        throw new Error(`SYNC_HTTP_${res.status}`);
+    } catch (err) {
         VMS_LEGACY_SYNC_STATE.failCount++;
-        if(VMS_LEGACY_SYNC_STATE.failCount >= 3){
+        if (VMS_LEGACY_SYNC_STATE.failCount >= 3) {
             VMS_LEGACY_SYNC_STATE.circuitOpenUntil = Date.now() + Math.min(60000, 10000 * VMS_LEGACY_SYNC_STATE.failCount);
+            console.warn("CIRCUIT_BREAKER_OPEN", { until: VMS_LEGACY_SYNC_STATE.circuitOpenUntil, failCount: VMS_LEGACY_SYNC_STATE.failCount });
         }
         queueLegacySyncPayload(payload);
         return false;
@@ -4625,7 +4715,8 @@ async function syncToCloud(payload, options = {}) {
 
 window.addEventListener("online", () => {
     VMS_LEGACY_SYNC_STATE.lastOnlineAt = Date.now();
-    setTimeout(flushLegacySyncQueue, 3500);
+    clearTimeout(window.__vmsReconnectTimer);
+    window.__vmsReconnectTimer = setTimeout(flushLegacySyncQueue, RECONNECT_DEBOUNCE_MS);
 });
 window.addEventListener("offline", () => {
     VMS_LEGACY_SYNC_STATE.circuitOpenUntil = Date.now() + 5000;

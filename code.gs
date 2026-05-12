@@ -16,6 +16,8 @@ const SHEET_VERSION_COLUMN = 13;
 const SHEET_MUTATION_SOURCE_COLUMN = 15;
 const SHEET_REQUEST_FINGERPRINT_COLUMN = 16;
 const SHEET_ACTIVITY_LOG_COLUMN = 17;
+const ATTENDANCE_SHEET_NAME = 'DAILY_ATTENDANCE';
+const ATTENDANCE_INDEX_PROPERTY_KEY = 'vms_attendance_row_index_v1';
 
 function getEventTimestamp() {
   return new Date().getTime();
@@ -103,6 +105,66 @@ function getDailyLogSheet_(eventTs) {
   let sheet = ss.getSheetByName(name);
   if (!sheet) sheet = ss.insertSheet(name);
   return sheet;
+}
+
+function getOrCreateAttendanceSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(ATTENDANCE_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(ATTENDANCE_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 10).setValues([['attendanceKey', 'reg', 'nama', 'perusahaan', 'tanggal', 'checkinTimes', 'checkoutTimes', 'lastStatus', 'lastMutationId', 'updatedAt']]);
+  }
+  return sheet;
+}
+
+function loadAttendanceIndexCache_() {
+  const props = PropertiesService.getScriptProperties();
+  try { return JSON.parse(props.getProperty(ATTENDANCE_INDEX_PROPERTY_KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+
+function saveAttendanceIndexCache_(cache) {
+  const compact = {};
+  Object.keys(cache || {}).slice(-20000).forEach(function(k) { if (cache[k]) compact[k] = Number(cache[k]); });
+  PropertiesService.getScriptProperties().setProperty(ATTENDANCE_INDEX_PROPERTY_KEY, JSON.stringify(compact));
+}
+
+function buildAttendanceIndexCache_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const cache = {};
+  if (lastRow > 1) {
+    const keys = sheet.getRange(2, 1, lastRow - 1, 1).getValues().flat().map(String);
+    keys.forEach(function(k, i) { if (k) cache[k] = i + 2; });
+  }
+  saveAttendanceIndexCache_(cache);
+  return cache;
+}
+
+function upsertAttendanceRow_(sheet, log, rowIndexCache) {
+  const action = normalizeAction(log.action);
+  if (!(action === ACTION_TYPES.CHECK_IN || action === ACTION_TYPES.CHECK_OUT)) return;
+  const day = Utilities.formatDate(new Date(Number(log.eventTs || getEventTimestamp())), SHEET_TIMEZONE, 'yyyy-MM-dd');
+  const reg = String(log.reg || '').trim().toUpperCase();
+  const key = reg + '|' + day;
+  const eventTime = Utilities.formatDate(new Date(Number(log.eventTs || getEventTimestamp())), SHEET_TIMEZONE, 'HH:mm:ss');
+  let idx = Number((rowIndexCache || {})[key] || 0);
+  if (idx < 2 || idx > sheet.getLastRow()) idx = 0;
+  if (idx === 0) {
+    const newRow = sheet.getLastRow() + 1;
+    sheet.getRange(newRow, 1, 1, 10).setValues([[key, reg, log.nama || '', log.perusahaan || '', day, action === ACTION_TYPES.CHECK_IN ? eventTime : '', action === ACTION_TYPES.CHECK_OUT ? eventTime : '', action, log.mutationId || '', getWIBISO(log.updatedAt || log.eventTs)]]);
+    if (rowIndexCache) rowIndexCache[key] = newRow;
+    return;
+  }
+  const initialRow = sheet.getRange(idx, 1, 1, 10).getValues()[0];
+  const rowUpdatedAt = parseEventTimestamp_(initialRow[9], 0);
+  const incomingUpdatedAt = Number(log.updatedAt || log.eventTs || 0);
+  if (incomingUpdatedAt < rowUpdatedAt) return;
+  const latestRow = sheet.getRange(idx, 1, 1, 10).getValues()[0];
+  const latestCheckIns = String(latestRow[5] || '').split(',').map(function(v) { return String(v || '').trim(); }).filter(Boolean);
+  const latestCheckOuts = String(latestRow[6] || '').split(',').map(function(v) { return String(v || '').trim(); }).filter(Boolean);
+  const mergedCheckIns = Array.from(new Set(action === ACTION_TYPES.CHECK_IN ? latestCheckIns.concat([eventTime]) : latestCheckIns));
+  const mergedCheckOuts = Array.from(new Set(action === ACTION_TYPES.CHECK_OUT ? latestCheckOuts.concat([eventTime]) : latestCheckOuts));
+  sheet.getRange(idx, 6, 1, 5).setValues([[mergedCheckIns.join(', '), mergedCheckOuts.join(', '), action, log.mutationId || latestRow[8] || '', getWIBISO(incomingUpdatedAt)]]);
 }
 
 function hydrateProcessedCache_(sheet, ledgerSheet) {
@@ -198,19 +260,31 @@ function hexHmacSha256_(message, secret) {
   return bytes.map(function(b) { const v = b < 0 ? b + 256 : b; return ('0' + v.toString(16)).slice(-2); }).join('');
 }
 
-function verifyRequestSignature_(body) {
+function verifyRequestSignature_(body, e) {
   const props = PropertiesService.getScriptProperties();
   const secret = props.getProperty(GAS_SIGNATURE_SECRET_PROPERTY) || '';
   const migrationMode = props.getProperty(SIGNATURE_MIGRATION_MODE_PROPERTY) === 'true';
-  const signature = String(body && (body.signature || body.vmsSignature || body.hmac || '') || '').trim().toLowerCase();
+  const headerSig = e && e.parameter && (e.parameter.signature || e.parameter.vmsSignature || e.parameter.hmac) || '';
+  const signature = String(body && (body.signature || body.vmsSignature || body.hmac || '') || headerSig || '').trim().toLowerCase();
   if (!secret) return { ok: migrationMode, migration: migrationMode, reason: 'SECRET_NOT_CONFIGURED' };
   if (!signature) return { ok: migrationMode, migration: migrationMode, reason: 'SIGNATURE_MISSING' };
-  const copy = Object.assign({}, body);
+  const copy = Object.assign({}, body || {});
   delete copy.signature;
   delete copy.vmsSignature;
   delete copy.hmac;
-  const expected = hexHmacSha256_(JSON.stringify(copy), secret).toLowerCase();
-  const ok = signature.length === expected.length && signature.split('').reduce(function(acc, ch, i) { return acc | (ch.charCodeAt(0) ^ expected.charCodeAt(i)); }, 0) === 0;
+  const payloadWithoutSig = JSON.stringify(copy);
+  const payloadAsReceived = JSON.stringify(body || {});
+  const expectedNoSig = hexHmacSha256_(payloadWithoutSig, secret).toLowerCase();
+  const expectedRaw = hexHmacSha256_(payloadAsReceived, secret).toLowerCase();
+  const secureEquals_ = function(left, right) {
+    if (left.length !== right.length) return false;
+    return left.split('').reduce(function(acc, ch, i) { return acc | (ch.charCodeAt(0) ^ right.charCodeAt(i)); }, 0) === 0;
+  };
+  const ok = secureEquals_(signature, expectedNoSig) || secureEquals_(signature, expectedRaw);
+  if (!ok && migrationMode) {
+    structuredLog_('INVALID_SIGNATURE_MIGRATION_BYPASS', { mutationId: '', mutationSource: body && (body.source || body.deviceId) || 'unknown', reason: 'MIGRATION_MODE_ACTIVE' });
+    return { ok: true, migration: true, reason: 'MIGRATION_BYPASS' };
+  }
   return { ok: ok, migration: false, reason: ok ? 'OK' : 'INVALID_SIGNATURE' };
 }
 
@@ -372,6 +446,9 @@ function appendRowsIdempotent_(logs) {
     const legacySheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
     const ledgerSheet = getOrCreateLedgerSheet_();
     const stateSheet = getOrCreateStateSheet_();
+    const attendanceSheet = getOrCreateAttendanceSheet_();
+    let attendanceIndexCache = loadAttendanceIndexCache_();
+    if (!Object.keys(attendanceIndexCache).length) attendanceIndexCache = buildAttendanceIndexCache_(attendanceSheet);
     const stateMap = loadEntityStateMap_(stateSheet);
     const seen = getCachedProcessedSet_(legacySheet, ledgerSheet);
     const ledgerLogs = [];
@@ -427,6 +504,7 @@ function appendRowsIdempotent_(logs) {
 
         if (rowNumber) {
           appendActivityToExistingRow_(appendSheet, rowNumber, log);
+          upsertAttendanceRow_(attendanceSheet, log, attendanceIndexCache);
           rowsUpdated++;
           structuredLog_('DAILY_ACTIVITY_UPDATED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: reg, row: rowNumber, day: getDailyKey_(log), activity: getActivityEntry_(log) });
         } else {
@@ -434,6 +512,7 @@ function appendRowsIdempotent_(logs) {
           rowNumber = appendSheet.getLastRow() + 1;
           appendSheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
           dailyRowCache[dailyKey] = rowNumber;
+          upsertAttendanceRow_(attendanceSheet, log, attendanceIndexCache);
           rowsAppended++;
           structuredLog_('DAILY_ACTIVITY_ROW_CREATED', { mutationId: mutationId, mutationSource: log.mutationSource, reg: reg, row: rowNumber, day: getDailyKey_(log), activity: getActivityEntry_(log) });
         }
@@ -453,6 +532,7 @@ function appendRowsIdempotent_(logs) {
       updateEntityState_(stateSheet, stateMap, ledgerLogs);
     }
     saveProcessedIds_(Array.from(seen));
+    saveAttendanceIndexCache_(attendanceIndexCache);
     return { rowsAppended: rowsAppended, rowsUpdated: rowsUpdated, mutationIds: mutationIds, skippedMutationIds: skippedMutationIds, staleMutationIds: staleMutationIds, staleCount: staleMutationIds.length, versionRejectedMutationIds: versionRejectedMutationIds, versionRejectedCount: versionRejectedMutationIds.length, requestFingerprints: requestFingerprints };
   } finally {
     structuredLog_('LOCK_RELEASED', { mutationId: '', mutationSource: 'gas', lock: 'sheet_append' });
@@ -463,7 +543,7 @@ function appendRowsIdempotent_(logs) {
 function doPost(e) {
   try {
     const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    const auth = verifyRequestSignature_(body);
+    const auth = verifyRequestSignature_(body, e);
     if (!auth.ok) {
       structuredLog_('INVALID_SIGNATURE_REJECTED', { mutationId: '', mutationSource: body.source || 'unknown', reason: auth.reason });
       return jsonResponse_({ ok: false, ack: false, reason: 'INVALID_SIGNATURE', mutationIds: [], skippedMutationIds: [], ackMutationIds: [], updatedAt: getWIBISO() });

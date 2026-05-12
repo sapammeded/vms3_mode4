@@ -16,6 +16,8 @@ const MAX_BUCKET_LOGS = 1200;
 const MAX_BUCKET_VISITORS = 1000;
 const MAX_PULL_LOGS_DEFAULT = 1000;
 const MAX_PULL_VISITORS_DEFAULT = 2000;
+const REG_INDEX_KEY_PREFIX = 'reg_index_';
+const HYDRATION_LEASE_PREFIX = 'lease_hydration_';
 const MAX_SHARED_STORE_LOGS = 3000;
 const MAX_SHARED_STORE_VISITORS = 2000;
 const RUNTIME_BUCKET_CACHE_TTL_MS = 1500;
@@ -1195,6 +1197,7 @@ export default {
                         acceptedVisitors[key] = sanitizeVisitorEntity(stampAuthoritativeEntity({ ...sanitizeVisitorEntity(prev), ...normalizedVisitor, licenseKey, lastSync: mutationClock.updatedAt }, mutationClock, mutationId, body.deviceId || getWorkerOriginNode()));
                     }
                     if (Object.keys(acceptedVisitors).length) {
+                        await applyAuthoritativeRegIndexUpdates(env, licenseKey, acceptedVisitors);
                         const visitorBucketOk = await appendVisitorsToBuckets(env, licenseKey, acceptedVisitors);
                         if (!visitorBucketOk) throw new Error('AUTHORITATIVE_VISITOR_BUCKET_SAVE_FAILED');
                         // Hot cache mirror must append/merge to avoid corrupt rolling snapshots.
@@ -1397,7 +1400,7 @@ export default {
                 });
             }
 
-            if (path === '/pull' && request.method === 'GET') {
+            if ((path === '/pull' || path === '/pull-authoritative-state') && request.method === 'GET') {
                 const licenseKey = url.searchParams.get('licenseKey') || "";
                 const sinceRaw = url.searchParams.get('since') || "0";
                 const siteFilter = url.searchParams.get('site') || "";
@@ -1448,7 +1451,9 @@ export default {
                     if (l?.licenseKey !== licenseKey) return;
                     if (siteFilter && l?.site !== siteFilter) return;
                     const logTs = Number(l?.persistedAt || l?.commitClock || 0) || Date.parse(l?.time || 0);
-                    if (!(logTs >= since)) return;
+                    const seq = String(l?.sequenceId || '');
+                    if (since && seq && seq <= String(since)) return;
+                    if (!since && !(logTs >= 0)) return;
                     scannedLogs++;
                     const nextLog = Object.assign({}, l, { sequenceId: l.sequenceId || generateSequenceId(licenseKey, Number(l?.persistedAt || Date.now())) });
                     const dedupeKey = nextLog.sequenceId || buildCanonicalLogKey(nextLog);
@@ -1467,7 +1472,64 @@ export default {
                     .slice(-MAX_PULL_LOGS);
                 console.log("AUTHORITATIVE LOG SORT", { total: dedupedLogs.length });
                 console.log('PULL DEDUPE', { before: scannedLogs, after: dedupedLogs.length, scanLimit: MAX_PULL_SCAN_LOGS });
-                return new Response(JSON.stringify({ ok: true, visitors, logs: dedupedLogs, serverTs: Date.now() }), { headers: corsHeaders });
+                const nextCursor = Math.max(
+                    Number(since || 0),
+                    dedupedLogs.reduce((m, l) => Math.max(m, Number(l?.persistedAt || l?.updatedAt || 0)), 0),
+                    Object.values(visitors).reduce((m, v) => Math.max(m, Number(v?.updatedAt || 0)), 0)
+                );
+                const versions = {
+                    visitorMaxUpdatedAt: Object.values(visitors).reduce((m, v) => Math.max(m, Number(v?.updatedAt || 0)), 0),
+                    logMaxPersistedAt: dedupedLogs.reduce((m, l) => Math.max(m, Number(l?.persistedAt || l?.updatedAt || 0)), 0)
+                };
+                const mutationMap = {
+                    visitorMutationIds: Object.values(visitors).map(v => String(v?.mutationId || v?.lastMutationId || '')).filter(Boolean).slice(-4000),
+                    logMutationIds: dedupedLogs.map(l => String(l?.mutationId || l?.sequenceId || '')).filter(Boolean).slice(-4000)
+                };
+                return new Response(JSON.stringify({ ok: true, authoritative: true, visitors, logs: dedupedLogs, versions, mutationMap, nextCursor, updatedAt: Date.now(), serverTs: Date.now() }), { headers: corsHeaders });
+            }
+            if (path === '/hydration-lease' && request.method === 'POST') {
+                const body = await request.json().catch(() => ({}));
+                const licenseKey = sanitizeText(body.licenseKey || '', 120);
+                const owner = sanitizeText(body.owner || body.deviceId || '', 180);
+                const ttlMs = Math.max(5000, Math.min(30000, Number(body.ttlMs || 15000)));
+                if (!licenseKey || !owner) return json({ ok:false, reason:'BAD_REQUEST' }, 400);
+                const key = `${HYDRATION_LEASE_PREFIX}${licenseKey}`;
+                const now = Date.now();
+                const lease = await getData(env, key) || {};
+                if (lease.owner && lease.owner !== owner && Number(lease.expiresAt || 0) > now) {
+                    return json({ ok:false, acquired:false, owner:lease.owner, expiresAt:lease.expiresAt, serverTs:now });
+                }
+                const existingVersion = Number(lease.version || 0);
+                const next = { owner, leaseTs: now, expiresAt: now + ttlMs, version: existingVersion + 1, nonce: crypto.randomUUID() };
+                await env.VMS_STORAGE.put(key, JSON.stringify(next));
+                const confirm = await getData(env, key);
+                if (!confirm || confirm.owner !== owner || confirm.nonce !== next.nonce) {
+                    return json({ ok:false, acquired:false, reason:'LEASE_RACE_LOST', owner:confirm?.owner || '', serverTs:Date.now() }, 409);
+                }
+                return json({ ok:true, acquired:true, lease: next, serverTs:now });
+            }
+            if (path === '/lookup-reg' && request.method === 'GET') {
+                const licenseKey = sanitizeText(url.searchParams.get('licenseKey') || '', 120);
+                const reg = sanitizeText(url.searchParams.get('reg') || '', 120).toUpperCase();
+                if (!licenseKey || !reg) return json({ ok:false, reason:'BAD_REQUEST' }, 400);
+                let regIndex = await getRegIndex(env, licenseKey);
+                let indexedSiteKey = regIndex && regIndex[reg] ? String(regIndex[reg]) : '';
+                const bucketVisitors = await getRecentVisitorBuckets(env, licenseKey, '', 0, MAX_PULL_VISITORS_DEFAULT);
+                const sharedStore = await loadLicenseSharedStore(env, licenseKey);
+                const merged = { ...(sharedStore.visitors || {}), ...(bucketVisitors || {}) };
+                if (!indexedSiteKey) {
+                    Object.entries(merged).forEach(([k, v]) => {
+                        const rowReg = String(v?.reg || k.split('_').slice(1).join('_')).toUpperCase();
+                        if (rowReg) regIndex[rowReg] = k;
+                    });
+                    await saveRegIndex(env, licenseKey, regIndex);
+                    indexedSiteKey = regIndex[reg] || '';
+                }
+                const entry = indexedSiteKey ? [indexedSiteKey, merged[indexedSiteKey]] : Object.entries(merged).find(([k, v]) => String(v?.reg || k.split('_').slice(1).join('_')).toUpperCase() === reg);
+                if (!entry) return json({ ok:true, found:false, reg, updatedAt:Date.now() });
+                const [siteKey, visitor] = entry;
+                if (siteKey && regIndex[reg] !== siteKey) { regIndex[reg] = siteKey; await saveRegIndex(env, licenseKey, regIndex); }
+                return json({ ok:true, found:true, siteKey, visitor: sanitizeVisitorForPull(visitor), updatedAt: Date.now() });
             }
 
             if (path === '/retry-gas-sync' && request.method === 'POST') {
@@ -1511,9 +1573,9 @@ export default {
                 processingQueue = mergeGasQueueUnique(processingQueue, batch);
                 await saveData(env, 'pending_gas_queue', remainingPending.slice(-queueLimit));
                 await saveData(env, 'processing_gas_queue', processingQueue.slice(-queueLimit));
-                const gasOk = await pushLogsToGoogleScript(batch, { hmacSecret: env.VMS_GAS_HMAC_SECRET || env.GAS_HMAC_SECRET || "" });
-                console.log(JSON.stringify({ type: gasOk ? "PENDING_GAS_REPLAY_SENT" : "PENDING_GAS_REPLAY_FAILED", registerCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.REGISTER || normalizeAction(log.action) === ACTION_TYPES.WALK_IN).length, activityCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.CHECK_IN || normalizeAction(log.action) === ACTION_TYPES.CHECK_OUT).length, updatedAt:getWIBISO() }));
-                if (!gasOk) {
+                const gasAck = await appendLogsToSheetWithAck(batch, env);
+                console.log(JSON.stringify({ type: gasAck?.ok ? "PENDING_GAS_REPLAY_SENT" : "PENDING_GAS_REPLAY_FAILED", ack: !!gasAck?.ok, exactAck: !!gasAck?.exactAck, registerCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.REGISTER || normalizeAction(log.action) === ACTION_TYPES.WALK_IN).length, activityCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.CHECK_IN || normalizeAction(log.action) === ACTION_TYPES.CHECK_OUT).length, updatedAt:getWIBISO() }));
+                if (!gasAck?.ok) {
                     processingQueue = await getData(env, 'processing_gas_queue');
                     const retryQueue = mergeGasQueueUnique(remainingPending, processingQueue);
                     if (retryQueue.length > queueLimit) console.log(JSON.stringify({ type:"QUEUE_OVERFLOW", queue:"pending_gas_queue", package: companyPackage, before: retryQueue.length, limit: queueLimit, updatedAt: Date.now() }));
@@ -1759,6 +1821,23 @@ async function saveData(env, key, data) {
         console.error(`[SAVE_DATA] Error for key "${key}":`, e);
         return false;
     }
+}
+
+async function getRegIndex(env, licenseKey) {
+    return await getData(env, `${REG_INDEX_KEY_PREFIX}${licenseKey}`) || {};
+}
+
+async function saveRegIndex(env, licenseKey, index) {
+    return await saveData(env, `${REG_INDEX_KEY_PREFIX}${licenseKey}`, index || {});
+}
+
+async function applyAuthoritativeRegIndexUpdates(env, licenseKey, visitors = {}) {
+    const regIndex = await getRegIndex(env, licenseKey);
+    Object.entries(visitors || {}).forEach(([siteKey, visitor]) => {
+        const reg = String(visitor?.reg || siteKey.split('_').slice(1).join('_') || '').toUpperCase();
+        if (reg) regIndex[reg] = siteKey;
+    });
+    await saveRegIndex(env, licenseKey, regIndex);
 }
 
 
@@ -3227,15 +3306,17 @@ async function pushLogsToGoogleScript(logs, options = {}) {
         console.log(JSON.stringify({ type:"GAS_SIGNATURE_CONFIG_MISSING", mode:"append-only", action:"blocked_unsigned_request", updatedAt: getEventTimestamp() }));
         return fail({ error:"GAS_SIGNATURE_CONFIG_MISSING" });
     }
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const payload = buildGoogleScriptPayload('append-only', { logs });
-        const headers = { 'Content-Type': 'application/json' };
-        let requestBody = JSON.stringify(payload);
-        const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
-        headers['x-vms-signature'] = signature;
-        requestBody = JSON.stringify({ ...payload, signature });
+    const payload = buildGoogleScriptPayload('append-only', { logs });
+    const headers = { 'Content-Type': 'application/json' };
+    let requestBody = JSON.stringify(payload);
+    const signature = await hmacSha256Hex(requestBody, options.hmacSecret);
+    headers['x-vms-signature'] = signature;
+    requestBody = JSON.stringify({ ...payload, signature });
+    const attempts = detailed ? 3 : 2;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      try {
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
             headers,
@@ -3244,6 +3325,10 @@ async function pushLogsToGoogleScript(logs, options = {}) {
         });
         const result = await res.json().catch(() => null);
         if (!res.ok || result?.ok === false || result?.ack !== true) {
+            if ((res.status >= 500 || res.status === 429) && attempt < (attempts - 1)) {
+                await new Promise(resolve => setTimeout(resolve, (350 * Math.pow(2, attempt)) + Math.floor(Math.random() * 180)));
+                continue;
+            }
             globalThis.__vms_metrics.gasFail++;
             globalThis.__vms_metrics.lastGasFailAt = Date.now();
             console.error('[GAS] Append logical failure:', { status: res.status, result });
@@ -3259,7 +3344,11 @@ async function pushLogsToGoogleScript(logs, options = {}) {
             return { ok:true, ack:true, rowsAppended:Number(result.rowsAppended || 0), mutationIds, skippedMutationIds, ackMutationIds, requestFingerprints, ackCount };
         }
         return true;
-    } catch (error) {
+      } catch (error) {
+        if ((error?.name === 'AbortError' || /network|fetch|timeout/i.test(String(error?.message || ''))) && attempt < (attempts - 1)) {
+            await new Promise(resolve => setTimeout(resolve, (350 * Math.pow(2, attempt)) + Math.floor(Math.random() * 180)));
+            continue;
+        }
         globalThis.__vms_metrics.gasFail++;
         globalThis.__vms_metrics.lastGasFailAt = Date.now();
         if (error?.name === 'AbortError') {
@@ -3270,9 +3359,11 @@ async function pushLogsToGoogleScript(logs, options = {}) {
         console.error('[GAS] Append request error:', error);
         console.log(JSON.stringify({ type:"GAS_FAIL", mode:"append-only", reason:error?.message || "request_error", updatedAt: getEventTimestamp() }));
         return fail({ reason:error?.message || 'request_error' });
-    } finally {
+      } finally {
         clearTimeout(timeoutId);
+      }
     }
+    return fail({ reason: 'retry_exhausted' });
 }
 
 function getPendingQueueLimit(packageName) {

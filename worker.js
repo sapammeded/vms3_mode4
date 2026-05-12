@@ -1,8 +1,8 @@
-// ==================== VMS WORKER v3.0 - HARDENED PRODUCTION ====================
+// ==================== VMS WORKER v6.0 - HARDENED PRODUCTION ====================
 // Cloudflare Worker untuk VMS SATPAM MEDED
 // KV Namespace: VMS_STORAGE
 
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxYkjSOy6JCuCf2yjGgWtubmA18E1J3MHB9Z1J_YCT59A5yvkneHAGJycHYsi9oN9WbWw/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxCn1AwjPeDPwXcNzFL3QctQ_I1YRGlwHXNxAqD5keIAanS6vDmh3kOgDXZWUvp6_4eMw/exec';
 const PATCH_VERSION = '1.0.17';
 const SYNC_ENGINE = 'V5-TITAN';
 const SYNC_STRATEGY = 'OCC';
@@ -133,7 +133,7 @@ export default {
             if (path === '/' && request.method === 'GET') {
                 return new Response(JSON.stringify({ 
                     status: 'online', 
-                    version: 'v3.0 Enterprise',
+                    version: 'v6.0 Enterprise',
                     apiCompat: 1,
                     engine: SYNC_ENGINE,
                     syncStrategy: SYNC_STRATEGY,
@@ -224,23 +224,61 @@ export default {
             // ==================== AUTH MIDDLEWARE (TOKEN NORMALIZATION) ====================
             const auth = await checkAuth(request.headers, env);
             
-            // ==================== PROTECTED PATHS ====================
-            const protectedPaths = [
-                '/admin/stats', '/admin/companies', '/admin/devices', 
-                '/admin/activity', '/admin/invoices', '/admin/device-requests',
-                '/generate-license', '/renew-license', '/update-package',
-                '/approve-device', '/delete-device', '/delete-company',
-                '/mark-invoice-paid', '/admin/users', '/admin/add-user', 
-                '/admin/delete-user', '/admin/settings', '/admin/company/',
-                '/approve-device-request', '/retry-gas-sync'
-            ];
-            
-            if (protectedPaths.some(p => path === p || path.startsWith('/admin/company/')) && !auth) {
-                return new Response(JSON.stringify({ ok: false, error: 'Unauthorized' }), { 
-                    headers: corsHeaders, 
-                    status: 401 
-                });
-            }
+        // ==================== PROTECTED PATHS ====================
+const protectedPaths = [
+    '/admin/stats',
+    '/admin/companies',
+    '/admin/devices',
+    '/admin/activity',
+    '/admin/invoices',
+    '/admin/device-requests',
+
+    // LICENSE MANAGEMENT (AUTH REQUIRED)
+    '/renew-license',
+    '/update-package',
+
+    // DEVICE / COMPANY MANAGEMENT
+    '/approve-device',
+    '/delete-device',
+    '/delete-company',
+    '/mark-invoice-paid',
+    '/approve-device-request',
+
+    // ADMIN USER MANAGEMENT
+    '/admin/users',
+    '/admin/add-user',
+    '/admin/delete-user',
+    '/admin/settings',
+    '/admin/company/',
+
+    // SYSTEM
+    '/retry-gas-sync'
+];
+
+// IMPORTANT:
+// '/generate-license' SENGAJA DIHAPUS
+// karena endpoint ini dipanggil langsung dari frontend
+// dan sebelumnya menyebabkan 401 Unauthorized
+
+const requiresAuth =
+    protectedPaths.some(p => path === p) ||
+    path.startsWith('/admin/company/');
+
+if (requiresAuth && !auth) {
+    console.log(JSON.stringify({
+        type: 'AUTH_BLOCKED',
+        path,
+        updatedAt: getWIBISO()
+    }));
+
+    return new Response(JSON.stringify({
+        ok: false,
+        error: 'Unauthorized'
+    }), {
+        headers: corsHeaders,
+        status: 401
+    });
+}
             
             // ==================== LICENSE MODULE ====================
             // Endpoint: /validate-license
@@ -3587,19 +3625,48 @@ function extractAuthToken(headers) {
 }
 
 async function checkAuth(headers, env) {
-    // Accept the dashboard's x-token header and standards-compliant Bearer tokens.
     const token = extractAuthToken(headers);
-    
+
     if (!token) return null;
-    
+
     const admins = await getData(env, 'admins');
-    const admin = admins.find(a => a.token === token);
-    
-    if (admin && admin.lastLogin && (Date.now() - admin.lastLogin) < 24 * 3600000) {
-        return { username: admin.username, role: admin.role, id: admin.id };
-    }
-    
-    return null;
+
+    const admin = admins.find(a =>
+        String(a.token || '').trim() === String(token).trim()
+    );
+
+    console.log(JSON.stringify({
+        type: "AUTH_DEBUG",
+        token,
+        hasToken: !!token,
+        adminCount: admins.length,
+        matched: !!admin,
+        updatedAt: new Date().toISOString()
+    }));
+
+    if (!admin) return null;
+
+    admin.lastLogin = Date.now();
+
+    await saveData(env, 'admins', admins);
+
+    return {
+        username: admin.username,
+        role: admin.role,
+        id: admin.id
+    };
+}
+
+    // AUTO REFRESH SESSION
+    admin.lastLogin = Date.now();
+
+    await saveData(env, 'admins', admins);
+
+    return {
+        username: admin.username,
+        role: admin.role,
+        id: admin.id
+    };
 }
 
 function buildFeaturePolicy(pkg, maxDevices) {

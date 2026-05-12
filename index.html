@@ -1566,6 +1566,7 @@ window.onunhandledrejection = function(e) {
     const QR_SECRET = "VmsEnt2026!";
     let processingRegs = new Set();
     let isManualProcessing = false;
+    let visitorMissPullCache = new Map();
 
     let deviceId = localStorage.getItem('vms_device_id');
     if(!deviceId){

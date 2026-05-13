@@ -2,7 +2,7 @@
 // Cloudflare Worker untuk VMS SATPAM MEDED
 // KV Namespace: VMS_STORAGE
 
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwfNemo8-sGZB22sluhNerm8SGspxyULPTc_GaEugJbKpC3K4TG4P2O-EVOOdnmpJYDAA/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzDIIiP1jJl_vmQHeWtQBPzTbfBUqttMmZ-OuAJDLOklvOp-9_bnbpymycKlTj05r8b3A/exec';
 const PATCH_VERSION = '1.0.17';
 const SYNC_ENGINE = 'V5-TITAN';
 const SYNC_STRATEGY = 'OCC';
@@ -158,16 +158,14 @@ export default {
                 }
                 
                 // FIX: invalidate old token before creating new one
-                admins = admins.map(a => {
-                    if (a.username === username) {
-                        return { ...a, token: null };
-                    }
-                    return a;
-                });
-                await saveData(env, 'admins', admins);
-                
                 const admin = admins.find(a => a.username === username);
-                
+
+if (admin) {
+    admin.token = null;
+}
+
+await saveData(env, 'admins', admins);
+
                 if (!admin) {
                     globalThis.__vms_metrics.authFail++;
                     console.log(`[LOGIN] User not found: ${username}`);
@@ -763,54 +761,123 @@ if (requiresAuth && !auth) {
                 }), { headers: corsHeaders });
             }
             
-            // ==================== GENERATE LICENSE MODULE ====================
-            if (path === '/generate-license' && request.method === 'POST') {
-                const body = await request.json();
-                const { companyName, pic, phone, email, address, package: pkg, customMaxDevices, notes } = body;
-                
-                if (!companyName || !pic || !phone || !email) {
-                    return new Response(JSON.stringify({ ok: false, error: 'Missing required fields' }), { headers: corsHeaders });
-                }
-                
-                const licenseKey = 'VMS-' + generateId().toUpperCase().substring(0, 16);
-                
-                let maxDevices = customMaxDevices ? parseInt(customMaxDevices) : (pkg === 'PRO' ? 999 : (pkg === 'BASIC' ? 10 : 2));
-                let expiredAt = Date.now();
-                
-                if (pkg === 'DEMO') {
-                    expiredAt += 7 * 86400000;
-                } else {
-                    expiredAt += 30 * 86400000;
-                }
-                
-                const newCompany = {
-                    id: generateId(),
-                    companyName: companyName,
-                    licenseKey: licenseKey,
-                    pic: pic,
-                    phone: phone,
-                    email: email,
-                    address: address || '',
-                    package: pkg,
-                    maxDevices: maxDevices,
-                    currentDevices: 0,
-                    expiredAt: expiredAt,
-                    status: 'ACTIVE',
-                    createdAt: Date.now(),
-                    notes: notes || ''
-                };
-                
-                const companies = await getData(env, 'companies');
-                companies.push(newCompany);
-                await saveData(env, 'companies', companies);
-                
-                return new Response(JSON.stringify({
-                    ok: true,
-                    licenseKey: licenseKey,
-                    company: newCompany
-                }), { headers: corsHeaders });
-            }
-            
+// ==================== GENERATE LICENSE MODULE ====================
+if (path === '/generate-license' && request.method === 'POST') {
+
+    try {
+
+        const body = await request.json();
+
+        const {
+            companyName,
+            pic,
+            phone,
+            email,
+            address,
+            package: pkg,
+            customMaxDevices,
+            notes
+        } = body;
+
+        if (!companyName || !pic || !phone || !email) {
+
+            return json({
+                ok: false,
+                error: 'Missing required fields'
+            }, 400);
+        }
+
+        const licenseKey =
+            'VMS-' +
+            generateId().toUpperCase().substring(0, 16);
+
+        const maxDevices =
+            customMaxDevices
+                ? parseInt(customMaxDevices)
+                : (
+                    pkg === 'PRO'
+                        ? 999
+                        : (pkg === 'BASIC' ? 10 : 2)
+                );
+
+        let expiredAt = Date.now();
+
+        expiredAt += (
+            pkg === 'DEMO'
+                ? 7 * 86400000
+                : 30 * 86400000
+        );
+
+        const newCompany = {
+            id: generateId(),
+            companyName,
+            licenseKey,
+            pic,
+            phone,
+            email,
+            address: address || '',
+            package: pkg || 'BASIC',
+            maxDevices,
+            currentDevices: 0,
+            expiredAt,
+            status: 'ACTIVE',
+            createdAt: Date.now(),
+            notes: notes || ''
+        };
+
+        // FIX HARDENED
+        let companies =
+            await getData(env, 'companies');
+
+        if (!Array.isArray(companies)) {
+            companies = [];
+        }
+
+        companies.push(newCompany);
+
+        // DIRECT KV WRITE
+        await env.VMS_STORAGE.put(
+            'companies',
+            JSON.stringify(companies)
+        );
+
+        // VERIFY WRITE
+        const verify =
+            await getData(env, 'companies');
+
+        console.log(JSON.stringify({
+            type: 'COMPANY_SAVE_DEBUG',
+            saved: Array.isArray(verify),
+            total: Array.isArray(verify)
+                ? verify.length
+                : -1,
+            licenseKey,
+            updatedAt: Date.now()
+        }));
+
+        return json({
+            ok: true,
+            licenseKey,
+            company: newCompany
+        });
+
+    } catch(err) {
+
+        console.error(JSON.stringify({
+            type:'GENERATE_LICENSE_ERROR',
+            message: err?.message || String(err),
+            stack: err?.stack || '',
+            updatedAt: Date.now()
+        }));
+
+        return json({
+            ok:false,
+            error:'GENERATE_LICENSE_ERROR',
+            message: err?.message || String(err)
+        },500);
+    }
+}
+
             // ==================== RENEW LICENSE MODULE ====================
             if (path === '/renew-license' && request.method === 'POST') {
                 const body = await request.json();
@@ -1034,65 +1101,131 @@ if (requiresAuth && !auth) {
                 return new Response(JSON.stringify({ ok: true, invoice: invoice }), { headers: corsHeaders });
             }
             
-            // ==================== ADMIN USERS MODULE ====================
-            if (path === '/admin/users' && request.method === 'GET') {
-                const admins = await getData(env, 'admins');
-                const safeAdmins = admins.map(a => ({ username: a.username, role: a.role, lastLogin: a.lastLogin }));
-                return new Response(JSON.stringify(safeAdmins), { headers: corsHeaders });
-            }
-            
-            if (path === '/admin/add-user' && request.method === 'POST') {
-                const body = await request.json();
-                const { username, password, role } = body;
-                
-                if (!username || !password) {
-                    return new Response(JSON.stringify({ ok: false, error: 'Username and password required' }), { headers: corsHeaders });
-                }
-                
-                const admins = await getData(env, 'admins');
-                if (admins.find(a => a.username === username)) {
-                    return new Response(JSON.stringify({ ok: false, error: 'Username already exists' }), { headers: corsHeaders });
-                }
-                
-                const hash = await sha256(password);
-                admins.push({
-                    id: generateId(),
-                    username: username,
-                    password: hash,
-                    role: role || 'ADMIN',
-                    createdAt: Date.now()
-                });
-                await saveData(env, 'admins', admins);
-                
-                return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
-            }
-            
-            if (path === '/admin/delete-user' && request.method === 'POST') {
-                const body = await request.json();
-                const { username } = body;
-                
-                if (username === 'admin') {
-                    return new Response(JSON.stringify({ ok: false, error: 'Cannot delete default admin' }), { headers: corsHeaders });
-                }
-                
-                const admins = await getData(env, 'admins');
-                const filtered = admins.filter(a => a.username !== username);
-                await saveData(env, 'admins', filtered);
-                
-                return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
-            }
-            
-            // ==================== ADMIN SETTINGS MODULE ====================
-            if (path === '/admin/settings' && request.method === 'POST') {
-                const body = await request.json();
-                await saveData(env, 'settings', body);
-                return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
-            }
-            
-            if (path === '/admin/settings' && request.method === 'GET') {
-                const settings = await getData(env, 'settings');
-                return new Response(JSON.stringify(settings), { headers: corsHeaders });
-            }
+// ==================== ADMIN USERS MODULE ====================
+if (path === '/admin/users' && request.method === 'GET') {
+    const admins = await getData(env, 'admins');
+
+    const safeAdmins = admins.map(a => ({
+        username: a.username,
+        role: a.role,
+        lastLogin: a.lastLogin || 0,
+        hasToken: !!a.token
+    }));
+
+    return new Response(JSON.stringify(safeAdmins), {
+        headers: corsHeaders
+    });
+}
+
+if (path === '/admin/add-user' && request.method === 'POST') {
+
+    const body = await request.json();
+    const { username, password, role } = body;
+
+    if (!username || !password) {
+        return new Response(JSON.stringify({
+            ok: false,
+            error: 'Username and password required'
+        }), {
+            headers: corsHeaders
+        });
+    }
+
+    const admins = await getData(env, 'admins');
+
+    if (admins.find(a => a.username === username)) {
+        return new Response(JSON.stringify({
+            ok: false,
+            error: 'Username already exists'
+        }), {
+            headers: corsHeaders
+        });
+    }
+
+    const hash = await sha256(password);
+
+    const newAdmin = {
+        id: generateId(),
+        username: username,
+        password: hash,
+        role: role || 'ADMIN',
+
+        // FIX AUTH TOKEN
+        token:
+            'vms_token_' +
+            Date.now() +
+            '_' +
+            Math.random().toString(36).slice(2, 10),
+
+        createdAt: Date.now(),
+        lastLogin: 0
+    };
+
+    admins.push(newAdmin);
+
+    const saveOk = await saveData(env, 'admins', admins);
+
+    console.log(JSON.stringify({
+        type: "ADMIN_CREATED",
+        ok: saveOk,
+        username: username,
+        hasToken: !!newAdmin.token,
+        updatedAt: Date.now()
+    }));
+
+    if (!saveOk) {
+        return new Response(JSON.stringify({
+            ok: false,
+            error: 'ADMIN_SAVE_FAILED'
+        }), {
+            headers: corsHeaders,
+            status: 500
+        });
+    }
+
+    return new Response(JSON.stringify({
+        ok: true,
+        username: username,
+        role: newAdmin.role,
+        token: newAdmin.token
+    }), {
+        headers: corsHeaders
+    });
+}
+
+if (path === '/admin/delete-user' && request.method === 'POST') {
+
+    const body = await request.json();
+    const { username } = body;
+
+    if (username === 'admin') {
+        return new Response(JSON.stringify({
+            ok: false,
+            error: 'Cannot delete default admin'
+        }), {
+            headers: corsHeaders
+        });
+    }
+
+    const admins = await getData(env, 'admins');
+
+    const filtered = admins.filter(a => a.username !== username);
+
+    const saveOk = await saveData(env, 'admins', filtered);
+
+    console.log(JSON.stringify({
+        type: "ADMIN_DELETE",
+        ok: saveOk,
+        username,
+        updatedAt: Date.now()
+    }));
+
+    return new Response(JSON.stringify({
+        ok: true
+    }), {
+        headers: corsHeaders
+    });
+}
             
             // ==================== SYNC MODULE (FIELD DEVICE) ====================
             if (path === '/save' && request.method === 'POST') {
@@ -1536,26 +1669,108 @@ if (requiresAuth && !auth) {
                 return new Response(JSON.stringify({ ok: true, authoritative: true, visitors, logs: dedupedLogs, versions, mutationMap, nextCursor, updatedAt: Date.now(), serverTs: Date.now() }), { headers: corsHeaders });
             }
             if (path === '/hydration-lease' && request.method === 'POST') {
-                const body = await request.json().catch(() => ({}));
-                const licenseKey = sanitizeText(body.licenseKey || '', 120);
-                const owner = sanitizeText(body.owner || body.deviceId || '', 180);
-                const ttlMs = Math.max(5000, Math.min(30000, Number(body.ttlMs || 15000)));
-                if (!licenseKey || !owner) return json({ ok:false, reason:'BAD_REQUEST' }, 400);
-                const key = `${HYDRATION_LEASE_PREFIX}${licenseKey}`;
-                const now = Date.now();
-                const lease = await getData(env, key) || {};
-                if (lease.owner && lease.owner !== owner && Number(lease.expiresAt || 0) > now) {
-                    return json({ ok:false, acquired:false, owner:lease.owner, expiresAt:lease.expiresAt, serverTs:now });
-                }
-                const existingVersion = Number(lease.version || 0);
-                const next = { owner, leaseTs: now, expiresAt: now + ttlMs, version: existingVersion + 1, nonce: crypto.randomUUID() };
-                await env.VMS_STORAGE.put(key, JSON.stringify(next));
-                const confirm = await getData(env, key);
-                if (!confirm || confirm.owner !== owner || confirm.nonce !== next.nonce) {
-                    return json({ ok:false, acquired:false, reason:'LEASE_RACE_LOST', owner:confirm?.owner || '', serverTs:Date.now() }, 409);
-                }
-                return json({ ok:true, acquired:true, lease: next, serverTs:now });
-            }
+
+    try {
+
+        const body = await request.json().catch(() => ({}));
+
+        const licenseKey = sanitizeText(
+            body.licenseKey || '',
+            120
+        );
+
+        const owner = sanitizeText(
+            body.owner || body.deviceId || '',
+            180
+        );
+
+        const ttlMs = Math.max(
+            5000,
+            Math.min(30000, Number(body.ttlMs || 15000))
+        );
+
+        if (!licenseKey || !owner) {
+            return json({
+                ok:false,
+                reason:'BAD_REQUEST'
+            }, 400);
+        }
+
+        const key =
+            `${HYDRATION_LEASE_PREFIX}${licenseKey}`;
+
+        const now = Date.now();
+
+        const lease =
+            await getData(env, key) || {};
+
+        if (
+            lease.owner &&
+            lease.owner !== owner &&
+            Number(lease.expiresAt || 0) > now
+        ) {
+
+            return json({
+                ok:false,
+                acquired:false,
+                owner:lease.owner,
+                expiresAt:lease.expiresAt,
+                serverTs:now
+            }, 409);
+        }
+
+        const existingVersion =
+            Number(lease.version || 0);
+
+        const nonce =
+            'lease_' +
+            Date.now() +
+            '_' +
+            Math.random().toString(36).slice(2,10);
+
+        const next = {
+            owner,
+            leaseTs: now,
+            expiresAt: now + ttlMs,
+            version: existingVersion + 1,
+            nonce
+        };
+
+        await env.VMS_STORAGE.put(
+    key,
+    JSON.stringify(next)
+);
+
+return json({
+    ok:true,
+    acquired:true,
+    lease: next,
+    serverTs: now
+});
+
+        return json({
+            ok:true,
+            acquired:true,
+            lease: next,
+            serverTs:now
+        });
+
+    } catch(err) {
+
+        console.error(JSON.stringify({
+            type:"HYDRATION_LEASE_ERROR",
+            message: err?.message || String(err),
+            stack: err?.stack || '',
+            updatedAt: Date.now()
+        }));
+
+        return json({
+            ok:false,
+            error:'HYDRATION_LEASE_ERROR',
+            message: err?.message || String(err)
+        }, 500);
+    }
+}
             if (path === '/lookup-reg' && request.method === 'GET') {
                 const licenseKey = sanitizeText(url.searchParams.get('licenseKey') || '', 120);
                 const reg = sanitizeText(url.searchParams.get('reg') || '', 120).toUpperCase();

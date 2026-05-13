@@ -638,27 +638,57 @@
         </div>
 
         <div id="companiesTab" class="tab-pane">
-            <div class="card">
-                <div class="card-header">
-                    <h3>🏢 All Companies</h3>
-                    <div style="display: flex; gap: 12px;">
-                        <input type="text" id="companySearch" placeholder="Search company..." style="width: 200px;">
-                        <button class="btn btn-primary btn-sm" onclick="openGenerateLicenseModal()">+ New License</button>
-                        <button class="btn btn-info btn-sm" onclick="exportCompaniesToExcel()">📊 Export Excel</button>
-                    </div>
-                </div>
-                <div class="table-wrapper">
-                    <table id="companiesTable" style="width: 100%;">
-                        <thead>
-                            <tr>
-                                <th>Company</th><th>License Key</th><th>Package</th><th>Devices</th><th>Max</th><th>Expiry</th><th>Status</th><th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
+    <div class="card">
+        <div class="card-header">
+            <h3>🏢 All Companies</h3>
+
+            <div style="display: flex; gap: 12px;">
+                <input 
+                    type="text" 
+                    id="companySearch" 
+                    placeholder="Search company..." 
+                    style="width: 200px;"
+                >
+
+                <button 
+                    class="btn btn-primary btn-sm" 
+                    onclick="openGenerateLicenseModal()"
+                >
+                    + New License
+                </button>
+
+                <button 
+                    class="btn btn-info btn-sm" 
+                    onclick="exportCompaniesToExcel()"
+                >
+                    📊 Export Excel
+                </button>
             </div>
         </div>
+
+        <div class="table-wrapper">
+            <table id="companiesTable" style="width: 100%;">
+                
+                <thead>
+                    <tr>
+                        <th>Company</th>
+                        <th>License Key</th>
+                        <th>Package</th>
+                        <th>Devices</th>
+                        <th>Max</th>
+                        <th>Expiry</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+
+                <!-- FIX: tbody ID wajib ada -->
+                <tbody id="companiesTableBody"></tbody>
+
+            </table>
+        </div>
+    </div>
+</div>
 
         <div id="devicesTab" class="tab-pane">
             <div class="card">

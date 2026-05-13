@@ -607,9 +607,27 @@ function appendRowsIdempotent_(logs) {
   }
 }
 
+
+function doGet() {
+  return jsonResponse_({
+    ok: true,
+    service: 'VMS_GAS_BRIDGE',
+    status: 'healthy',
+    sheetId: SHEET_ID,
+    updatedAt: getWIBISO()
+  });
+}
+
 function doPost(e) {
   try {
-    const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const rawBody = (e && e.postData && e.postData.contents) || '{}';
+    let body = {};
+    try {
+      body = JSON.parse(rawBody || '{}');
+    } catch (parseErr) {
+      structuredLog_('INVALID_JSON_PAYLOAD', { mutationId: '', mutationSource: 'unknown', reason: parseErr && parseErr.message || String(parseErr) });
+      return jsonResponse_({ ok: false, ack: false, mutationIds: [], skippedMutationIds: [], ackMutationIds: [], error: 'INVALID_JSON_PAYLOAD', updatedAt: getWIBISO() });
+    }
 
     // TEMP BYPASS SIGNATURE
     const auth = { ok: true };

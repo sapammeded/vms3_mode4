@@ -1387,39 +1387,108 @@
     }
 
     function renderCompaniesTable() {
-        const tbody = document.querySelector("#companiesTable tbody");
-        if (!tbody) return;
-        
-        const search = document.getElementById("companySearch")?.value.toLowerCase() || "";
-        const filtered = companiesData.filter(c => c.companyName.toLowerCase().includes(search));
-        
-        tbody.innerHTML = "";
-        
-        for (const company of filtered) {
-            const row = tbody.insertRow();
-            const isExpired = company.expiredAt < Date.now();
-            const packageClass = company.package === 'PRO' ? 'badge-pro' : (company.package === 'BASIC' ? 'badge-basic' : 'badge-demo');
-            
-            row.innerHTML = `
-                <td>
-                    <strong>${escapeHtml(company.companyName)}</strong><br>
-                    <small class="text-muted">${escapeHtml(company.pic || '-')}</small>
-                </td>
-                <td><code class="code">${company.licenseKey}</code></span></td>
-                <td><span class="badge ${packageClass}">${company.package}</span></span></td>
-                <td>${company.currentDevices || 0} / ${company.maxDevices}</span></td>
-                <td>${company.maxDevices}</span></td>
-                <td class="${isExpired ? 'text-danger' : ''}">${formatDate(company.expiredAt)}</span></td>
-                <td><span class="badge ${isExpired ? 'badge-expired' : 'badge-active'}">${isExpired ? 'EXPIRED' : (company.status || 'ACTIVE')}</span></span></td>
-                <td>
-                    <button class="btn btn-info btn-sm" onclick="viewCompanyDetails('${company.id}')">Detail</button>
-                    <button class="btn btn-warning btn-sm" onclick="openRenewModal('${company.id}', '${escapeHtml(company.companyName)}')">Renew</button>
-                    <button class="btn btn-primary btn-sm" onclick="openUpgradeModal('${company.id}', '${escapeHtml(company.companyName)}', '${company.package}')">Upgrade</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteCompany('${company.id}')">Delete</button>
-                </span>
-            `;
-        }
+    const tbody = document.getElementById("companiesTableBody");
+
+    if (!tbody) {
+        console.error("companiesTableBody not found");
+        return;
     }
+
+    const search =
+        document.getElementById("companySearch")?.value
+            .toLowerCase()
+            .trim() || "";
+
+    const filtered = (companiesData || []).filter(c =>
+        String(c.companyName || "")
+            .toLowerCase()
+            .includes(search)
+    );
+
+    tbody.innerHTML = "";
+
+    for (const company of filtered) {
+
+        const row = tbody.insertRow();
+
+        const isExpired =
+            Number(company.expiredAt || 0) < Date.now();
+
+        const packageClass =
+            company.package === "PRO"
+                ? "badge-pro"
+                : (
+                    company.package === "BASIC"
+                        ? "badge-basic"
+                        : "badge-demo"
+                );
+
+        row.innerHTML = `
+            <td>
+                <strong>${escapeHtml(company.companyName || "-")}</strong><br>
+                <small class="text-muted">
+                    ${escapeHtml(company.pic || "-")}
+                </small>
+            </td>
+
+            <td>
+                <code class="code">
+                    ${escapeHtml(company.licenseKey || "-")}
+                </code>
+            </td>
+
+            <td>
+                <span class="badge ${packageClass}">
+                    ${escapeHtml(company.package || "-")}
+                </span>
+            </td>
+
+            <td>
+                ${company.currentDevices || 0}
+                /
+                ${company.maxDevices || 0}
+            </td>
+
+            <td>
+                ${company.maxDevices || 0}
+            </td>
+
+            <td class="${isExpired ? "text-danger" : ""}">
+                ${formatDate(company.expiredAt)}
+            </td>
+
+            <td>
+                <span class="badge ${isExpired ? "badge-expired" : "badge-active"}">
+                    ${isExpired ? "EXPIRED" : (company.status || "ACTIVE")}
+                </span>
+            </td>
+
+            <td>
+                <button class="btn btn-info btn-sm"
+                    onclick="viewCompanyDetails('${company.id}')">
+                    Detail
+                </button>
+
+                <button class="btn btn-warning btn-sm"
+                    onclick="openRenewModal('${company.id}', '${escapeHtml(company.companyName)}')">
+                    Renew
+                </button>
+
+                <button class="btn btn-primary btn-sm"
+                    onclick="openUpgradeModal('${company.id}', '${escapeHtml(company.companyName)}', '${company.package}')">
+                    Upgrade
+                </button>
+
+                <button class="btn btn-danger btn-sm"
+                    onclick="deleteCompany('${company.id}')">
+                    Delete
+                </button>
+            </td>
+        `;
+    }
+
+    console.log("Companies rendered:", filtered.length);
+}
 
     function renderExpiringTable() {
         const tbody = document.querySelector("#expiringTable tbody");

@@ -1563,9 +1563,6 @@ window.onunhandledrejection = function(e) {
 // VMS ULTIMATE MODE - UNLIMITED SCAN | NO NONCE | NO STATUS LOCK
 // ============================================================
 
-const visitorMissPullCache = new Map();
-const VISITOR_MISS_PULL_COOLDOWN_MS = 15000;
-
 (async function(){
     const QR_SECRET = "VmsEnt2026!";
     let processingRegs = new Set();

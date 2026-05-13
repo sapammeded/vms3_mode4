@@ -1387,10 +1387,10 @@
     }
 
     function renderCompaniesTable() {
-    const tbody = document.getElementById("companiesTableBody");
+    const tbody = document.querySelector("#companiesTable tbody") || document.getElementById("companiesTableBody");
 
     if (!tbody) {
-        console.error("companiesTableBody not found");
+        console.error("companies table body not found");
         return;
     }
 
@@ -1752,7 +1752,14 @@
                 document.getElementById("genAddress").value = "";
                 document.getElementById("genNotes").value = "";
 
-                loadAllData();
+                if (data.company) {
+                    companiesData = [data.company, ...(companiesData || []).filter(c => c.id !== data.company.id)];
+                    renderCompaniesTable();
+                    renderExpiringTable();
+                    renderRecentLicensesTable();
+                } else {
+                    await loadCompanies();
+                }
                 switchTab('companies');
             } else {
                 showToast(data?.error || "Failed to generate license", "error");

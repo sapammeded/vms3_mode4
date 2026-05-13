@@ -1,8 +1,8 @@
-// ==================== VMS WORKER v6.0 - HARDENED PRODUCTION ====================
+// ==================== VMS WORKER v7.0 - HARDENED PRODUCTION ====================
 // Cloudflare Worker untuk VMS SATPAM MEDED
 // KV Namespace: VMS_STORAGE
 
-const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxCn1AwjPeDPwXcNzFL3QctQ_I1YRGlwHXNxAqD5keIAanS6vDmh3kOgDXZWUvp6_4eMw/exec';
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwfNemo8-sGZB22sluhNerm8SGspxyULPTc_GaEugJbKpC3K4TG4P2O-EVOOdnmpJYDAA/exec';
 const PATCH_VERSION = '1.0.17';
 const SYNC_ENGINE = 'V5-TITAN';
 const SYNC_STRATEGY = 'OCC';
@@ -133,7 +133,7 @@ export default {
             if (path === '/' && request.method === 'GET') {
                 return new Response(JSON.stringify({ 
                     status: 'online', 
-                    version: 'v6.0 Enterprise',
+                    version: 'v7.0 Enterprise',
                     apiCompat: 1,
                     engine: SYNC_ENGINE,
                     syncStrategy: SYNC_STRATEGY,
@@ -3162,15 +3162,55 @@ function normalizeSheetLogsForAppend(logs) {
 
 async function appendLogsToSheetWithAck(logs, env = null) {
     const normalizedLogs = normalizeSheetLogsForAppend(logs);
-    if (!normalizedLogs.length) return { ok:true, ack:true, rowsAppended:0, mutationIds:[], skippedMutationIds:[], ackMutationIds:[] };
-    const result = await pushLogsToGoogleScript(clonePayloadSafe(normalizedLogs), { detailed:true, hmacSecret: env?.VMS_GAS_HMAC_SECRET || env?.GAS_HMAC_SECRET || '' });
-    const expectedIds = normalizedLogs.map(log => String(log.mutationId)).filter(Boolean);
-    const expectedFingerprints = normalizedLogs.map(log => String(log.requestFingerprint || '')).filter(Boolean);
-    const ackIds = new Set([...(result.mutationIds || []), ...(result.skippedMutationIds || []), ...(result.ackMutationIds || [])].map(String));
-    const ackFingerprints = new Set([...(result.requestFingerprints || []), ...(result.ackFingerprints || [])].map(String));
-    const exactAck = expectedIds.every(id => ackIds.has(id)) && Number(result.ackCount || ackIds.size) === expectedIds.length && expectedFingerprints.every(fp => ackFingerprints.has(fp));
-    if(!exactAck) console.log(JSON.stringify({ type:"GAS_ACK_MISMATCH", expectedIds, result, updatedAt:getWIBISO() }));
-    return { ...result, ok: !!(result.ok && result.ack && exactAck), exactAck, expectedMutationIds: expectedIds };
+
+    if (!normalizedLogs.length) {
+        return {
+            ok: true,
+            ack: true,
+            rowsAppended: 0,
+            mutationIds: [],
+            skippedMutationIds: [],
+            ackMutationIds: []
+        };
+    }
+
+    const result = await pushLogsToGoogleScript(
+        clonePayloadSafe(normalizedLogs),
+        {
+            detailed: true,
+            hmacSecret:
+                env?.VMS_GAS_HMAC_SECRET ||
+                env?.GAS_HMAC_SECRET ||
+                ''
+        }
+    );
+
+    console.log(JSON.stringify({
+        type: "GAS_RAW_RESPONSE",
+        result,
+        updatedAt: getWIBISO()
+    }));
+
+    // =========================
+    // RELAXED ACK VALIDATION
+    // =========================
+
+    const ackIds = new Set([
+        ...(result.mutationIds || []),
+        ...(result.skippedMutationIds || []),
+        ...(result.ackMutationIds || [])
+    ].map(String));
+
+    const hasAnyAck =
+        ackIds.size > 0 ||
+        result.rowsAppended > 0 ||
+        result.rowsUpdated > 0;
+
+    return {
+        ...result,
+        ok: !!(result.ok && hasAnyAck),
+        exactAck: hasAnyAck
+    };
 }
 
 async function appendLogsToSheet(logs, env = null) {

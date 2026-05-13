@@ -3657,18 +3657,6 @@ async function checkAuth(headers, env) {
     };
 }
 
-    // AUTO REFRESH SESSION
-    admin.lastLogin = Date.now();
-
-    await saveData(env, 'admins', admins);
-
-    return {
-        username: admin.username,
-        role: admin.role,
-        id: admin.id
-    };
-}
-
 function buildFeaturePolicy(pkg, maxDevices) {
     const packageName = String(pkg || 'DEMO').toUpperCase();
     const isPro = packageName === 'PRO' || packageName === 'FULL';

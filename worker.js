@@ -1096,6 +1096,7 @@ if (requiresAuth && !auth) {
             
             // ==================== SYNC MODULE (FIELD DEVICE) ====================
             if (path === '/save' && request.method === 'POST') {
+                try {
                 const rawBody = await request.text();
 
                 let body = {};
@@ -1436,6 +1437,15 @@ if (requiresAuth && !auth) {
                     }
                 }
                 });
+                } catch (saveErr) {
+                    globalThis.__vms_metrics.saveFail++;
+                    console.error('[SAVE_ENDPOINT_ERROR]', saveErr);
+                    return json({
+                        ok: false,
+                        error: 'SAVE_RUNTIME_ERROR',
+                        message: saveErr?.message || 'Unknown /save runtime error'
+                    }, 500);
+                }
             }
 
             if ((path === '/pull' || path === '/pull-authoritative-state') && request.method === 'GET') {
@@ -3646,18 +3656,6 @@ async function checkAuth(headers, env) {
 
     if (!admin) return null;
 
-    admin.lastLogin = Date.now();
-
-    await saveData(env, 'admins', admins);
-
-    return {
-        username: admin.username,
-        role: admin.role,
-        id: admin.id
-    };
-}
-
-    // AUTO REFRESH SESSION
     admin.lastLogin = Date.now();
 
     await saveData(env, 'admins', admins);

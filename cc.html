@@ -1031,7 +1031,7 @@
 <script>
     const API_URL = "https://vms3modev4.sapammeded.workers.dev";
     
-    let token = localStorage.getItem("vms_admin_token") || null;
+    let token = localStorage.getItem("vms_admin_token") || localStorage.getItem("adminToken") || null;
     let currentUser = null;
     let refreshInterval = null;
     
@@ -1047,6 +1047,7 @@
     let serverClockTimer = null;
     let workerHealthHistory = [];
     let loadCycleId = 0;
+    let unauthorizedStreak = 0;
 
     function showToast(message, type = "info") {
         const container = document.getElementById("toastContainer");
@@ -1071,7 +1072,7 @@
                 ...options.headers
             };
             
-            const currentToken = token || localStorage.getItem("vms_admin_token");
+            const currentToken = token || localStorage.getItem("vms_admin_token") || localStorage.getItem("adminToken");
             if (currentToken) {
                 const cleanToken = String(currentToken).trim();
                 headers["Authorization"] = "Bearer " + cleanToken;
@@ -1109,10 +1110,16 @@
             }
 
             if (res.status === 401) {
-                console.log('[API_CALL] Unauthorized, logging out...');
-                logout();
+                unauthorizedStreak += 1;
+                console.log(`[API_CALL] Unauthorized streak: ${unauthorizedStreak}`);
+                if (unauthorizedStreak >= 3) {
+                    console.log('[API_CALL] Unauthorized threshold reached, logging out...');
+                    logout();
+                }
                 return null;
             }
+
+            unauthorizedStreak = 0;
 
             if (!res.ok) {
                 console.error('[API ERROR]', res.status, data);
@@ -1174,6 +1181,8 @@
                 currentUser = { username: data.username, role: data.role };
                 
                 localStorage.setItem("vms_admin_token", token);
+                localStorage.setItem("adminToken", token);
+                unauthorizedStreak = 0;
                 localStorage.setItem("vms_admin_user", data.username);
                 localStorage.setItem("vms_admin_role", data.role);
                 
@@ -1211,6 +1220,8 @@
         token = null;
         currentUser = null;
         localStorage.removeItem("vms_admin_token");
+        localStorage.removeItem("adminToken");
+        unauthorizedStreak = 0;
         localStorage.removeItem("vms_admin_user");
         localStorage.removeItem("vms_admin_role");
         
@@ -1599,7 +1610,7 @@
         const maxDevices = document.getElementById("genMaxDevices").value;
         const address = document.getElementById("genAddress").value;
         const notes = document.getElementById("genNotes").value;
-        const currentToken = token || localStorage.getItem("vms_admin_token") || "";
+        const currentToken = token || localStorage.getItem("vms_admin_token") || localStorage.getItem("adminToken") || "";
 
         if (!companyName || !pic || !phone || !email) {
             showToast("Please fill all required fields", "error");
@@ -2193,7 +2204,7 @@
     }
 
     async function init() {
-        const savedToken = localStorage.getItem("vms_admin_token");
+        const savedToken = localStorage.getItem("vms_admin_token") || localStorage.getItem("adminToken");
         const savedUser = localStorage.getItem("vms_admin_user");
         const savedRole = localStorage.getItem("vms_admin_role");
         const loginOverlay = document.getElementById("loginOverlay");
@@ -2226,9 +2237,9 @@
             if (!document.hidden && token) loadAllData();
         });
         window.addEventListener("storage", (e) => {
-            if (e.key === "vms_admin_token" && e.newValue !== token) {
+            if ((e.key === "vms_admin_token" || e.key === "adminToken") && e.newValue !== token) {
                 token = e.newValue || null;
-                if (!token) logout();
+                if (!token && !localStorage.getItem("vms_admin_token") && !localStorage.getItem("adminToken")) logout();
             }
         });
     }

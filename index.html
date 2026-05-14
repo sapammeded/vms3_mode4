@@ -1545,11 +1545,15 @@ function saveVisitor(siteKey, data, reg, sourceAction){
     return true;
 }
 
-function resolveVisitorByReg(reg){
+function resolveVisitorByReg(reg) {
     const regText = String(reg || "").trim();
     if(!regText) return { siteKey:"", visitor:null };
+    
+    // Coba di site saat ini dulu
     const preferredKey = SITE_ID + "_" + regText;
     if(visitors[preferredKey]) return { siteKey:preferredKey, visitor:visitors[preferredKey] };
+    
+    // Cari di ALL site (untuk multi-device dalam satu license)
     let bestKey = "";
     let bestVisitor = null;
     Object.entries(visitors || {}).forEach(([key, visitor]) => {
@@ -1561,7 +1565,19 @@ function resolveVisitorByReg(reg){
             bestVisitor = visitor;
         }
     });
-    return { siteKey:bestKey, visitor:bestVisitor };
+    
+    // Kalau ketemu, simpan mapping ke site saat ini juga (biar next time langsung)
+    if(bestVisitor && bestKey) {
+        const currentKey = SITE_ID + "_" + regText;
+        if(!visitors[currentKey]) {
+            visitors[currentKey] = { ...bestVisitor, site: SITE_ID };
+            console.log("VISITOR_MIGRATED_TO_CURRENT_SITE", { from: bestKey, to: currentKey, reg: regText });
+            secureSave();
+        }
+        return { siteKey:currentKey, visitor:visitors[currentKey] };
+    }
+    
+    return { siteKey:"", visitor:null };
 }
 
 async function requestVisitorMissPull(reg, reason){
@@ -1787,6 +1803,9 @@ window.onunhandledrejection = function(e) {
             reg: log.reg,
             nama: visitor?.nama || log.name || log.reg,
             perusahaan: visitor?.perusahaan || log.company || "",
+            tujuan: visitor?.tujuan || log.tujuan || "",           // <-- TAMBAH
+            dept: visitor?.dept || log.dept || "",                 // <-- TAMBAH
+            keterangan: visitor?.keterangan || log.keterangan || "", // <-- TAMBAH
             action,
             eventTs: Number(log.eventTs || log.time || log.updatedAt || getEventTimestamp()),
             logTime: log.logTime || getWIBISO(log.eventTs || log.time || log.updatedAt || getEventTimestamp()),
@@ -1849,8 +1868,6 @@ window.onunhandledrejection = function(e) {
         queueAppendRetry(row);
         return false;
     }
-    window.appendScanLogToGoogleSheet = appendScanLogToGoogleSheet;
-
 
     async function ensureJsPDFReady(){
     if(window.jspdf) return true;

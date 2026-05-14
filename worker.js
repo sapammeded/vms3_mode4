@@ -430,6 +430,7 @@ if (requiresAuth && !auth) {
             if (path === '/sheet-append' && request.method === 'POST') {
                 const body = await request.json();
                 const rows = Array.isArray(body.logs) ? body.logs : [];
+                const scopedLicenseKey = sanitizeText(body.licenseKey || rows[0]?.licenseKey || '', 120);
                 console.log(JSON.stringify({ type:"SHEET_APPEND_ACTION_DEBUG", rows: rows.map(log => ({ reg: log?.reg || '', action: log?.action || '', normalizedAction: normalizeAction(log?.action) })).slice(0, 10), updatedAt: getWIBISO() }));
                 const invalidRows = [];
                 const gasLogs = rows
@@ -464,8 +465,8 @@ if (requiresAuth && !auth) {
                 if(invalidRows.length) console.log(JSON.stringify({ type:"SHEET_APPEND_INVALID_ACTION", invalidRows, updatedAt:getWIBISO() }));
                 const appendAck = gasLogs.length ? await appendLogsToSheetWithAck(gasLogs, env) : { ok:false, ack:false, mutationIds:[], skippedMutationIds:[], rowsAppended:0 };
                 if(!appendAck.ok && gasLogs.length){
-                    const pendingQueue = await getData(env, 'pending_gas_queue');
-                    await saveData(env, 'pending_gas_queue', mergeGasQueueUnique(pendingQueue, gasLogs).slice(-getPendingQueueLimit('PRO')));
+                    const pendingQueue = await getData(env, getPendingGasQueueKey(scopedLicenseKey));
+                    await saveData(env, getPendingGasQueueKey(scopedLicenseKey), mergeGasQueueUnique(pendingQueue, gasLogs).slice(-getPendingQueueLimit('PRO')));
                 }
                 return new Response(JSON.stringify({ ...appendAck, syncStatus: appendAck.ok ? 'SYNCED' : 'PENDING_SYNC', invalidRows: invalidRows.length }), { headers: corsHeaders, status: 200 });
             }
@@ -1486,11 +1487,11 @@ if (path === '/admin/delete-user' && request.method === 'POST') {
                         const gasOk = await appendLogsToSheet(gasLogs, env);
                         if (!gasOk) {
                             console.log(JSON.stringify({ type:"GAS_ACTIVITY_APPEND_FAILED", count:gasLogs.length, updatedAt:getWIBISO() }));
-                            const pendingQueue = await getData(env, 'pending_gas_queue');
+                            const pendingQueue = await getData(env, getPendingGasQueueKey(licenseKey));
                             const mergedQueue = mergeGasQueueUnique(pendingQueue, gasLogs);
                             const queueLimit = getPendingQueueLimit(company.package);
                             if (mergedQueue.length > queueLimit) console.log(JSON.stringify({ type:"QUEUE_OVERFLOW", queue:"pending_gas_queue", package: company.package, before: mergedQueue.length, limit: queueLimit, updatedAt: Date.now() }));
-                            await saveDataOrThrow(env, 'pending_gas_queue', mergedQueue.slice(-queueLimit));
+                            await saveDataOrThrow(env, getPendingGasQueueKey(licenseKey), mergedQueue.slice(-queueLimit));
                         }
                     }
                     if (rejectedExpired.length) {
@@ -1518,10 +1519,10 @@ if (path === '/admin/delete-user' && request.method === 'POST') {
                         const visitorAppendAck = await appendLogsToSheetWithAck(visitorEvents, env);
                         if(!visitorAppendAck.ok){
                             console.log(JSON.stringify({ type:"GAS_REGISTER_APPEND_FAILED", count:visitorEvents.length, reason:visitorAppendAck.error || "ack_failed", updatedAt:getWIBISO() }));
-                            const pendingQueue = await getData(env, 'pending_gas_queue');
+                            const pendingQueue = await getData(env, getPendingGasQueueKey(licenseKey));
                             const mergedQueue = mergeGasQueueUnique(pendingQueue, visitorEvents.map(log => ({ ...log, gasReplayId: generateGasReplayId(log) })));
                             const queueLimit = getPendingQueueLimit(company.package);
-                            await saveDataOrThrow(env, 'pending_gas_queue', mergedQueue.slice(-queueLimit));
+                            await saveDataOrThrow(env, getPendingGasQueueKey(licenseKey), mergedQueue.slice(-queueLimit));
                         }
                     }
                     await appendVisitorsToSheet(env, licenseKey, acceptedVisitors);
@@ -1748,13 +1749,6 @@ return json({
     serverTs: now
 });
 
-        return json({
-            ok:true,
-            acquired:true,
-            lease: next,
-            serverTs:now
-        });
-
     } catch(err) {
 
         console.error(JSON.stringify({
@@ -1797,11 +1791,12 @@ return json({
 
             if (path === '/retry-gas-sync' && request.method === 'POST') {
                 const body = await request.json().catch(() => ({}));
+                const licenseKey = sanitizeText(body?.licenseKey || '', 120);
                 const companyPackage = body?.packageName || body?.package || 'PRO';
                 const queueLimit = getPendingQueueLimit(companyPackage);
                 const now = Date.now();
                 const orphanThresholdMs = 60000;
-                const rawProcessingQueue = await getData(env, 'processing_gas_queue');
+                const rawProcessingQueue = await getData(env, getProcessingGasQueueKey(licenseKey));
                 const normalizedProcessing = normalizeGasQueueEntries(rawProcessingQueue);
                 const orphanEntries = [];
                 const activeProcessingEntries = [];
@@ -1813,13 +1808,13 @@ return json({
                     activeProcessingEntries.push(entry);
                 }
 
-                let pendingQueue = await getData(env, 'pending_gas_queue');
+                let pendingQueue = await getData(env, getPendingGasQueueKey(licenseKey));
                 const normalizedPendingBase = normalizeGasQueueEntries(pendingQueue);
                 pendingQueue = orphanEntries.length ? mergeGasQueueUnique(normalizedPendingBase, orphanEntries) : normalizedPendingBase;
                 if (pendingQueue.length > queueLimit) console.log(JSON.stringify({ type:"QUEUE_OVERFLOW", queue:"pending_gas_queue", package: companyPackage, before: pendingQueue.length, limit: queueLimit, updatedAt: Date.now() }));
                 pendingQueue = pendingQueue.slice(-queueLimit);
-                await saveData(env, 'pending_gas_queue', pendingQueue);
-                await saveData(env, 'processing_gas_queue', activeProcessingEntries.slice(-queueLimit));
+                await saveData(env, getPendingGasQueueKey(licenseKey), pendingQueue);
+                await saveData(env, getProcessingGasQueueKey(licenseKey), activeProcessingEntries.slice(-queueLimit));
 
                 if (!Array.isArray(pendingQueue) || pendingQueue.length === 0) {
                     return new Response(JSON.stringify({ ok: true, replayed: 0, remaining: 0, recoveredOrphans: orphanEntries.length }), { headers: corsHeaders });
@@ -1832,24 +1827,24 @@ return json({
                     batch.push(Object.assign({}, normalizedPending[i], { processingStartedAt }));
                 }
                 const remainingPending = normalizedPending.slice(batch.length);
-                let processingQueue = await getData(env, 'processing_gas_queue');
+                let processingQueue = await getData(env, getProcessingGasQueueKey(licenseKey));
                 processingQueue = mergeGasQueueUnique(processingQueue, batch);
-                await saveData(env, 'pending_gas_queue', remainingPending.slice(-queueLimit));
-                await saveData(env, 'processing_gas_queue', processingQueue.slice(-queueLimit));
+                await saveData(env, getPendingGasQueueKey(licenseKey), remainingPending.slice(-queueLimit));
+                await saveData(env, getProcessingGasQueueKey(licenseKey), processingQueue.slice(-queueLimit));
                 const gasAck = await appendLogsToSheetWithAck(batch, env);
                 console.log(JSON.stringify({ type: gasAck?.ok ? "PENDING_GAS_REPLAY_SENT" : "PENDING_GAS_REPLAY_FAILED", ack: !!gasAck?.ok, exactAck: !!gasAck?.exactAck, registerCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.REGISTER || normalizeAction(log.action) === ACTION_TYPES.WALK_IN).length, activityCount: batch.filter(log => normalizeAction(log.action) === ACTION_TYPES.CHECK_IN || normalizeAction(log.action) === ACTION_TYPES.CHECK_OUT).length, updatedAt:getWIBISO() }));
                 if (!gasAck?.ok) {
-                    processingQueue = await getData(env, 'processing_gas_queue');
+                    processingQueue = await getData(env, getProcessingGasQueueKey(licenseKey));
                     const retryQueue = mergeGasQueueUnique(remainingPending, processingQueue);
                     if (retryQueue.length > queueLimit) console.log(JSON.stringify({ type:"QUEUE_OVERFLOW", queue:"pending_gas_queue", package: companyPackage, before: retryQueue.length, limit: queueLimit, updatedAt: Date.now() }));
-                    await saveData(env, 'pending_gas_queue', retryQueue.slice(-queueLimit));
-                    await saveData(env, 'processing_gas_queue', []);
+                    await saveData(env, getPendingGasQueueKey(licenseKey), retryQueue.slice(-queueLimit));
+                    await saveData(env, getProcessingGasQueueKey(licenseKey), []);
                     return new Response(JSON.stringify({ ok: false, replayed: 0, remaining: retryQueue.length }), { headers: corsHeaders, status: 502 });
                 }
-                processingQueue = await getData(env, 'processing_gas_queue');
+                processingQueue = await getData(env, getProcessingGasQueueKey(licenseKey));
                 const processedIds = new Set(batch.map(log => log.gasReplayId).filter(Boolean));
                 const remainingProcessing = normalizeGasQueueEntries(processingQueue).filter(log => !processedIds.has(log.gasReplayId));
-                await saveData(env, 'processing_gas_queue', remainingProcessing.slice(-queueLimit));
+                await saveData(env, getProcessingGasQueueKey(licenseKey), remainingProcessing.slice(-queueLimit));
                 return new Response(JSON.stringify({ ok: true, replayed: batch.length, remaining: remainingPending.length }), { headers: corsHeaders });
             }
             
@@ -2143,6 +2138,16 @@ function sanitizeText(value, max = 120) {
     }
 }
 
+
+function getPendingGasQueueKey(licenseKey = '') {
+    const key = sanitizeText(licenseKey, 120);
+    return key ? `pending_gas_queue_${key}` : 'pending_gas_queue';
+}
+
+function getProcessingGasQueueKey(licenseKey = '') {
+    const key = sanitizeText(licenseKey, 120);
+    return key ? `processing_gas_queue_${key}` : 'processing_gas_queue';
+}
 function clonePayloadSafe(value) {
     try {
         if (typeof structuredClone === 'function') {
@@ -3406,25 +3411,20 @@ async function appendLogsToSheetWithAck(logs, env = null) {
         updatedAt: getWIBISO()
     }));
 
-    // =========================
-    // RELAXED ACK VALIDATION
-    // =========================
-
     const ackIds = new Set([
         ...(result.mutationIds || []),
         ...(result.skippedMutationIds || []),
         ...(result.ackMutationIds || [])
     ].map(String));
-
-    const hasAnyAck =
-        ackIds.size > 0 ||
-        result.rowsAppended > 0 ||
-        result.rowsUpdated > 0;
+    const expectedIds = normalizedLogs.map(log => String(log.mutationId || '')).filter(Boolean);
+    const expectedSet = new Set(expectedIds);
+    const hasUnknownAck = Array.from(ackIds).some(id => !expectedSet.has(id));
+    const exactAck = expectedIds.length > 0 && expectedIds.every(id => ackIds.has(id)) && !hasUnknownAck;
 
     return {
         ...result,
-        ok: !!(result.ok && hasAnyAck),
-        exactAck: hasAnyAck
+        ok: !!(result.ok && exactAck),
+        exactAck
     };
 }
 
@@ -3828,15 +3828,21 @@ function normalizeGasQueueEntries(queue) {
 }
 
 function dedupGasQueueByReplayId(queue) {
-    const seen = new Set();
-    const deduped = [];
+    const dedupedMap = new Map();
     for (const item of queue) {
         if (!item?.gasReplayId) continue;
-        if (seen.has(item.gasReplayId)) continue;
-        seen.add(item.gasReplayId);
-        deduped.push(item);
+        const key = String(item.gasReplayId);
+        const current = dedupedMap.get(key);
+        if (!current) {
+            dedupedMap.set(key, item);
+            continue;
+        }
+        const currentTs = Number(current.updatedAt || current.persistedAt || 0);
+        const incomingTs = Number(item.updatedAt || item.persistedAt || 0);
+        if (incomingTs >= currentTs) dedupedMap.set(key, item);
     }
-    return deduped;
+    return Array.from(dedupedMap.values())
+        .sort((a, b) => Number(a.persistedAt || a.updatedAt || 0) - Number(b.persistedAt || b.updatedAt || 0));
 }
 
 function mergeGasQueueUnique(baseQueue, incomingQueue) {

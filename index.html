@@ -1222,6 +1222,7 @@ const VMS_APPEND_RETRY_QUEUE_KEY = "vms_append_retry_queue";
 const VMS_APPEND_DEAD_LETTER_KEY = "vms_append_dead_letter_queue";
 const VMS_MUTATION_FINGERPRINT_KEY = "vms_mutation_fingerprint_cache";
 const MAX_QUEUE_BYTES = 240000;
+const MAX_APPEND_RETRY = 200;
 const MAX_FINGERPRINT_CACHE = 600;
 const MAX_DEAD_LETTER = 80;
 const HYDRATION_MUTEX = { hydrating:false, mutationDepth:0, token:null, lastRun:0, owner:null };
@@ -1504,13 +1505,18 @@ function queueAppendRetry(mutation){
     const id = event?.mutationId || mutation?.mutationId || mutation?.gasReplayId || mutation?.sequenceId;
     if(id && q.some(x => ((x.event || x).mutationId || x.gasReplayId || x.sequenceId) === id)) return;
     q.push(makeSyncEnvelope(event, { syncStatus:"PENDING_SYNC", retry: Number(mutation?.retry || mutation?.syncMeta?.retry || 0) }));
-    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes(q, MAX_QUEUE, MAX_QUEUE_BYTES));
+    const bounded = pruneArrayByBytes(q, MAX_APPEND_RETRY, MAX_QUEUE_BYTES);
+    if(bounded.length !== q.length){
+        console.log("[TRACE] RETRY_QUEUE_PRUNED", { size: bounded.length });
+    }
+    console.log("[TRACE] RETRY_QUEUE_PUSH", { size: bounded.length, mutationId: event?.mutationId });
+    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, bounded);
     logSyncMetric("queueDepth", { queue:"append", depth:q.length });
     updateVisitorSyncBadge();
 }
 function markAppendSynced(id){
     const q = loadJsonArray(VMS_APPEND_RETRY_QUEUE_KEY).filter(x => ((x.event || x).mutationId || x.gasReplayId || x.sequenceId) !== id);
-    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes(q, MAX_QUEUE, MAX_QUEUE_BYTES));
+    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes(q, MAX_APPEND_RETRY, MAX_QUEUE_BYTES));
     updateVisitorSyncBadge();
 }
 function queueDeadLetter(mutation, reason){
@@ -3971,7 +3977,7 @@ setInterval(async ()=>{
     logSyncMetric("averageRetryDelay", { queue:"append", retry:Number(meta.retry || 0), delayMs:backoff });
     if(getEventTimestamp() - Number(meta.queuedAt || 0) < backoff) return;
     item.syncMeta = { ...(item.syncMeta || {}), retry:Number(meta.retry || 0) + 1, queuedAt:getEventTimestamp(), queuedAtWIB:getWIBISO() };
-    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes([item, ...q.slice(1)], MAX_QUEUE, MAX_QUEUE_BYTES));
+    saveJsonArray(VMS_APPEND_RETRY_QUEUE_KEY, pruneArrayByBytes([item, ...q.slice(1)], MAX_APPEND_RETRY, MAX_QUEUE_BYTES));
     if(window.appendScanLogToGoogleSheet) await window.appendScanLogToGoogleSheet(event, event);
     } finally {
         appendRetryIntervalInFlight = false;

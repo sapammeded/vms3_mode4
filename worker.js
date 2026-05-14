@@ -27,6 +27,7 @@ const VISITOR_MANIFEST_TTL_MS = 30 * 86400000;
 const REPLAY_PROCESSED_TTL_MS = 36 * 3600000;
 const REPLAY_FAILED_TTL_MS = 2 * 86400000;
 const REPLAY_DEAD_LETTER_TTL_MS = 14 * 86400000;
+const DEVICE_TIMEOUT_MS = 120000;
 const ACTION_TYPES = Object.freeze({ CHECK_IN: 'CHECK_IN', CHECK_OUT: 'CHECK_OUT', REGISTER: 'REGISTER', WALK_IN: 'WALK_IN' });
 const WIB_TIMEZONE = 'Asia/Jakarta';
 
@@ -3312,7 +3313,7 @@ function countOnlineDevices(devices, now = Date.now()) {
     if (!Array.isArray(devices)) return 0;
     let count = 0;
     for (const device of devices) {
-        if (device?.status === 'ACTIVE' && (now - Number(device.lastSeen || 0)) < 5 * 60000) count++;
+        if (device?.status === 'ACTIVE' && (now - Number(device.lastSeen || 0)) < DEVICE_TIMEOUT_MS) count++;
     }
     return count;
 }
@@ -3743,6 +3744,10 @@ function generateGasReplayId(log) {
 }
 
 async function reconcileDeviceState(env) {
+    return reconcileDistributedState(env);
+}
+
+async function reconcileDistributedState(env) {
     const nowTs = Date.now();
     if(globalThis.__reconcileInFlight){
         return;
@@ -3779,6 +3784,14 @@ async function reconcileDeviceState(env) {
         if (d.status === 'PENDING_APPROVAL' && Number(d.firstSeen || now) > 0 && (now - Number(d.firstSeen || now)) > stalePendingMs) return false;
         return true;
     });
+    devices = devices.map(device => {
+        const lastHeartbeat = Number(device?.lastSeen || 0);
+        if (String(device?.status || '').toUpperCase() === 'ACTIVE' && lastHeartbeat > 0 && (now - lastHeartbeat) > DEVICE_TIMEOUT_MS) {
+            console.log("[RECONCILE] STALE_DEVICE_REMOVED", device.deviceId);
+            return { ...device, status: 'OFFLINE', updatedAt: now, updatedAtWIB: getWIBISO(now) };
+        }
+        return device;
+    });
 
     requests = (requests || []).filter(r => r && companyIds.has(r.companyId) && !((r.status === 'PENDING' || r.status === 'WAITING_PAYMENT') && (now - Number(r.requestedAt || now)) > stalePendingMs));
     invoices = (invoices || []).filter(i => i && companyIds.has(i.companyId));
@@ -3799,6 +3812,9 @@ async function reconcileDeviceState(env) {
         company.currentDevices = statusCounts.ACTIVE || 0;
         company.onlineDevices = company.activeDevices;
     }
+    const totalDevices = devices.length;
+    const activeDevices = countOnlineDevices(devices, now);
+    console.log("[RECONCILE] DASHBOARD_METRICS_REBUILT", { totalDevices, activeDevices });
 
     await saveDataIfChangedFromJson(env, 'devices', originalDevicesJson, devices);
     await saveDataIfChangedFromJson(env, 'companies', originalCompaniesJson, companies);

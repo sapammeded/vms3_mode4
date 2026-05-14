@@ -1101,18 +1101,15 @@
                 "Content-Type": "application/json",
                 ...options.headers
             };
-            
+
             const currentToken = token || localStorage.getItem("vms_admin_token") || localStorage.getItem("adminToken");
             if (currentToken) {
                 const cleanToken = String(currentToken).trim();
                 headers["Authorization"] = "Bearer " + cleanToken;
                 headers["x-token"] = cleanToken;
-                console.log(`[API_CALL] Using bearer token: ${cleanToken.substring(0, 20)}...`);
             }
-            
+
             const url = API_URL + endpoint;
-            console.log(`[API_CALL] ${options.method || 'GET'} ${url}`);
-            
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), Number(options.timeoutMs || 12000));
             let res;
@@ -1126,40 +1123,31 @@
             } finally {
                 clearTimeout(timeoutId);
             }
-            
-            console.log(`[API_CALL] Response status: ${res.status}`);
-            
+
             const contentType = res.headers.get('content-type') || '';
             let data = null;
             if (contentType.includes('application/json')) {
                 data = await res.json();
             } else {
                 const text = await res.text();
-                console.error(`[API_CALL] Non-JSON response: ${text.substring(0, 200)}`);
-                data = { ok: false, error: 'Server returned non-JSON response' };
+                data = { ok: false, error: 'Server returned non-JSON response', raw: text.substring(0, 200) };
             }
 
             if (res.status === 401) {
                 unauthorizedStreak += 1;
-                console.log(`[API_CALL] Unauthorized streak: ${unauthorizedStreak}`);
-                if (unauthorizedStreak >= 3) {
-                    console.log('[API_CALL] Unauthorized threshold reached, logging out...');
-                    logout();
-                }
+                if (unauthorizedStreak >= 3) logout();
                 return null;
             }
 
             unauthorizedStreak = 0;
 
             if (!res.ok) {
-                console.error('[API ERROR]', res.status, data);
                 return data || { ok: false, error: `API ERROR ${res.status}` };
             }
 
             return data;
-            
+
         } catch (e) {
-            console.error(`[API_CALL] Network error for ${endpoint}:`, e);
             showToast((e?.name === "AbortError" ? "Request timeout: " : "Network error: ") + e.message, "error");
             return null;
         }
@@ -1709,8 +1697,6 @@
         const maxDevices = document.getElementById("genMaxDevices").value;
         const address = document.getElementById("genAddress").value;
         const notes = document.getElementById("genNotes").value;
-        const currentToken = token || localStorage.getItem("vms_admin_token") || localStorage.getItem("adminToken") || "";
-
         if (!companyName || !pic || !phone || !email) {
             showToast("Please fill all required fields", "error");
             return;
@@ -1719,26 +1705,20 @@
         showToast("Generating license...", "info");
 
         try {
-            const res = await fetch(`${API_URL}/generate-license`, {
-    method: "POST",
-    headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + String(currentToken).trim(),
-        "x-token": String(currentToken).trim()
-    },
-    credentials: "omit",
-    body: JSON.stringify({
-        companyName,
-        pic,
-        phone,
-        email,
-        package: pkg,
-        customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
-        address,
-        notes
-    })
-});
-            const data = await res.json().catch(() => ({ ok: false, error: "Invalid server response" }));
+            const data = await apiCall("/generate-license", {
+                method: "POST",
+                timeoutMs: 15000,
+                body: JSON.stringify({
+                    companyName,
+                    pic,
+                    phone,
+                    email,
+                    package: pkg,
+                    customMaxDevices: maxDevices ? parseInt(maxDevices) : null,
+                    address,
+                    notes
+                })
+            });
 
             if (data && data.ok) {
                 showToast("License Generated Successfully!", "success");
@@ -2347,6 +2327,9 @@
                 token = e.newValue || null;
                 if (!token && !localStorage.getItem("vms_admin_token") && !localStorage.getItem("adminToken")) logout();
             }
+        });
+        window.addEventListener("unhandledrejection", (event) => {
+            console.error("[UNHANDLED_REJECTION]", event.reason);
         });
     }
 

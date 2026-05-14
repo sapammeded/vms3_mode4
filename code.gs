@@ -162,11 +162,11 @@ function upsertAttendanceRow_(sheet, log, rowIndexCache) {
   const incomingUpdatedAt = Number(log.updatedAt || log.eventTs || 0);
   if (incomingUpdatedAt < rowUpdatedAt) return;
   const latestRow = sheet.getRange(idx, 1, 1, 10).getValues()[0];
-  const latestCheckIns = String(latestRow[5] || '').split(',').map(function(v) { return String(v || '').trim(); }).filter(Boolean);
-  const latestCheckOuts = String(latestRow[6] || '').split(',').map(function(v) { return String(v || '').trim(); }).filter(Boolean);
-  const mergedCheckIns = Array.from(new Set(action === ACTION_TYPES.CHECK_IN ? latestCheckIns.concat([eventTime]) : latestCheckIns));
-  const mergedCheckOuts = Array.from(new Set(action === ACTION_TYPES.CHECK_OUT ? latestCheckOuts.concat([eventTime]) : latestCheckOuts));
-  sheet.getRange(idx, 6, 1, 5).setValues([[mergedCheckIns.join(', '), mergedCheckOuts.join(', '), action, log.mutationId || latestRow[8] || '', getWIBISO(incomingUpdatedAt)]]);
+  const latestCheckIns = String(latestRow[5] || '').split(/\r?\n/).map(function(v) { return String(v || '').trim(); }).filter(Boolean);
+  const latestCheckOuts = String(latestRow[6] || '').split(/\r?\n/).map(function(v) { return String(v || '').trim(); }).filter(Boolean);
+  const mergedCheckIns = Array.from(new Set(action === ACTION_TYPES.CHECK_IN ? latestCheckIns.concat([eventTime]) : latestCheckIns)).slice(-20);
+  const mergedCheckOuts = Array.from(new Set(action === ACTION_TYPES.CHECK_OUT ? latestCheckOuts.concat([eventTime]) : latestCheckOuts)).slice(-20);
+  sheet.getRange(idx, 6, 1, 5).setValues([[mergedCheckIns.join('\n'), mergedCheckOuts.join('\n'), action, log.mutationId || latestRow[8] || '', getWIBISO(incomingUpdatedAt)]]);
 }
 
 function hydrateProcessedCache_(sheet, ledgerSheet) {
@@ -467,9 +467,17 @@ function appendActivityToExistingRow_(sheet, rowNumber, log, headerMap) {
   if (action === ACTION_TYPES.CHECK_IN) {
     const checkinCol = requiredHeaderColumn_(headerMap, 'Checkin');
     const existingCheckin = String(sheet.getRange(rowNumber, checkinCol).getValue() || '').trim();
-    if (!existingCheckin) sheet.getRange(rowNumber, checkinCol).setValue(formatWIB(eventTs));
+    const nextCheckin = existingCheckin ? (existingCheckin + '\n' + formatWIB(eventTs)) : formatWIB(eventTs);
+    const boundedCheckin = nextCheckin.split(/\r?\n/).map(function(v){ return String(v || '').trim(); }).filter(Boolean).slice(-20).join('\n');
+    sheet.getRange(rowNumber, checkinCol).setValue(boundedCheckin);
   }
-  if (action === ACTION_TYPES.CHECK_OUT) sheet.getRange(rowNumber, requiredHeaderColumn_(headerMap, 'Checkout')).setValue(formatWIB(eventTs));
+  if (action === ACTION_TYPES.CHECK_OUT) {
+    const checkoutCol = requiredHeaderColumn_(headerMap, 'Checkout');
+    const existingCheckout = String(sheet.getRange(rowNumber, checkoutCol).getValue() || '').trim();
+    const nextCheckout = existingCheckout ? (existingCheckout + '\n' + formatWIB(eventTs)) : formatWIB(eventTs);
+    const boundedCheckout = nextCheckout.split(/\r?\n/).map(function(v){ return String(v || '').trim(); }).filter(Boolean).slice(-20).join('\n');
+    sheet.getRange(rowNumber, checkoutCol).setValue(boundedCheckout);
+  }
   sheet.getRange(rowNumber, requiredHeaderColumn_(headerMap, 'Activity Log')).setValue(nextActivity);
   if (headerMap['REG']) sheet.getRange(rowNumber, headerMap['REG']).setValue(pick_(log, ['reg', 'REG', 'Reg'], ''));
   if (headerMap['Nama']) sheet.getRange(rowNumber, headerMap['Nama']).setValue(pick_(log, ['nama', 'name', 'Nama'], ''));

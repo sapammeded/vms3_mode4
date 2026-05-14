@@ -1720,7 +1720,7 @@ window.onunhandledrejection = function(e) {
             requestFingerprint: log.requestFingerprint || `${log.mutationId || ""}|${log.reg}|${log.deviceId || localStorage.getItem("vms_device_id") || ""}|${log.eventTs || log.time || log.updatedAt || ""}`
         };
         if(!isValidMutationEnvelope(row)){ queueDeadLetter(row, "poison_sheet_row"); return false; }
-        const payload = { logs: [row], mutationId: row.mutationId, requestFingerprint: row.requestFingerprint, expectedCount: 1 };
+        const payload = { logs: [row], licenseKey: localStorage.getItem("vms_license_key") || "", mutationId: row.mutationId, requestFingerprint: row.requestFingerprint, expectedCount: 1 };
         const retryBudget = 3;
         for(let attempt = 0; attempt < retryBudget; attempt++){
             try{
@@ -2319,6 +2319,15 @@ window.onunhandledrejection = function(e) {
             }
             let siteKey = resolvedVisitor.siteKey || (SITE_ID + "_" + reg);
             let visitor = resolvedVisitor.visitor;
+            if(!visitor){
+                const targeted = await lookupRegAuthoritative(reg);
+                if(targeted?.found && targeted?.visitor){
+                    visitors[targeted.siteKey] = { ...(visitors[targeted.siteKey] || {}), ...targeted.visitor };
+                    resolvedVisitor = resolveVisitorByReg(reg);
+                    siteKey = resolvedVisitor.siteKey || targeted.siteKey;
+                    visitor = resolvedVisitor.visitor || targeted.visitor;
+                }
+            }
             if(!visitor){ toast("REG tidak ditemukan di license ini","error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
@@ -4313,7 +4322,7 @@ console.log("🔥 SUPER PATCH ACTIVE (CLEAN INJECT)");
             const token = localStorage.getItem("vms_token");
             if (token) {
                 try {
-                    const res = await fetch(WORKER_BASE_URL + "/users", { headers: { "x-token": token } });
+                    const res = await fetch(WORKER_BASE_URL + "/admin/users", { headers: { "x-token": token } });
                     if (res.ok) return true;
                     localStorage.removeItem("vms_token");
                     localStorage.removeItem("vms_user");

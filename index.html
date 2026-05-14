@@ -1244,6 +1244,21 @@ function isValidMutationEnvelope(mutation){
     const action = normalizeAction(event.action || mutation.action);
     return !!(event.mutationId || mutation.mutationId) && Number.isFinite(Number(event.eventTs || mutation.eventTs || event.time || mutation.time || 0)) && Number(event.version || mutation.version || 0) >= 1 && !!(event.mutationSource || mutation.mutationSource || event.deviceId || mutation.deviceId) && (action === ACTION_TYPES.CHECK_IN || action === ACTION_TYPES.CHECK_OUT || action === ACTION_TYPES.REGISTER || action === ACTION_TYPES.WALK_IN);
 }
+function cloneSafe(data){
+    try{
+        if(typeof structuredClone === "function"){
+            return structuredClone(data);
+        }
+    }catch(e){}
+
+    try{
+        return JSON.parse(JSON.stringify(data));
+    }catch(err){
+        console.warn("CLONE_SAFE_FAIL", err);
+        return null;
+    }
+}
+
 function makeSyncEnvelope(event, meta = {}){ return { event: cloneSafe(event), syncMeta: { ...meta, retry:Number(meta.retry || 0), queuedAt:Number(meta.queuedAt || getEventTimestamp()), queuedAtWIB: meta.queuedAtWIB || getWIBISO(), syncStatus:meta.syncStatus || "PENDING_SYNC" } }; }
 function unwrapSyncEnvelope(item){ return item?.event ? { ...item.event, ...(item.syncMeta || {}) } : item; }
 function logSyncMetric(type, payload={}){ console.log(JSON.stringify({ type, updatedAt:getWIBISO(), ...payload })); }

@@ -628,7 +628,9 @@ function doGet() {
 
 function doPost(e) {
   try {
+    Logger.log('BEFORE_PARSE');
     const rawBody = (e && e.postData && e.postData.contents) || '{}';
+    Logger.log(rawBody);
     let body = {};
     try {
       body = JSON.parse(rawBody || '{}');
@@ -636,6 +638,9 @@ function doPost(e) {
       structuredLog_('INVALID_JSON_PAYLOAD', { mutationId: '', mutationSource: 'unknown', reason: parseErr && parseErr.message || String(parseErr) });
       return jsonResponse_({ ok: false, ack: false, mutationIds: [], skippedMutationIds: [], ackMutationIds: [], error: 'INVALID_JSON_PAYLOAD', updatedAt: getWIBISO() });
     }
+
+    Logger.log('AFTER_PARSE');
+    Logger.log(JSON.stringify(body));
 
     // TEMP BYPASS SIGNATURE
     const auth = { ok: true };
@@ -679,9 +684,17 @@ function doPost(e) {
         structuredLog_('GAS_LOG_MAPPING_ERROR', { mutationId: log && log.mutationId || '', mutationSource: log && (log.mutationSource || log.deviceId) || 'gas', index: index, reason: mapErr && mapErr.message || String(mapErr) });
       }
     });
+    if (normalized.length) {
+      Logger.log('BEFORE_APPEND');
+      Logger.log(JSON.stringify(normalized[0]));
+    }
     const result = appendRowsIdempotent_(normalized);
+    Logger.log('AFTER_APPEND');
     const ackIds = result.mutationIds.concat(result.skippedMutationIds);
-    return jsonResponse_({ ok: true, ack: true, rowsAppended: result.rowsAppended, rowsUpdated: result.rowsUpdated || 0, mutationIds: result.mutationIds, skippedMutationIds: result.skippedMutationIds, staleMutationIds: result.staleMutationIds || [], staleCount: result.staleCount || 0, versionRejectedMutationIds: result.versionRejectedMutationIds || [], versionRejectedCount: result.versionRejectedCount || 0, ackMutationIds: ackIds, requestFingerprints: result.requestFingerprints || [], ackCount: ackIds.length, updatedAt: getWIBISO() });
+    const response = { ok: true, ack: true, rowsAppended: result.rowsAppended, rowsUpdated: result.rowsUpdated || 0, mutationIds: result.mutationIds, skippedMutationIds: result.skippedMutationIds, staleMutationIds: result.staleMutationIds || [], staleCount: result.staleCount || 0, versionRejectedMutationIds: result.versionRejectedMutationIds || [], versionRejectedCount: result.versionRejectedCount || 0, ackMutationIds: ackIds, requestFingerprints: result.requestFingerprints || [], ackCount: ackIds.length, updatedAt: getWIBISO() };
+    Logger.log('RETURN_ACK');
+    Logger.log(JSON.stringify(response));
+    return jsonResponse_(response);
   } catch (err) {
     console.error(JSON.stringify({ type: 'GAS_APPEND_FAIL', reason: err && err.message || String(err), updatedAt: getWIBISO() }));
     return jsonResponse_({ ok: false, ack: false, mutationIds: [], skippedMutationIds: [], staleMutationIds: [], staleCount: 0, versionRejectedMutationIds: [], versionRejectedCount: 0, ackMutationIds: [], error: err && err.message || String(err), updatedAt: getWIBISO() });

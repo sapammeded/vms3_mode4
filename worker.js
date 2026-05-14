@@ -3620,14 +3620,18 @@ async function pushLogsToGoogleScript(logs, options = {}) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       try {
+        console.log('[WORKER] BEFORE_FORWARD', { logs: logs.length, mode:'append-only' });
         const res = await fetch(GOOGLE_SCRIPT_URL, {
             method: 'POST',
             headers,
             body: requestBody,
             signal: controller.signal
         });
-        const result = await res.json().catch(() => null);
-        if (!res.ok || result?.ok === false || result?.ack !== true) {
+        console.log('[WORKER] AFTER_FORWARD', res.status);
+        const responseText = await res.text();
+        console.log('[WORKER] RESPONSE_TEXT', responseText.slice(0, 1200));
+        const result = (() => { try { return JSON.parse(responseText || '{}'); } catch { return null; } })();
+        if (!res.ok || !result || result?.ok === false || result?.ack !== true) {
             if ((res.status >= 500 || res.status === 429) && attempt < (attempts - 1)) {
                 await new Promise(resolve => setTimeout(resolve, (350 * Math.pow(2, attempt)) + Math.floor(Math.random() * 180)));
                 continue;

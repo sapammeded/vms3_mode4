@@ -1126,6 +1126,8 @@ function updateMonetizationUI() {
 let visitors = {};
 let logs = [];
 let auditLogs = [];
+let secureSaveInFlight = 0;
+let secureSavePromise = null;
 
 async function signData(data){
     const enc = new TextEncoder().encode(JSON.stringify(data) + "VMS_LOCK_v2");
@@ -1139,19 +1141,36 @@ function getLicenseScopedStorageKey(base){
 }
 
 async function secureSave(){
-    try {
-        const payload = { visitors, logs, auditLogs, licenseKey: localStorage.getItem("vms_license_key") || "" };
-        const sig = await signData(payload);
-        const secureKey = getLicenseScopedStorageKey("vms_secure");
-        const backupKey = getLicenseScopedStorageKey("vms_visitors_backup");
-        localStorage.setItem(secureKey, JSON.stringify({ payload, sig }));
-        localStorage.setItem(backupKey, JSON.stringify(visitors));
-        if(!localStorage.getItem("vms_license_key")){
-            localStorage.setItem("vms_secure", JSON.stringify({ payload, sig }));
-            localStorage.setItem("vms_visitors_backup", JSON.stringify(visitors));
+    if(secureSavePromise){
+        console.log("[TRACE] SECURE_SAVE_REUSED");
+        return secureSavePromise;
+    }
+    secureSavePromise = (async ()=>{
+        secureSaveInFlight++;
+        console.log("[TRACE] SECURE_SAVE_START", { inFlight:secureSaveInFlight });
+        try {
+            const payload = { visitors, logs, auditLogs, licenseKey: localStorage.getItem("vms_license_key") || "" };
+            const sig = await signData(payload);
+            const secureKey = getLicenseScopedStorageKey("vms_secure");
+            const backupKey = getLicenseScopedStorageKey("vms_visitors_backup");
+            localStorage.setItem(secureKey, JSON.stringify({ payload, sig }));
+            localStorage.setItem(backupKey, JSON.stringify(visitors));
+            if(!localStorage.getItem("vms_license_key")){
+                localStorage.setItem("vms_secure", JSON.stringify({ payload, sig }));
+                localStorage.setItem("vms_visitors_backup", JSON.stringify(visitors));
+            }
+            if(window.updateMonetizationUI) window.updateMonetizationUI();
+        } catch(e) { console.warn("Save error:", e); }
+        finally {
+            secureSaveInFlight = Math.max(0, secureSaveInFlight - 1);
+            console.log("[TRACE] SECURE_SAVE_END", { inFlight:secureSaveInFlight });
         }
-        if(window.updateMonetizationUI) window.updateMonetizationUI();
-    } catch(e) { console.warn("Save error:", e); }
+    })();
+    try{
+        return await secureSavePromise;
+    } finally {
+        secureSavePromise = null;
+    }
 }
 
 async function secureLoad(){
@@ -1225,6 +1244,21 @@ function isValidMutationEnvelope(mutation){
     const action = normalizeAction(event.action || mutation.action);
     return !!(event.mutationId || mutation.mutationId) && Number.isFinite(Number(event.eventTs || mutation.eventTs || event.time || mutation.time || 0)) && Number(event.version || mutation.version || 0) >= 1 && !!(event.mutationSource || mutation.mutationSource || event.deviceId || mutation.deviceId) && (action === ACTION_TYPES.CHECK_IN || action === ACTION_TYPES.CHECK_OUT || action === ACTION_TYPES.REGISTER || action === ACTION_TYPES.WALK_IN);
 }
+function cloneSafe(data){
+    try{
+        if(typeof structuredClone === "function"){
+            return structuredClone(data);
+        }
+    }catch(e){}
+
+    try{
+        return JSON.parse(JSON.stringify(data));
+    }catch(err){
+        console.warn("CLONE_SAFE_FAIL", err);
+        return null;
+    }
+}
+
 function makeSyncEnvelope(event, meta = {}){ return { event: cloneSafe(event), syncMeta: { ...meta, retry:Number(meta.retry || 0), queuedAt:Number(meta.queuedAt || getEventTimestamp()), queuedAtWIB: meta.queuedAtWIB || getWIBISO(), syncStatus:meta.syncStatus || "PENDING_SYNC" } }; }
 function unwrapSyncEnvelope(item){ return item?.event ? { ...item.event, ...(item.syncMeta || {}) } : item; }
 function logSyncMetric(type, payload={}){ console.log(JSON.stringify({ type, updatedAt:getWIBISO(), ...payload })); }
@@ -1299,11 +1333,15 @@ async function withClientMutationLock(lockName, buttons, fn){
     const btns = (Array.isArray(buttons) ? buttons : [buttons]).filter(Boolean);
     const oldDisabled = btns.map(b => b.disabled);
     btns.forEach(b => b.disabled = true);
-    try{ return await fn(); }
+    try{
+        console.log("[TRACE] LOCK_ENTER", lockName);
+        return await fn();
+    }
     finally{
         btns.forEach((b,i) => b.disabled = oldDisabled[i]);
         mutationLocks.delete(lockName);
         HYDRATION_MUTEX.mutationDepth = Math.max(0, HYDRATION_MUTEX.mutationDepth - 1);
+        console.log("[TRACE] LOCK_RELEASE", lockName);
     }
 }
 const VMS_PHOTO_DB_NAME = "vms_photo_store";
@@ -1344,12 +1382,14 @@ async function saveVisitorPhoto(siteKey, dataUrl){
     const photoBlobKey = `${VMS_PHOTO_LS_PREFIX}${siteKey}`;
     try{
         const db = await openVisitorPhotoDB();
-        await new Promise((resolve, reject) => {
+        console.log("[TRACE] BEFORE_INDEXEDDB_WRITE", { siteKey, photoBlobKey });
+        await withTimeout(new Promise((resolve, reject) => {
             const tx = db.transaction(VMS_PHOTO_STORE_NAME, "readwrite");
             tx.objectStore(VMS_PHOTO_STORE_NAME).put({ dataUrl, updatedAt:getEventTimestamp() }, photoBlobKey);
             tx.oncomplete = resolve;
             tx.onerror = () => reject(tx.error || new Error("indexeddb_write_failed"));
-        });
+        }), 5000, "indexeddb_write");
+        console.log("[TRACE] AFTER_INDEXEDDB_WRITE", { siteKey, photoBlobKey });
         db.close?.();
         logSyncMetric("PHOTO_BACKUP_SAVED", { siteKey, photoBlobKey, medium:"indexeddb" });
         return photoBlobKey;
@@ -1576,16 +1616,55 @@ window.onunhandledrejection = function(e) {
 
     Object.defineProperty(window, "visitors", {
         get: () => visitors,
-        set: (val) => { visitors = val || {}; secureSave(); }
+        set: (val) => { visitors = val || {}; console.log("[TRACE] VISITOR_SETTER_SAVE_TRIGGER"); secureSave(); }
     });
     window.logs = logs;
 
 
     async function fetchWithTimeout(url, options = {}, timeoutMs = 8000){
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try { return await fetch(url, { ...options, signal: controller.signal }); }
-        finally { clearTimeout(timer); }
+        let timeoutId;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+                controller.abort();
+                reject(new Error(`fetch_timeout:${timeoutMs}`));
+            }, timeoutMs);
+        });
+        try {
+            const response = await Promise.race([
+                fetch(url, { ...options, signal: controller.signal }),
+                timeoutPromise
+            ]);
+            return response;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    async function safeJson(res, timeoutMs = 3000){
+        let timeoutId;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error(`json_timeout:${timeoutMs}`)), timeoutMs);
+        });
+        try {
+            return await Promise.race([res.json(), timeoutPromise]);
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    async function withTimeout(promise, timeoutMs, label){
+        let timeoutId;
+        try{
+            return await Promise.race([
+                promise,
+                new Promise((_, reject) => {
+                    timeoutId = setTimeout(() => reject(new Error(`${label}_timeout:${timeoutMs}`)), timeoutMs);
+                })
+            ]);
+        } finally {
+            clearTimeout(timeoutId);
+        }
     }
 
     function toast(msg, type='info'){
@@ -1724,12 +1803,21 @@ window.onunhandledrejection = function(e) {
         const retryBudget = 3;
         for(let attempt = 0; attempt < retryBudget; attempt++){
             try{
+                console.log("[TRACE] BEFORE_FETCH", { attempt, mutationId:row.mutationId });
                 const res = await fetchWithTimeout(WORKER_BASE_URL + "/sheet-append", {
                     method:"POST",
                     headers:{ "Content-Type":"application/json" },
                     body: JSON.stringify(payload)
                 }, 8000);
-                const result = await res.json().catch(()=>null);
+                console.log("[TRACE] AFTER_FETCH", { attempt, status:res.status, mutationId:row.mutationId });
+                console.log("[TRACE] BEFORE_JSON", { attempt, mutationId:row.mutationId });
+                let result = null;
+                try{
+                    result = await safeJson(res, 3000);
+                }catch(err){
+                    console.warn("[TRACE] JSON_PARSE_FAIL", { reason: err?.message || err, status: res?.status || 0 });
+                }
+                console.log("[TRACE] AFTER_JSON", { attempt, mutationId:row.mutationId });
                 const ackIds = Array.isArray(result?.mutationIds) ? result.mutationIds : [];
                 const skippedIds = Array.isArray(result?.skippedMutationIds) ? result.skippedMutationIds : [];
                 const fingerprints = Array.isArray(result?.requestFingerprints) ? result.requestFingerprints : [];
@@ -2283,7 +2371,9 @@ window.onunhandledrejection = function(e) {
                     visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
                     visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                     const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
+                    console.log("[TRACE] BEFORE_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_IN, mode:"scan" });
                     await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
+                    console.log("[TRACE] AFTER_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_IN, mode:"scan" });
                     toast(`✅ CHECK-IN ${visitor.nama} berhasil`,"success");
                 } else {
                     if(!visitor.sessions) visitor.sessions = [];
@@ -2293,16 +2383,22 @@ window.onunhandledrejection = function(e) {
                     else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
                     visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                     const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
+                    console.log("[TRACE] BEFORE_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_OUT, mode:"scan" });
                     await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
+                    console.log("[TRACE] AFTER_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_OUT, mode:"scan" });
                     toast(`✅ CHECK-OUT ${visitor.nama} berhasil`,"success");
                 }
             });
             renderDashboard();
             renderLogTable();
+            console.log("[TRACE] BEFORE_SECURE_SAVE", { reg, mode:"scan" });
             await secureSave();
+            console.log("[TRACE] AFTER_SECURE_SAVE", { reg, mode:"scan" });
+            console.log("[TRACE] BEFORE_FORCE_SYNC", { reg, mode:"scan" });
             await forceCentralSync("scan", { visitorKeys:[siteKey], includeLogs:true });
+            console.log("[TRACE] AFTER_FORCE_SYNC", { reg, mode:"scan" });
             updateMonetizationUI();
-        } finally { processingRegs.delete(reg); }
+        } finally { processingRegs.delete(reg); console.log("[TRACE] PROCESSING_REG_RELEASE", { reg }); }
     }
 
     const originalManualHandler = document.getElementById('manualProcess').onclick;
@@ -2339,7 +2435,9 @@ window.onunhandledrejection = function(e) {
                 visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
                 visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "IN", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                 const scanLog = addLog(reg, ACTION_TYPES.CHECK_IN);
+                console.log("[TRACE] BEFORE_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_IN, mode:"manual" });
                 await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
+                console.log("[TRACE] AFTER_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_IN, mode:"manual" });
                 toast(`Check-in ${visitor.nama} success`,"success");
             } else {
                 if(!visitor.sessions) visitor.sessions = [];
@@ -2349,15 +2447,21 @@ window.onunhandledrejection = function(e) {
                 else { openSession.checkOut = eventTs; openSession.checkOutWIB = getWIBISO(eventTs); }
                 visitors[siteKey] = stampMutationEntity({ ...visitor, currentStatus: "OUT", deviceId: deviceId, site: visitor.site || SITE_ID, lastScanSite: SITE_ID, mutationId, mutationSource:getMutationSource(), syncStatus:"PENDING_SYNC" }, mutationId);
                 const scanLog = addLog(reg, ACTION_TYPES.CHECK_OUT);
+                console.log("[TRACE] BEFORE_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_OUT, mode:"manual" });
                 await appendScanLogToGoogleSheet(scanLog, visitors[siteKey]);
+                console.log("[TRACE] AFTER_APPEND_SHEET", { reg, action:ACTION_TYPES.CHECK_OUT, mode:"manual" });
                 toast(`Check-out ${visitor.nama} success`,"success");
             }
             renderDashboard();
             renderLogTable();
+            console.log("[TRACE] BEFORE_SECURE_SAVE", { reg, mode:"manual" });
             await secureSave();
+            console.log("[TRACE] AFTER_SECURE_SAVE", { reg, mode:"manual" });
+            console.log("[TRACE] BEFORE_FORCE_SYNC", { reg, mode:"manual" });
             await forceCentralSync("manual_scan", { visitorKeys:[siteKey], includeLogs:true });
+            console.log("[TRACE] AFTER_FORCE_SYNC", { reg, mode:"manual" });
             updateMonetizationUI();
-        } finally { isManualProcessing = false; }
+        } finally { isManualProcessing = false; console.log("[TRACE] MANUAL_PROCESS_RELEASE"); }
     });
 
     function renderDashboard(){

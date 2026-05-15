@@ -1184,21 +1184,49 @@ async function secureLoad(){
             if(!v && backupKey.endsWith("_NO_LICENSE")) v = localStorage.getItem("vms_visitors_backup");
             if(v) visitors = JSON.parse(v);
             else { visitors = {}; logs = []; auditLogs = []; }
-            return;
-        }
-        let parsed = JSON.parse(raw);
-        let check = await signData(parsed.payload);
-        const activeLicense = localStorage.getItem("vms_license_key") || "";
-        if(check === parsed.sig && (!parsed.payload.licenseKey || !activeLicense || parsed.payload.licenseKey === activeLicense)){
-            visitors = parsed.payload.visitors || {};
-            logs = parsed.payload.logs || [];
-            auditLogs = parsed.payload.auditLogs || [];
         } else {
-            console.warn("Data tamper/license-scope mismatch detected! Resetting runtime cache...");
-            visitors = {};
-            logs = [];
-            auditLogs = [];
+            let parsed = JSON.parse(raw);
+            let check = await signData(parsed.payload);
+            const activeLicense = localStorage.getItem("vms_license_key") || "";
+            if(check === parsed.sig && (!parsed.payload.licenseKey || !activeLicense || parsed.payload.licenseKey === activeLicense)){
+                visitors = parsed.payload.visitors || {};
+                logs = parsed.payload.logs || [];
+                auditLogs = parsed.payload.auditLogs || [];
+            } else {
+                console.warn("Data tamper/license-scope mismatch detected! Resetting runtime cache...");
+                visitors = {};
+                logs = [];
+                auditLogs = [];
+            }
         }
+        
+        // ========== AUTO PULL DATA DARI WORKER ==========
+        const licenseKey = localStorage.getItem("vms_license_key");
+        if (licenseKey && navigator.onLine) {
+            try {
+                const res = await fetch(`${WORKER_BASE_URL}/pull-authoritative-state?licenseKey=${licenseKey}&fullVisitors=1`);
+                const data = await res.json();
+                if (data.visitors && Object.keys(data.visitors).length > 0) {
+                    let changed = false;
+                    Object.entries(data.visitors).forEach(([key, visitor]) => {
+                        if (!visitors[key] || compareMutationPriority(visitor, visitors[key]) > 0) {
+                            visitors[key] = visitor;
+                            changed = true;
+                        }
+                    });
+                    if (changed) {
+                        await secureSave();
+                        if (window.renderDashboard) renderDashboard();
+                        if (window.renderLogTable) renderLogTable();
+                        console.log("Auto sync: loaded", Object.keys(data.visitors).length, "visitors from cloud");
+                    }
+                }
+            } catch(e) {
+                console.warn("Auto pull failed:", e);
+            }
+        }
+        // ==================================================
+        
     } catch(e) { console.warn("Load error:", e); }
 }
 

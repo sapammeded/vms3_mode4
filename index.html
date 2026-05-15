@@ -2395,6 +2395,33 @@ window.onunhandledrejection = function(e) {
         if(processingRegs.has(reg)){ toast("Sedang diproses, tunggu sebentar","warning"); return; }
         processingRegs.add(reg);
         try {
+            // ========== FORCE PULL DARI WORKER SEBELUM SCAN ==========
+            const licenseKey = localStorage.getItem("vms_license_key");
+            if (licenseKey && navigator.onLine) {
+                try {
+                    console.log("Force pull before scan...");
+                    const res = await fetch(`${WORKER_BASE_URL}/pull-authoritative-state?licenseKey=${encodeURIComponent(licenseKey)}&fullVisitors=1`);
+                    const data = await res.json();
+                    if (data.visitors && Object.keys(data.visitors).length > 0) {
+                        let changed = false;
+                        for (const [key, visitor] of Object.entries(data.visitors)) {
+                            const existing = visitors[key];
+                            if (!existing || (visitor.version || 0) > (existing.version || 0)) {
+                                visitors[key] = visitor;
+                                changed = true;
+                            }
+                        }
+                        if (changed) {
+                            await secureSave();
+                            if (typeof renderDashboard === 'function') renderDashboard();
+                            if (typeof renderLogTable === 'function') renderLogTable();
+                            toast("Data visitor berhasil disinkronkan", "success");
+                        }
+                    }
+                } catch(e) { console.warn("Force pull failed:", e); }
+            }
+            // =========================================================
+            
             let resolvedVisitor = resolveVisitorByReg(reg);
             if(!resolvedVisitor.visitor && await requestVisitorMissPull(reg, "scan_miss")){
                 resolvedVisitor = resolveVisitorByReg(reg);
@@ -2410,7 +2437,7 @@ window.onunhandledrejection = function(e) {
                     visitor = resolvedVisitor.visitor || targeted.visitor;
                 }
             }
-            if(!visitor){ toast(`Visitor ${reg} tidak ditemukan di license ini`,"error"); return; }
+            if(!visitor){ toast(`Visitor ${reg} tidak ditemukan`,"error"); return; }
             let exp = new Date(visitor.expDate);
             exp.setHours(23,59,59,999);
             if(exp < new Date()){ toast("QR sudah expired","error"); return; }

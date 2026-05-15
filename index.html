@@ -1262,6 +1262,8 @@ window.VMS_HYDRATION_STATE = window.VMS_HYDRATION_STATE || { active:false, lastH
 const mutationLocks = new Map();
 const visitorMissPullCache = new Map();
 let lastFullVisitorPullAt = 0;
+const VISITOR_MISS_PULL_COOLDOWN_MS = 15000;
+const VISITOR_MISS_PULL_GLOBAL_COOLDOWN_MS = 5000;
 
 function getApproxBytes(value){ try { return new Blob([JSON.stringify(value)]).size; } catch { return JSON.stringify(value || []).length; } }
 function pruneArrayByBytes(items, maxItems, maxBytes){

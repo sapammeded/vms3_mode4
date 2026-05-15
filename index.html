@@ -1260,6 +1260,8 @@ const RECONNECT_DEBOUNCE_MS = 3500;
 const HYDRATION_LEASE_KEY = "vms_hydration_leader_lease";
 window.VMS_HYDRATION_STATE = window.VMS_HYDRATION_STATE || { active:false, lastHydration:0, lastSuccess:0, failCount:0, lastMutation:"", coordinatorOwner:null };
 const mutationLocks = new Map();
+const visitorMissPullCache = new Map();
+let lastFullVisitorPullAt = 0;
 
 function getApproxBytes(value){ try { return new Blob([JSON.stringify(value)]).size; } catch { return JSON.stringify(value || []).length; } }
 function pruneArrayByBytes(items, maxItems, maxBytes){

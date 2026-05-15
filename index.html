@@ -18,8 +18,9 @@
         .logo-area { padding: 28px 24px; border-bottom: 1px solid rgba(255,255,255,0.1); }
         .logo-area h1 { font-size: 1.6rem; font-weight: 600; color: white; }
         .logo-area p { font-size: 0.7rem; color: #8ea5a5; margin-top: 6px; }
-        .nav-item { display: flex; align-items: center; gap: 14px; padding: 12px 24px; margin: 4px 12px; border-radius: 14px; color: #cbdcd9; font-weight: 500; cursor: pointer; }
+        .nav-item { display: flex; align-items: center; gap: 14px; padding: 12px 24px; margin: 4px 12px; border-radius: 14px; color: #cbdcd9; font-weight: 500; cursor: pointer; transition: all 0.2s; }
         .nav-item.active { background: #2b5a55; color: white; }
+        .nav-item:hover { background: #1f4e4a; color: white; }
         .main-content { flex: 1; margin-left: 280px; padding: 24px 32px; width: calc(100% - 280px); }
         .mobile-header { display: none; background: #0f2c2c; padding: 16px 20px; color: white; align-items: center; justify-content: space-between; }
         .menu-toggle { background: none; border: none; font-size: 1.8rem; color: white; cursor: pointer; }
@@ -27,24 +28,28 @@
         .mobile-sidebar.open { left: 0; }
         .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 199; display: none; }
         .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 24px; margin-bottom: 36px; }
-        .stat-card { background: white; border-radius: 24px; padding: 22px 20px; border: 1px solid #e2edf2; }
-        .stat-card h4 { font-size: 0.7rem; text-transform: uppercase; color: #5f7f7c; margin-bottom: 12px; }
+        .stat-card { background: white; border-radius: 24px; padding: 22px 20px; border: 1px solid #e2edf2; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .stat-card h4 { font-size: 0.7rem; text-transform: uppercase; color: #5f7f7c; margin-bottom: 12px; letter-spacing: 1px; }
         .stat-number { font-size: 2.2rem; font-weight: 700; color: #1f4e4a; }
-        .form-card { background: white; border-radius: 28px; padding: 28px 30px; border: 1px solid #e7edf2; margin-bottom: 28px; }
+        .form-card { background: white; border-radius: 28px; padding: 28px 30px; border: 1px solid #e7edf2; margin-bottom: 28px; box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
         .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px 32px; }
         .input-field { display: flex; flex-direction: column; gap: 6px; }
-        .input-field label { font-size: 0.7rem; font-weight: 600; color: #2b5a55; text-transform: uppercase; }
-        input, select { padding: 12px 14px; border-radius: 18px; border: 1px solid #d4e0e5; font-size: 0.9rem; }
-        button { background: #1f4e4a; border: none; padding: 10px 24px; border-radius: 40px; color: white; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .input-field label { font-size: 0.7rem; font-weight: 600; color: #2b5a55; text-transform: uppercase; letter-spacing: 0.5px; }
+        input, select { padding: 12px 14px; border-radius: 18px; border: 1px solid #d4e0e5; font-size: 0.9rem; transition: all 0.2s; }
+        input:focus, select:focus { outline: none; border-color: #1f4e4a; box-shadow: 0 0 0 2px rgba(31,78,74,0.1); }
+        button { background: #1f4e4a; border: none; padding: 10px 24px; border-radius: 40px; color: white; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        button:hover:not(:disabled) { background: #153b38; transform: translateY(-1px); }
         button:disabled { opacity: 0.6; cursor: not-allowed; }
         .btn-outline { background: white; border: 1px solid #cbd5e1; color: #1f4e4a; }
+        .btn-outline:hover:not(:disabled) { background: #f8fafc; border-color: #1f4e4a; }
         .badge { display: inline-block; padding: 4px 12px; border-radius: 40px; font-size: 0.7rem; font-weight: 600; }
         .badge-VVIP { background: #fde68a; color: #92400e; }
         .badge-VIP { background: #e2e8f0; color: #334155; }
         .badge-UMUM { background: #d1fae5; color: #065f46; }
-        .toast-msg { position: fixed; bottom: 24px; right: 24px; background: #1e293b; color: white; padding: 10px 20px; border-radius: 40px; z-index: 1000; font-size: 0.8rem; animation: fadeIn 0.2s; }
+        .toast-msg { position: fixed; bottom: 24px; right: 24px; background: #1e293b; color: white; padding: 10px 20px; border-radius: 40px; z-index: 1000; font-size: 0.8rem; animation: fadeIn 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
         .toast-msg.success { background: #1f4e4a; }
         .toast-msg.error { background: #b91c1c; }
+        .toast-msg.warning { background: #d97706; }
         @keyframes fadeIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
         .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 3000; visibility: hidden; opacity: 0; transition: 0.2s; }
         .modal-overlay.active { visibility: visible; opacity: 1; }
@@ -58,7 +63,7 @@
         @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
         .table-wrap { overflow-x: auto; border-radius: 20px; }
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 14px 16px; background: #f8fafc; color: #1f4e4a; border-bottom: 1px solid #e2e8f0; }
+        th { text-align: left; padding: 14px 16px; background: #f8fafc; color: #1f4e4a; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
         td { padding: 12px 16px; border-bottom: 1px solid #edf2f7; }
         #cameraPreview { width: 100%; max-width: 500px; background: #000; border-radius: 24px; overflow: hidden; min-height: 200px; }
         @media (max-width: 780px) {
@@ -67,26 +72,20 @@
             .main-content { margin-left: 0; width: 100%; padding: 16px; }
             .grid-2 { grid-template-columns: 1fr; }
         }
-        .error-fallback { background: #fef2f2; border: 1px solid #fecaca; border-radius: 16px; padding: 20px; text-align: center; color: #991b1b; margin: 20px; }
-        .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: white; z-index: 10000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); background: rgba(15,44,44,0.95); }
-        .login-card { background: white; border-radius: 48px; padding: 40px; width: 360px; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.2); }
         .user-badge { background: #e2e8f0; border-radius: 40px; padding: 6px 16px; font-size: 0.75rem; margin-left: 16px; font-weight: 600; color: #1f4e4a; display: inline-flex; align-items: center; gap: 8px; }
         .site-selector-wrap { margin-bottom: 20px; background: white; border-radius: 28px; padding: 8px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; border: 1px solid #e2edf2; }
         .site-selector-wrap label { font-weight: 600; color: #2b5a55; font-size: 0.8rem; }
-        #siteSelector { width: auto; min-width: 140px; }
+        #siteSelector, #siteSelectorTop { width: auto; min-width: 140px; }
         .logout-btn { background: #b91c1c; padding: 6px 14px; font-size: 0.75rem; margin-left: auto; }
         .admin-hide { display: none; }
-        .brand-preview { font-weight: 600; }
         .license-badge { background: #fbbf24; color: #92400e; padding: 4px 12px; border-radius: 40px; font-size: 0.7rem; font-weight: 600; margin-left: 12px; }
         .progress-bar-container { background: #e2e8f0; border-radius: 20px; height: 12px; overflow: hidden; margin: 16px 0; width: 100%; }
         .progress-bar-fill { height: 100%; border-radius: 20px; transition: width 0.3s ease; background: #1f4e4a; }
         .progress-bar-fill.warning { background: #f59e0b; }
         .progress-bar-fill.critical { background: #ef4444; }
         .limit-info { font-size: 0.75rem; color: #5f7f7c; margin-top: 4px; display: flex; justify-content: space-between; }
-        .monetization-badge { font-size: 0.7rem; font-weight: 600; margin-left: 8px; }
-        .monetization-badge.demo { background: #fef3c7; color: #92400e; }
-        .monetization-badge.basic { background: #dbeafe; color: #1e40af; }
-        .monetization-badge.pro { background: #d1fae5; color: #065f46; }
+        .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15,44,44,0.95); z-index: 10000; display: flex; align-items: center; justify-content: center; }
+        .login-card { background: white; border-radius: 48px; padding: 40px; width: 360px; box-shadow: 0 20px 35px -10px rgba(0,0,0,0.2); }
     </style>
 </head>
 <body>
@@ -247,149 +246,146 @@
 <script>
 // ============================================================
 // VMS SAPAM MEDED - SIMPLIFIED BACKEND
-// Google Apps Script as Single Source of Truth
-// NO Cloudflare Worker, NO Complex Distributed Sync
 // ============================================================
 
-// ================= CONFIGURATION =================
-const GAS_URL = "https://script.google.com/macros/s/AKfycby71Vh79394QO_m0ros3Opg5UeHo1Q_oLczYPBrmQCPM-o3OR_2JqwCLpjECdweQM4TbQ/exec"; // GANTI DENGAN URL APPS SCRIPT ANDA
-const SHEET_ID = "1ohvC84wtT4EP-rcrDbWZ1tKKMIWGjvxSu_JTTDIfvkA";
+// ================= KONFIGURASI =================
+// !!! GANTI DENGAN URL APPS SCRIPT ANDA !!!
+const GAS_URL = "https://script.google.com/macros/s/AKfycby71Vh79394QO_m0ros3Opg5UeHo1Q_oLczYPBrmQCPM-o3OR_2JqwCLpjECdweQM4TbQ/exec";
+
 const WIB_TIMEZONE = "Asia/Jakarta";
 const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
-const MAX_QUEUE = 50;
+const QR_SECRET = "VmsEnt2026!";
 
+// Global state
 let visitors = {};
 let logs = [];
 let currentUser = null;
 let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
 let LICENSE_MODE = localStorage.getItem("vms_license") || "DEMO";
-let isOnline = navigator.onLine;
-let syncQueue = [];
-let isSyncing = false;
-let lastSyncTime = 0;
-
-// ================= DEVICE ID =================
 let deviceId = localStorage.getItem("vms_device_id");
-if(!deviceId){
-    deviceId = "dev_" + Date.now() + "_" + Math.random().toString(36).substr(2, 8);
-    localStorage.setItem("vms_device_id", deviceId);
-}
+let isProcessing = false;
+let syncQueue = [];
 
 // ================= UTILITIES =================
 function getEventTimestamp() { return Date.now(); }
-function getWIBISO(input = getEventTimestamp()) {
-    const d = input instanceof Date ? input : new Date(input);
-    const parts = new Intl.DateTimeFormat("sv-SE", { timeZone: WIB_TIMEZONE, year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false }).formatToParts(d)
-        .reduce((acc, part) => { if(part.type !== "literal") acc[part.type] = part.value; return acc; }, {});
-    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+07:00`;
-}
-function formatWIB(input = getEventTimestamp()) {
-    return new Intl.DateTimeFormat("id-ID", { timeZone: WIB_TIMEZONE, dateStyle: "medium", timeStyle: "medium" }).format(input instanceof Date ? input : new Date(input));
+
+function getWIBISO(input) {
+    var d = input ? new Date(input) : new Date();
+    var year = d.getFullYear();
+    var month = String(d.getMonth() + 1).padStart(2, "0");
+    var day = String(d.getDate()).padStart(2, "0");
+    var hours = String(d.getHours()).padStart(2, "0");
+    var minutes = String(d.getMinutes()).padStart(2, "0");
+    var seconds = String(d.getSeconds()).padStart(2, "0");
+    return year + "-" + month + "-" + day + "T" + hours + ":" + minutes + ":" + seconds + "+07:00";
 }
 
-function toast(msg, type = "info") {
-    let t = document.createElement("div");
-    t.className = `toast-msg ${type}`;
+function formatWIB(input) {
+    var d = input ? new Date(input) : new Date();
+    return d.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "medium" }) + " " + 
+           d.toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta", timeStyle: "medium" });
+}
+
+function toast(msg, type) {
+    type = type || "info";
+    var t = document.createElement("div");
+    t.className = "toast-msg " + type;
     t.innerText = msg;
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), 3000);
+    setTimeout(function() { t.remove(); }, 3000);
 }
 
-function generateReg() { return "REG" + Date.now() + Math.floor(Math.random() * 10000); }
-function createMutationId(prefix) { return `${prefix}_${deviceId}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`; }
+function generateReg() { 
+    return "REG" + Date.now() + Math.floor(Math.random() * 10000);
+}
+
+function createMutationId(prefix) {
+    return prefix + "_" + deviceId + "_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+}
 
 function normalizeAction(action) {
-    const raw = String(action || "").trim().toUpperCase().replace(/[\s-]+/g, "_");
-    if(["IN", "CHECKIN", "CHECK_IN"].includes(raw)) return ACTION_TYPES.CHECK_IN;
-    if(["OUT", "CHECKOUT", "CHECK_OUT"].includes(raw)) return ACTION_TYPES.CHECK_OUT;
-    if(["WALK_IN", "WALKIN"].includes(raw)) return ACTION_TYPES.WALK_IN;
-    if(["REGISTER", "REGISTRATION"].includes(raw)) return ACTION_TYPES.REGISTER;
+    var raw = String(action || "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+    if (["IN", "CHECKIN", "CHECK_IN"].indexOf(raw) >= 0) return ACTION_TYPES.CHECK_IN;
+    if (["OUT", "CHECKOUT", "CHECK_OUT"].indexOf(raw) >= 0) return ACTION_TYPES.CHECK_OUT;
+    if (["WALK_IN", "WALKIN"].indexOf(raw) >= 0) return ACTION_TYPES.WALK_IN;
+    if (["REGISTER", "REGISTRATION"].indexOf(raw) >= 0) return ACTION_TYPES.REGISTER;
     return raw || "UNKNOWN";
 }
 
-function getMutationSource() { return `${deviceId}:browser`; }
+function getMutationSource() { return deviceId + ":browser"; }
+
+// ================= DEVICE ID =================
+if (!deviceId) {
+    deviceId = "dev_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    localStorage.setItem("vms_device_id", deviceId);
+}
 
 // ================= QR FUNCTIONS =================
-const QR_SECRET = "VmsEnt2026!";
-
 async function generateSignature(payload) {
-    const enc = new TextEncoder().encode(payload + QR_SECRET);
-    const hash = await crypto.subtle.digest("SHA-256", enc);
-    return btoa(String.fromCharCode(...new Uint8Array(hash)));
+    var enc = new TextEncoder().encode(payload + QR_SECRET);
+    var hash = await crypto.subtle.digest("SHA-256", enc);
+    var bytes = new Uint8Array(hash);
+    var result = "";
+    for (var i = 0; i < bytes.length; i++) {
+        result += String.fromCharCode(bytes[i]);
+    }
+    return btoa(result);
 }
 
 async function buildQR(reg, data) {
-    const ts = Date.now();
-    const payload = JSON.stringify({
+    var ts = Date.now();
+    var payload = JSON.stringify({
         reg: reg,
         nama: data.nama,
         perusahaan: data.perusahaan,
         exp: data.expDate,
         ts: ts
     });
-    const sig = await generateSignature(payload);
-    return btoa(JSON.stringify({ payload, sig, ts }));
+    var sig = await generateSignature(payload);
+    return btoa(JSON.stringify({ payload: payload, sig: sig, ts: ts }));
 }
 
 async function parseQR(raw) {
     try {
-        const decoded = JSON.parse(atob(raw));
-        const expectedSig = await generateSignature(decoded.payload);
-        if(decoded.sig !== expectedSig) return null;
+        var decoded = JSON.parse(atob(raw));
+        var expectedSig = await generateSignature(decoded.payload);
+        if (decoded.sig !== expectedSig) return null;
         return JSON.parse(decoded.payload);
-    } catch(e) { return null; }
-}
-
-async function waitQRCodeReady() {
-    let retry = 0;
-    while(typeof QRCode === "undefined" && retry < 20) {
-        await new Promise(r => setTimeout(r, 100));
-        retry++;
+    } catch(e) { 
+        return null; 
     }
-    return typeof QRCode !== "undefined";
 }
 
-async function generateQRImage(qrPayload) {
-    const ready = await waitQRCodeReady();
-    if(ready) {
-        try {
-            const canvas = document.createElement("canvas");
-            await QRCode.toCanvas(canvas, qrPayload, { width: 200, margin: 1, color: { dark: "#000000", light: "#FFFFFF" } });
-            return canvas.toDataURL("image/png");
-        } catch(e) { console.warn("Local QR failed:", e); }
-    }
-    return null;
-}
-
-// ================= LOCAL STORAGE (CACHE) =================
-async function saveToLocal() {
+// ================= LOCAL STORAGE =================
+function saveToLocal() {
     try {
-        const data = { visitors, logs, version: 1, updatedAt: Date.now() };
+        var data = { visitors: visitors, logs: logs, version: 1, updatedAt: Date.now() };
         localStorage.setItem("vms_cache", JSON.stringify(data));
-    } catch(e) { console.warn("Save local failed:", e); }
+    } catch(e) { 
+        console.warn("Save local failed:", e); 
+    }
 }
 
-async function loadFromLocal() {
+function loadFromLocal() {
     try {
-        const raw = localStorage.getItem("vms_cache");
-        if(raw) {
-            const data = JSON.parse(raw);
-            if(data.visitors) visitors = data.visitors;
-            if(data.logs) logs = data.logs;
-            console.log("Loaded from local cache:", Object.keys(visitors).length, "visitors,", logs.length, "logs");
+        var raw = localStorage.getItem("vms_cache");
+        if (raw) {
+            var data = JSON.parse(raw);
+            if (data.visitors) visitors = data.visitors;
+            if (data.logs) logs = data.logs;
+            console.log("Loaded from cache:", Object.keys(visitors).length, "visitors,", logs.length, "logs");
         }
-    } catch(e) { console.warn("Load local failed:", e); }
+    } catch(e) { 
+        console.warn("Load local failed:", e); 
+    }
 }
 
-// ================= SYNC TO GOOGLE SHEET (SEDERHANA) =================
+// ================= SYNC TO GOOGLE SHEET =================
 async function syncToSheet(payload) {
-    if(!payload || (!payload.visitors && !payload.logs)) return false;
+    var licenseKey = localStorage.getItem("vms_license_key") || "";
+    if (!licenseKey) return false;
     
-    const licenseKey = localStorage.getItem("vms_license_key") || "";
-    if(!licenseKey) return false;
-    
-    // Build payload for Apps Script
-    const syncPayload = {
+    var syncPayload = {
         licenseKey: licenseKey,
         deviceId: deviceId,
         site: SITE_ID,
@@ -399,20 +395,19 @@ async function syncToSheet(payload) {
         timestamp: Date.now()
     };
     
-    // Queue if offline
-    if(!navigator.onLine) {
+    if (!navigator.onLine) {
         syncQueue.push(syncPayload);
-        if(syncQueue.length > MAX_QUEUE) syncQueue.shift();
+        if (syncQueue.length > 50) syncQueue.shift();
         localStorage.setItem("vms_sync_queue", JSON.stringify(syncQueue));
         toast("Offline mode - data akan disinkronkan saat online", "warning");
         return false;
     }
     
     try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
+        var controller = new AbortController();
+        var timeout = setTimeout(function() { controller.abort(); }, 15000);
         
-        const res = await fetch(GAS_URL + "?action=sync", {
+        var res = await fetch(GAS_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(syncPayload),
@@ -421,107 +416,123 @@ async function syncToSheet(payload) {
         
         clearTimeout(timeout);
         
-        if(res.ok) {
-            const result = await res.json();
-            if(result.ok) {
-                lastSyncTime = Date.now();
+        if (res.ok) {
+            var result = await res.json();
+            if (result && result.ok === true) {
                 return true;
             }
         }
-        throw new Error("Sync failed");
+        return false;
     } catch(e) {
-        console.warn("Sync to sheet failed:", e);
+        console.warn("Sync failed:", e);
         syncQueue.push(syncPayload);
-        if(syncQueue.length > MAX_QUEUE) syncQueue.shift();
+        if (syncQueue.length > 50) syncQueue.shift();
         localStorage.setItem("vms_sync_queue", JSON.stringify(syncQueue));
         return false;
     }
 }
 
 async function pullFromSheet() {
-    const licenseKey = localStorage.getItem("vms_license_key") || "";
-    if(!licenseKey || !navigator.onLine) return false;
+    var licenseKey = localStorage.getItem("vms_license_key") || "";
+    if (!licenseKey || !navigator.onLine) return false;
     
     try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
+        var controller = new AbortController();
+        var timeout = setTimeout(function() { controller.abort(); }, 15000);
         
-        const res = await fetch(`${GAS_URL}?action=pull&licenseKey=${encodeURIComponent(licenseKey)}&site=${encodeURIComponent(SITE_ID)}`, {
-            method: "GET",
-            signal: controller.signal
-        });
+        var url = GAS_URL + "?licenseKey=" + encodeURIComponent(licenseKey) + "&site=" + encodeURIComponent(SITE_ID);
+        var res = await fetch(url, { method: "GET", signal: controller.signal });
         
         clearTimeout(timeout);
         
-        if(res.ok) {
-            const data = await res.json();
-            if(data.ok && data.data) {
-                let changed = false;
+        if (res.ok) {
+            var data = await res.json();
+            if (data && data.ok === true && data.data) {
+                var changed = false;
                 
-                // Merge visitors
-                if(data.data.visitors) {
-                    for(const [key, visitor] of Object.entries(data.data.visitors)) {
-                        const existing = visitors[key];
-                        if(!existing || (visitor.updatedAt || 0) > (existing.updatedAt || 0)) {
-                            visitors[key] = visitor;
-                            changed = true;
+                if (data.data.visitors) {
+                    for (var key in data.data.visitors) {
+                        if (data.data.visitors.hasOwnProperty(key)) {
+                            var visitor = data.data.visitors[key];
+                            var existing = visitors[key];
+                            if (!existing || (visitor.updatedAt || 0) > (existing.updatedAt || 0)) {
+                                visitors[key] = visitor;
+                                changed = true;
+                            }
                         }
                     }
                 }
                 
-                // Merge logs
-                if(data.data.logs && Array.isArray(data.data.logs)) {
-                    const existingIds = new Set(logs.map(l => l.mutationId));
-                    for(const log of data.data.logs) {
-                        if(log.mutationId && !existingIds.has(log.mutationId)) {
-                            logs.unshift(log);
+                if (data.data.logs && Array.isArray(data.data.logs)) {
+                    var existingIds = {};
+                    for (var i = 0; i < logs.length; i++) {
+                        if (logs[i].mutationId) existingIds[logs[i].mutationId] = true;
+                    }
+                    for (var j = 0; j < data.data.logs.length; j++) {
+                        var logEntry = data.data.logs[j];
+                        if (logEntry.mutationId && !existingIds[logEntry.mutationId]) {
+                            logs.unshift(logEntry);
                             changed = true;
                         }
                     }
-                    logs = logs.slice(0, 1000);
+                    if (logs.length > 2000) logs = logs.slice(0, 2000);
                 }
                 
-                if(changed) {
-                    await saveToLocal();
-                    if(typeof renderDashboard === "function") renderDashboard();
-                    if(typeof renderLogTable === "function") renderLogTable();
-                    toast("Data berhasil disinkronkan dari server", "success");
+                if (changed) {
+                    saveToLocal();
+                    renderDashboard();
+                    renderLogTable();
+                    toast("Data berhasil disinkronkan", "success");
                 }
                 return true;
             }
         }
         return false;
     } catch(e) {
-        console.warn("Pull from sheet failed:", e);
+        console.warn("Pull failed:", e);
         return false;
     }
 }
 
 async function processSyncQueue() {
-    if(!navigator.onLine || syncQueue.length === 0) return;
+    if (!navigator.onLine || syncQueue.length === 0) return;
     
-    const queue = [...syncQueue];
+    var queue = syncQueue.slice();
     syncQueue = [];
     localStorage.setItem("vms_sync_queue", JSON.stringify(syncQueue));
     
-    for(const item of queue) {
-        await syncToSheet(item);
-        await new Promise(r => setTimeout(r, 500));
+    for (var i = 0; i < queue.length; i++) {
+        await syncToSheet(queue[i]);
+        await new Promise(function(r) { setTimeout(r, 500); });
     }
 }
 
 // ================= VISITOR MANAGEMENT =================
-function getSiteKey(reg) { return `${SITE_ID}_${reg}`; }
+function getSiteKey(reg) { return SITE_ID + "_" + reg; }
+
+function resolveVisitorByReg(reg) {
+    var regText = String(reg || "").trim();
+    if (!regText) return { siteKey: "", visitor: null };
+    
+    var preferredKey = getSiteKey(regText);
+    if (visitors[preferredKey]) return { siteKey: preferredKey, visitor: visitors[preferredKey] };
+    
+    for (var key in visitors) {
+        if (visitors.hasOwnProperty(key) && visitors[key].reg === regText) {
+            return { siteKey: key, visitor: visitors[key] };
+        }
+    }
+    
+    return { siteKey: "", visitor: null };
+}
 
 function saveVisitor(siteKey, data, reg, sourceAction) {
-    const mutationId = data.mutationId || createMutationId("visitor");
-    const eventTs = getEventTimestamp();
+    var mutationId = data.mutationId || createMutationId("visitor");
+    var eventTs = getEventTimestamp();
+    var current = visitors[siteKey] || null;
+    var incomingVersion = (current && current.version ? current.version : 0) + 1;
     
-    const current = visitors[siteKey] || null;
-    const incomingVersion = (current?.version || 0) + 1;
-    
-    const visitor = {
-        ...data,
+    visitors[siteKey] = {
         reg: reg,
         site: SITE_ID,
         version: incomingVersion,
@@ -529,40 +540,34 @@ function saveVisitor(siteKey, data, reg, sourceAction) {
         updatedAtWIB: getWIBISO(eventTs),
         mutationId: mutationId,
         mutationSource: getMutationSource(),
-        sourceAction: normalizeAction(sourceAction)
+        sourceAction: normalizeAction(sourceAction),
+        nama: data.nama,
+        perusahaan: data.perusahaan,
+        kategori: data.kategori,
+        tujuan: data.tujuan,
+        pic: data.pic,
+        dept: data.dept,
+        startDate: data.startDate,
+        expDate: data.expDate,
+        badgeMode: data.badgeMode,
+        foto: data.foto || "",
+        sessions: data.sessions || [],
+        currentStatus: data.currentStatus || "OUT"
     };
     
-    visitors[siteKey] = visitor;
-    return visitor;
-}
-
-function resolveVisitorByReg(reg) {
-    const regText = String(reg || "").trim();
-    if(!regText) return { siteKey: "", visitor: null };
-    
-    const preferredKey = getSiteKey(regText);
-    if(visitors[preferredKey]) return { siteKey: preferredKey, visitor: visitors[preferredKey] };
-    
-    // Search all sites
-    for(const [key, visitor] of Object.entries(visitors)) {
-        if(visitor.reg === regText) {
-            return { siteKey: key, visitor: visitor };
-        }
-    }
-    
-    return { siteKey: "", visitor: null };
+    return visitors[siteKey];
 }
 
 function addLog(reg, action) {
-    const resolved = resolveVisitorByReg(reg);
-    const visitor = resolved.visitor;
-    const eventTs = getEventTimestamp();
+    var resolved = resolveVisitorByReg(reg);
+    var visitor = resolved.visitor;
+    var eventTs = getEventTimestamp();
     
-    const logEntry = {
+    var logEntry = {
         reg: reg,
-        name: visitor?.nama || reg,
-        company: visitor?.perusahaan || "",
-        category: visitor?.kategori || "UMUM",
+        name: visitor ? visitor.nama : reg,
+        company: visitor ? visitor.perusahaan : "",
+        category: visitor ? visitor.kategori : "UMUM",
         action: normalizeAction(action),
         time: eventTs,
         logTime: getWIBISO(eventTs),
@@ -574,13 +579,13 @@ function addLog(reg, action) {
     };
     
     logs.unshift(logEntry);
-    if(logs.length > 2000) logs = logs.slice(0, 2000);
+    if (logs.length > 2000) logs = logs.slice(0, 2000);
     return logEntry;
 }
 
 // ================= LICENSE =================
 async function applyLicenseKey(key) {
-    if(!key) {
+    if (!key) {
         toast("Masukkan license key", "error");
         return;
     }
@@ -588,30 +593,26 @@ async function applyLicenseKey(key) {
     toast("Memvalidasi license...", "info");
     
     try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
+        var controller = new AbortController();
+        var timeout = setTimeout(function() { controller.abort(); }, 10000);
         
-        const res = await fetch(`${GAS_URL}?action=validateLicense&licenseKey=${encodeURIComponent(key)}&deviceId=${encodeURIComponent(deviceId)}`, {
-            method: "GET",
-            signal: controller.signal
-        });
+        var url = GAS_URL + "?licenseKey=" + encodeURIComponent(key) + "&deviceId=" + encodeURIComponent(deviceId);
+        var res = await fetch(url, { method: "GET", signal: controller.signal });
         
         clearTimeout(timeout);
         
-        if(res.ok) {
-            const data = await res.json();
-            if(data.ok) {
+        if (res.ok) {
+            var data = await res.json();
+            if (data && data.ok === true) {
                 LICENSE_MODE = data.package || "PRO";
                 localStorage.setItem("vms_license", LICENSE_MODE);
                 localStorage.setItem("vms_license_key", key);
-                toast(`✅ License aktif: ${LICENSE_MODE}`, "success");
-                applyLicenseUI();
-                
-                // Pull data setelah aktivasi
+                toast("License aktif: " + LICENSE_MODE, "success");
+                document.getElementById("licenseStatusBadge").innerText = LICENSE_MODE + " MODE";
                 await pullFromSheet();
-                if(typeof renderDashboard === "function") renderDashboard();
-                if(typeof renderLogTable === "function") renderLogTable();
-                if(typeof updateMonetizationUI === "function") updateMonetizationUI();
+                renderDashboard();
+                renderLogTable();
+                updateMonetizationUI();
             } else {
                 toast(data.message || "License tidak valid", "error");
             }
@@ -619,59 +620,58 @@ async function applyLicenseKey(key) {
             toast("Gagal memvalidasi license", "error");
         }
     } catch(e) {
-        console.error("License validation error:", e);
-        toast("Gagal memvalidasi license. Periksa koneksi internet.", "error");
+        console.error("License error:", e);
+        toast("Gagal memvalidasi license", "error");
     }
 }
 
-function applyLicenseUI() {
-    const badge = document.getElementById("licenseStatusBadge");
-    if(badge) badge.innerText = LICENSE_MODE + " MODE";
-}
-
-// ================= MONETIZATION LIMITS =================
+// ================= MONETIZATION =================
 function getCurrentVisitorCount() {
-    return Object.keys(visitors).filter(k => k.startsWith(SITE_ID + "_")).length;
+    var count = 0;
+    for (var key in visitors) {
+        if (visitors.hasOwnProperty(key) && key.indexOf(SITE_ID + "_") === 0) count++;
+    }
+    return count;
 }
 
 function getCurrentScanCount() {
-    const today = getWIBISO().slice(0,10);
-    return logs.filter(l => l.logTime?.slice(0,10) === today && (l.action === "CHECK_IN" || l.action === "CHECK_OUT")).length;
+    var today = getWIBISO().slice(0, 10);
+    var count = 0;
+    for (var i = 0; i < logs.length; i++) {
+        var l = logs[i];
+        if (l.logTime && l.logTime.slice(0, 10) === today && (l.action === "CHECK_IN" || l.action === "CHECK_OUT")) {
+            count++;
+        }
+    }
+    return count;
 }
 
 function isDemo() { return LICENSE_MODE === "DEMO"; }
 function isBasic() { return LICENSE_MODE === "BASIC"; }
 function isPro() { return LICENSE_MODE === "PRO"; }
 
-function getDemoMaxRegister() { return 5; }
-function getDemoMaxScan() { return 5; }
-function getBasicMaxVisitor() { return 150; }
-
 function canRegister() {
-    if(isDemo()) {
-        if(getCurrentVisitorCount() >= getDemoMaxRegister()) {
-            toast("DEMO LIMIT HABIS! Upgrade license untuk lanjut", "error");
+    if (isDemo()) {
+        if (getCurrentVisitorCount() >= 5) {
+            toast("DEMO LIMIT HABIS! Upgrade license", "error");
             return false;
         }
         return true;
     }
-    if(isBasic()) {
-        if(getCurrentVisitorCount() >= getBasicMaxVisitor()) {
-            toast("LIMIT BASIC TERCAPAI! Upgrade ke PRO untuk unlimited", "error");
+    if (isBasic()) {
+        if (getCurrentVisitorCount() >= 150) {
+            toast("LIMIT BASIC TERCAPAI! Upgrade ke PRO", "error");
             return false;
         }
-        const count = getCurrentVisitorCount();
-        const max = getBasicMaxVisitor();
-        if(count >= max * 0.9) toast(`⚠️ Peringatan: ${max - count} slot tersisa`, "warning");
         return true;
     }
     return true;
 }
 
 function canScan() {
-    if(isDemo()) {
-        if(getCurrentScanCount() >= getDemoMaxScan()) {
-            toast("DEMO SCAN LIMIT HABIS! Upgrade license untuk lanjut", "error");
+    if (isDemo()) {
+        if (getCurrentScanCount() >= 5) {
+            toast("DEMO SCAN LIMIT HABIS! Upgrade license", "error");
             return false;
         }
         return true;
@@ -680,85 +680,67 @@ function canScan() {
 }
 
 function updateMonetizationUI() {
-    const progressCard = document.getElementById("monetizationProgressCard");
-    if(!progressCard) return;
+    var visitorCount = getCurrentVisitorCount();
+    var progressBar = document.getElementById("visitorProgressBar");
+    var limitText = document.getElementById("visitorLimitText");
+    var warningDiv = document.getElementById("visitorLimitWarning");
     
-    const visitorCount = getCurrentVisitorCount();
-    let maxLimit = 0;
+    if (!progressBar) return;
     
-    if(isPro()) {
-        document.getElementById("visitorLimitText").innerHTML = `${visitorCount} / Unlimited ✨`;
-        const progressBar = document.getElementById("visitorProgressBar");
-        if(progressBar) progressBar.style.width = "0%";
-        document.getElementById("visitorLimitWarning").innerHTML = "✅ PRO Mode - Unlimited akses";
-    } else if(isBasic()) {
-        maxLimit = getBasicMaxVisitor();
-        const percent = (visitorCount / maxLimit) * 100;
-        const progressBar = document.getElementById("visitorProgressBar");
-        if(progressBar) {
-            progressBar.style.width = Math.min(percent, 100) + "%";
-            if(percent >= 90) progressBar.className = "progress-bar-fill critical";
-            else if(percent >= 70) progressBar.className = "progress-bar-fill warning";
-            else progressBar.className = "progress-bar-fill";
-        }
-        document.getElementById("visitorLimitText").innerHTML = `${visitorCount} / ${maxLimit}`;
-        if(percent >= 100) {
-            document.getElementById("visitorLimitWarning").innerHTML = "🔴 LIMIT TERCAPAI! Upgrade ke PRO untuk lanjut.";
-        } else if(percent >= 90) {
-            document.getElementById("visitorLimitWarning").innerHTML = "⚠️ KRITIS! Sisa slot sedikit. Upgrade ke PRO!";
-        } else if(percent >= 70) {
-            document.getElementById("visitorLimitWarning").innerHTML = "⚠️ Mendekati limit BASIC. Upgrade ke PRO!";
-        } else {
-            document.getElementById("visitorLimitWarning").innerHTML = `📊 Sisa ${maxLimit - visitorCount} slot tersedia`;
-        }
-    } else if(isDemo()) {
-        maxLimit = getDemoMaxRegister();
-        const scanCount = getCurrentScanCount();
-        const maxScan = getDemoMaxScan();
-        const percent = (visitorCount / maxLimit) * 100;
-        const progressBar = document.getElementById("visitorProgressBar");
-        if(progressBar) {
-            progressBar.style.width = Math.min(percent, 100) + "%";
-            if(percent >= 90) progressBar.className = "progress-bar-fill critical";
-            else if(percent >= 70) progressBar.className = "progress-bar-fill warning";
-            else progressBar.className = "progress-bar-fill";
-        }
-        document.getElementById("visitorLimitText").innerHTML = `${visitorCount} / ${maxLimit} (${scanCount}/${maxScan} scan)`;
-        if(visitorCount >= maxLimit || scanCount >= maxScan) {
-            document.getElementById("visitorLimitWarning").innerHTML = "🔴 DEMO LIMIT HABIS! Upgrade license.";
-        } else if(visitorCount >= maxLimit * 0.8 || scanCount >= maxScan * 0.8) {
-            document.getElementById("visitorLimitWarning").innerHTML = "⚠️ Demo hampir limit. Upgrade untuk lanjut!";
-        } else {
-            document.getElementById("visitorLimitWarning").innerHTML = `Demo mode: ${maxLimit - visitorCount} register, ${maxScan - scanCount} scan tersisa`;
-        }
+    if (isPro()) {
+        limitText.innerHTML = visitorCount + " / Unlimited ✨";
+        progressBar.style.width = "0%";
+        warningDiv.innerHTML = "✅ PRO Mode - Unlimited akses";
+    } else if (isBasic()) {
+        var maxLimit = 150;
+        var percent = (visitorCount / maxLimit) * 100;
+        progressBar.style.width = Math.min(percent, 100) + "%";
+        if (percent >= 90) progressBar.className = "progress-bar-fill critical";
+        else if (percent >= 70) progressBar.className = "progress-bar-fill warning";
+        else progressBar.className = "progress-bar-fill";
+        limitText.innerHTML = visitorCount + " / " + maxLimit;
+        if (percent >= 100) warningDiv.innerHTML = "🔴 LIMIT TERCAPAI! Upgrade ke PRO";
+        else if (percent >= 90) warningDiv.innerHTML = "⚠️ KRITIS! Upgrade ke PRO!";
+        else if (percent >= 70) warningDiv.innerHTML = "⚠️ Mendekati limit BASIC";
+        else warningDiv.innerHTML = "📊 Sisa " + (maxLimit - visitorCount) + " slot";
+    } else {
+        var maxReg = 5;
+        var maxScan = 5;
+        var scanCount = getCurrentScanCount();
+        var percent = (visitorCount / maxReg) * 100;
+        progressBar.style.width = Math.min(percent, 100) + "%";
+        if (percent >= 90) progressBar.className = "progress-bar-fill critical";
+        else if (percent >= 70) progressBar.className = "progress-bar-fill warning";
+        else progressBar.className = "progress-bar-fill";
+        limitText.innerHTML = visitorCount + " / " + maxReg + " (" + scanCount + "/" + maxScan + " scan)";
+        if (visitorCount >= maxReg || scanCount >= maxScan) warningDiv.innerHTML = "🔴 DEMO LIMIT HABIS! Upgrade license";
+        else if (visitorCount >= maxReg * 0.8 || scanCount >= maxScan * 0.8) warningDiv.innerHTML = "⚠️ Demo hampir limit";
+        else warningDiv.innerHTML = "Demo: " + (maxReg - visitorCount) + " register, " + (maxScan - scanCount) + " scan tersisa";
     }
     
-    // Disable buttons based on limits
-    const generateBtn = document.getElementById("generateQRBtn");
-    const walkinBtn = document.getElementById("walkinBtn");
-    const startCamBtn = document.getElementById("startCamBtn");
-    const manualProcessBtn = document.getElementById("manualProcess");
+    var generateBtn = document.getElementById("generateQRBtn");
+    var walkinBtn = document.getElementById("walkinBtn");
+    var startCamBtn = document.getElementById("startCamBtn");
+    var manualProcessBtn = document.getElementById("manualProcess");
     
-    if(generateBtn) generateBtn.disabled = !canRegister();
-    if(walkinBtn) walkinBtn.disabled = !canRegister();
-    if(startCamBtn) startCamBtn.disabled = !canScan();
-    if(manualProcessBtn) manualProcessBtn.disabled = !canScan();
+    if (generateBtn) generateBtn.disabled = !canRegister();
+    if (walkinBtn) walkinBtn.disabled = !canRegister();
+    if (startCamBtn) startCamBtn.disabled = !canScan();
+    if (manualProcessBtn) manualProcessBtn.disabled = !canScan();
 }
 
 // ================= PDF BADGE =================
-let isDownloading = false;
-
 async function ensureJsPDFReady() {
-    if(window.jspdf) return true;
-    return new Promise((resolve) => {
-        let max = 100;
-        let i = 0;
-        const interval = setInterval(() => {
-            if(window.jspdf) {
+    if (window.jspdf) return true;
+    return new Promise(function(resolve) {
+        var maxAttempts = 100;
+        var attempt = 0;
+        var interval = setInterval(function() {
+            if (window.jspdf) {
                 clearInterval(interval);
                 resolve(true);
             }
-            if(i++ > max) {
+            if (attempt++ > maxAttempts) {
                 clearInterval(interval);
                 resolve(false);
             }
@@ -766,424 +748,492 @@ async function ensureJsPDFReady() {
     });
 }
 
-function forceDownloadPDF(doc, filename) {
-    try {
-        const blob = doc.output("blob");
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
-        return true;
-    } catch(err) { console.error("Force download error:", err); return false; }
-}
-
-function cleanPdfText(value, fallback = "-") {
-    const text = String(value === undefined || value === null || value === "" ? fallback : value).replace(/\s+/g, " ").trim();
-    return text || fallback;
-}
-
-function addImageContain(doc, imageData, x, y, w, h) {
-    if(!imageData || typeof imageData !== "string" || !imageData.startsWith("data:image")) return false;
-    try {
-        const props = doc.getImageProperties(imageData);
-        const ratio = Math.min(w / props.width, h / props.height);
-        const iw = props.width * ratio;
-        const ih = props.height * ratio;
-        const ix = x + (w - iw) / 2;
-        const iy = y + (h - ih) / 2;
-        const fmt = /png/i.test(props.fileType || imageData.slice(0, 30)) ? "PNG" : "JPEG";
-        doc.addImage(imageData, fmt, ix, iy, iw, ih);
-        return true;
-    } catch(e) {
-        try { doc.addImage(imageData, "JPEG", x, y, w, h); return true; } catch(_) { return false; }
-    }
+function cleanPdfText(value, fallback) {
+    fallback = fallback || "-";
+    var text = String(value === undefined || value === null || value === "" ? fallback : value);
+    return text.replace(/\s+/g, " ").trim() || fallback;
 }
 
 function drawCorporateHeader(doc, title, subtitle, w, accentColor) {
-    doc.setFillColor(...accentColor);
+    doc.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
     doc.roundedRect(0, 0, w, 12, 2, 2, "F");
-    doc.setTextColor(255,255,255);
+    doc.setTextColor(255, 255, 255);
     doc.setFont(undefined, "bold");
     doc.setFontSize(7.5);
-    doc.text(cleanPdfText(title), w / 2, 5.2, { align:"center" });
+    doc.text(cleanPdfText(title), w / 2, 5.2, { align: "center" });
     doc.setFont(undefined, "normal");
     doc.setFontSize(4.8);
-    doc.text(cleanPdfText(subtitle), w / 2, 9.1, { align:"center" });
+    doc.text(cleanPdfText(subtitle), w / 2, 9.1, { align: "center" });
 }
 
-function drawCorporateFooter(doc, deviceId, w, h) {
-    doc.setFillColor(241,245,249);
+function drawCorporateFooter(doc, deviceIdValue, w, h) {
+    doc.setFillColor(241, 245, 249);
     doc.rect(0, h - 7, w, 7, "F");
-    doc.setTextColor(71,85,105);
+    doc.setTextColor(71, 85, 105);
     doc.setFont(undefined, "normal");
     doc.setFontSize(4.2);
-    doc.text(`Generated ${formatWIB(getEventTimestamp())}`, 3, h - 3.8);
-    doc.text(`Device ${cleanPdfText(deviceId, "unknown")}`, w - 3, h - 3.8, { align:"right" });
+    doc.text("Generated " + formatWIB(getEventTimestamp()), 3, h - 3.8);
+    doc.text("Device " + cleanPdfText(deviceIdValue, "unknown"), w - 3, h - 3.8, { align: "right" });
 }
 
 async function downloadPDFStable(reg, data) {
     try {
-        const ready = await ensureJsPDFReady();
-        if(!ready) { toast("PDF engine gagal dimuat. Coba refresh.", "error"); return false; }
-        const { jsPDF } = window.jspdf;
-        const badgeMode = String(data.badgeMode || "PORTRAIT").toUpperCase() === "LANDSCAPE" ? "LANDSCAPE" : "PORTRAIT";
-        const badgeW = badgeMode === "LANDSCAPE" ? 86 : 54;
-        const badgeH = badgeMode === "LANDSCAPE" ? 54 : 86;
-        const doc = new jsPDF({
+        var ready = await ensureJsPDFReady();
+        if (!ready) {
+            toast("PDF engine gagal dimuat. Coba refresh.", "error");
+            return false;
+        }
+        
+        var jsPDFLib = window.jspdf;
+        var badgeMode = String(data.badgeMode || "PORTRAIT").toUpperCase() === "LANDSCAPE" ? "LANDSCAPE" : "PORTRAIT";
+        var badgeW = badgeMode === "LANDSCAPE" ? 86 : 54;
+        var badgeH = badgeMode === "LANDSCAPE" ? 54 : 86;
+        var doc = new jsPDFLib.jsPDF({
             orientation: badgeMode === "LANDSCAPE" ? "landscape" : "portrait",
             unit: "mm",
             format: [badgeW, badgeH]
         });
         
-        let accentColor = [31,78,74];
-        if(data.kategori === "VVIP") accentColor = [217,119,6];
-        else if(data.kategori === "VIP") accentColor = [100,116,139];
+        var accentColor = [31, 78, 74];
+        if (data.kategori === "VVIP") accentColor = [217, 119, 6];
+        else if (data.kategori === "VIP") accentColor = [100, 116, 139];
         
-        doc.setFillColor(248,250,252);
+        doc.setFillColor(248, 250, 252);
         doc.rect(0, 0, badgeW, badgeH, "F");
         drawCorporateHeader(doc, "VISITOR BADGE", cleanPdfText(data.perusahaan || "SAPAM MEDED"), badgeW, accentColor);
         
-        doc.setDrawColor(...accentColor);
+        doc.setDrawColor(accentColor[0], accentColor[1], accentColor[2]);
         doc.setLineWidth(0.5);
         doc.roundedRect(2, 2, badgeW - 4, badgeH - 4, 3, 3, "S");
         
-        const qrPayload = await buildQR(reg, data);
-        const qrBase64 = await generateQRImage(qrPayload);
+        var qrPayload = await buildQR(reg, data);
+        var qrBase64 = await (function() {
+            return new Promise(function(resolve) {
+                var canvas = document.createElement("canvas");
+                QRCode.toCanvas(canvas, qrPayload, { width: 200, margin: 1 }, function(error) {
+                    if (error) resolve(null);
+                    else resolve(canvas.toDataURL("image/png"));
+                });
+            });
+        })();
         
-        const drawWrapped = (value, x, y, maxWidth, maxLines, maxFont) => {
-            const text = cleanPdfText(value);
-            doc.setFontSize(maxFont);
-            const lines = doc.splitTextToSize(text, maxWidth);
-            const displayLines = lines.slice(0, maxLines);
-            doc.text(displayLines, x, y);
-            return y + (displayLines.length * maxFont * 0.36);
-        };
-        
-        if(badgeMode === "LANDSCAPE") {
-            // Photo area
-            doc.setFillColor(255,255,255);
-            doc.roundedRect(4, 13, 22, 22, 2, 2, "F");
-            if(data.foto && data.foto.startsWith("data:image")) {
-                try { doc.addImage(data.foto, "JPEG", 5, 14, 20, 20); } catch(e) {}
-            }
-            
-            let y = 16;
-            doc.setTextColor(15,23,42);
-            doc.setFont(undefined, "bold");
-            y = drawWrapped(data.nama.toUpperCase(), 31, y, 28, 2, 8.5);
-            doc.setFont(undefined, "normal");
-            y = drawWrapped(data.perusahaan, 31, y + 1.5, 28, 2, 6.2);
-            y = drawWrapped(`PIC: ${data.pic}`, 31, y + 1, 28, 1, 5.8);
-            doc.setTextColor(...accentColor);
-            doc.setFont(undefined, "bold");
-            drawWrapped(data.kategori, 31, y + 1, 28, 1, 6);
-            
-            if(qrBase64) {
-                try { doc.addImage(qrBase64, "PNG", 62, 18, 19, 19); } catch(e) {}
-            }
-            doc.setTextColor(71,85,105);
-            doc.setFont(undefined, "normal");
-            doc.setFontSize(5.2);
-            doc.text(`REG ${reg}`, 71.5, 40, { align:"center" });
-        } else {
-            // Portrait mode
-            if(data.foto && data.foto.startsWith("data:image")) {
-                doc.setFillColor(255,255,255);
-                doc.roundedRect(17, 13, 20, 20, 2, 2, "F");
-                try { doc.addImage(data.foto, "JPEG", 18, 14, 18, 18); } catch(e) {}
-            }
-            
-            let y = 37;
-            doc.setTextColor(15,23,42);
-            doc.setFont(undefined, "bold");
-            y = drawWrapped(data.nama.toUpperCase(), badgeW / 2, y, 40, 2, 8.2);
-            doc.setFont(undefined, "normal");
-            y = drawWrapped(data.perusahaan, badgeW / 2, y + 1.5, 40, 2, 6.2);
-            y = drawWrapped(`PIC: ${data.pic}`, badgeW / 2, y + 1, 40, 1, 5.8);
-            doc.setTextColor(...accentColor);
-            doc.setFont(undefined, "bold");
-            y = drawWrapped(data.kategori, badgeW / 2, y + 1, 40, 1, 6);
-            
-            if(qrBase64) {
-                try { doc.addImage(qrBase64, "PNG", 16, 55, 18, 18); } catch(e) {}
-            }
-            doc.setTextColor(71,85,105);
-            doc.setFont(undefined, "normal");
-            doc.setFontSize(5.2);
-            doc.text(`REG ${reg}`, badgeW / 2, 81, { align:"center" });
+        // Portrait mode layout
+        if (data.foto && data.foto.startsWith("data:image")) {
+            doc.setFillColor(255, 255, 255);
+            doc.roundedRect(17, 13, 20, 20, 2, 2, "F");
+            try { doc.addImage(data.foto, "JPEG", 18, 14, 18, 18); } catch(e) {}
         }
         
-        doc.setTextColor(71,85,105);
+        var y = 37;
+        doc.setTextColor(15, 23, 42);
+        doc.setFont(undefined, "bold");
+        var nameLines = doc.splitTextToSize(cleanPdfText(data.nama).toUpperCase(), 40);
+        doc.text(nameLines.slice(0, 2), badgeW / 2, y, { align: "center" });
+        y += (Math.min(nameLines.length, 2) * 8.5 * 0.36);
+        
+        doc.setFont(undefined, "normal");
+        var companyLines = doc.splitTextToSize(cleanPdfText(data.perusahaan), 40);
+        doc.text(companyLines.slice(0, 2), badgeW / 2, y + 1.5, { align: "center" });
+        y += (Math.min(companyLines.length, 2) * 6.2 * 0.36);
+        
+        doc.text("PIC: " + cleanPdfText(data.pic), badgeW / 2, y + 1, { align: "center" });
+        y += 5.8 * 0.36;
+        
+        doc.setTextColor(accentColor[0], accentColor[1], accentColor[2]);
+        doc.setFont(undefined, "bold");
+        doc.text(cleanPdfText(data.kategori), badgeW / 2, y + 1, { align: "center" });
+        
+        if (qrBase64) {
+            try { doc.addImage(qrBase64, "PNG", 16, 55, 18, 18); } catch(e) {}
+        }
+        
+        doc.setTextColor(71, 85, 105);
+        doc.setFont(undefined, "normal");
+        doc.setFontSize(5.2);
+        doc.text("REG " + reg, badgeW / 2, 81, { align: "center" });
+        
+        doc.setTextColor(71, 85, 105);
         doc.setFont(undefined, "bold");
         doc.setFontSize(5);
-        doc.text(`Valid ${cleanPdfText(data.expDate, "-")}`, badgeW / 2, badgeH - 9, { align:"center" });
+        doc.text("Valid " + cleanPdfText(data.expDate, "-"), badgeW / 2, badgeH - 9, { align: "center" });
         drawCorporateFooter(doc, deviceId, badgeW, badgeH);
         
-        const success = forceDownloadPDF(doc, `BADGE_${reg}_${badgeMode}.pdf`);
-        if(!success) { toast("Download gagal. Gunakan browser Chrome.", "error"); return false; }
-        toast(`Badge ID ${reg} berhasil diunduh`, "success");
+        var blob = doc.output("blob");
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "BADGE_" + reg + "_" + badgeMode + ".pdf";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 3000);
+        
+        toast("Badge ID " + reg + " berhasil diunduh", "success");
         return true;
-    } catch(err) { console.error("Badge PDF error:", err); toast("Terjadi error saat generate Badge ID", "error"); return false; }
+    } catch(err) {
+        console.error("PDF error:", err);
+        toast("Terjadi error saat generate Badge ID", "error");
+        return false;
+    }
 }
 
 function showPreview(reg, data) {
-    let modal = document.createElement("div");
+    var modal = document.createElement("div");
     modal.className = "modal-overlay";
-    buildQR(reg, data).then(async qrPayload => {
-        const qrBase64 = await generateQRImage(qrPayload);
-        modal.innerHTML = `
-            <div class="modal-card">
-                <h3 style="margin-bottom:16px;">🪪 Preview Visitor Badge</h3>
-                <div style="background:#f8fafc; padding:14px; border-radius:20px; margin-bottom:16px;">
-                    <p><strong>Name</strong> : ${data.nama}</p>
-                    <p><strong>Company</strong> : ${data.perusahaan}</p>
-                    <p><strong>Purpose</strong> : ${data.tujuan}</p>
-                    <p><strong>PIC</strong> : ${data.pic}</p>
-                    <p><strong>Validity</strong> : ${data.startDate} → ${data.expDate}</p>
-                    <p><strong>REG</strong> : ${reg}</p>
-                    <div class="input-field" style="margin-top:12px;"><label>Badge mode</label><select id="previewBadgeMode"><option value="PORTRAIT">PORTRAIT</option><option value="LANDSCAPE">LANDSCAPE</option></select></div>
-                </div>
-                ${qrBase64 ? `<img class="qr-preview" src="${qrBase64}">` : '<div style="color:red; text-align:center;">QR gagal dimuat</div>'}
-                <div class="flex-btns">
-                    <button id="confirmDownloadBtn">Download Badge ID</button>
-                    <button id="closePreviewBtn" class="btn-outline">Close</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-        setTimeout(() => modal.classList.add("active"), 10);
-        const modeSelect = modal.querySelector("#previewBadgeMode");
-        if(modeSelect) modeSelect.value = data.badgeMode || "PORTRAIT";
-        const confirmBtn = modal.querySelector("#confirmDownloadBtn");
-        confirmBtn.onclick = async () => {
-            if(isDownloading) return;
-            isDownloading = true;
-            confirmBtn.innerHTML = `Processing <span class="loader"></span>`;
-            confirmBtn.disabled = true;
-            data.badgeMode = modeSelect ? modeSelect.value : data.badgeMode;
-            await downloadPDFStable(reg, data);
-            confirmBtn.innerHTML = "Download Badge ID";
-            confirmBtn.disabled = false;
-            isDownloading = false;
-            modal.remove();
-        };
-        modal.querySelector("#closePreviewBtn").onclick = () => modal.remove();
+    
+    buildQR(reg, data).then(function(qrPayload) {
+        var canvas = document.createElement("canvas");
+        QRCode.toCanvas(canvas, qrPayload, { width: 200, margin: 1 }, function(error) {
+            var qrBase64 = error ? null : canvas.toDataURL("image/png");
+            
+            modal.innerHTML = '<div class="modal-card">' +
+                '<h3 style="margin-bottom:16px;">🪪 Preview Visitor Badge</h3>' +
+                '<div style="background:#f8fafc; padding:14px; border-radius:20px; margin-bottom:16px;">' +
+                '<p><strong>Name</strong> : ' + (data.nama || "") + '</p>' +
+                '<p><strong>Company</strong> : ' + (data.perusahaan || "") + '</p>' +
+                '<p><strong>PIC</strong> : ' + (data.pic || "") + '</p>' +
+                '<p><strong>Validity</strong> : ' + (data.startDate || "") + ' → ' + (data.expDate || "") + '</p>' +
+                '<p><strong>REG</strong> : ' + reg + '</p>' +
+                '<div class="input-field" style="margin-top:12px;"><label>Badge mode</label><select id="previewBadgeMode"><option value="PORTRAIT">PORTRAIT</option><option value="LANDSCAPE">LANDSCAPE</option></select></div>' +
+                '</div>' +
+                (qrBase64 ? '<img class="qr-preview" src="' + qrBase64 + '">' : '<div style="color:red; text-align:center;">QR gagal dimuat</div>') +
+                '<div class="flex-btns">' +
+                '<button id="confirmDownloadBtn">Download Badge ID</button>' +
+                '<button id="closePreviewBtn" class="btn-outline">Close</button>' +
+                '</div></div>';
+            
+            document.body.appendChild(modal);
+            setTimeout(function() { modal.classList.add("active"); }, 10);
+            
+            var modeSelect = modal.querySelector("#previewBadgeMode");
+            if (modeSelect) modeSelect.value = data.badgeMode || "PORTRAIT";
+            
+            var isDownloading = false;
+            var confirmBtn = modal.querySelector("#confirmDownloadBtn");
+            confirmBtn.onclick = async function() {
+                if (isDownloading) return;
+                isDownloading = true;
+                confirmBtn.innerHTML = 'Processing <span class="loader"></span>';
+                confirmBtn.disabled = true;
+                data.badgeMode = modeSelect ? modeSelect.value : data.badgeMode;
+                await downloadPDFStable(reg, data);
+                confirmBtn.innerHTML = "Download Badge ID";
+                confirmBtn.disabled = false;
+                isDownloading = false;
+                modal.remove();
+            };
+            
+            modal.querySelector("#closePreviewBtn").onclick = function() { modal.remove(); };
+        });
     });
 }
 
-// ================= DASHBOARD & CHARTS =================
-let lineChart = null;
-let pieChart = null;
+// ================= DASHBOARD =================
+var lineChart = null;
+var pieChart = null;
 
 function renderDashboard() {
-    const v = Object.values(visitors);
-    const active = v.filter(x => x.currentStatus === "IN").length;
-    const today = getWIBISO().slice(0,10);
-    const todayCheck = logs.filter(l => l.logTime?.slice(0,10) === today && l.action === "CHECK_IN").length;
+    var visitorsArray = [];
+    for (var key in visitors) {
+        if (visitors.hasOwnProperty(key)) visitorsArray.push(visitors[key]);
+    }
     
-    document.getElementById("statsWidget").innerHTML = `
-        <div class="stat-card"><h4>Total Visitors</h4><div class="stat-number">${v.length}</div></div>
-        <div class="stat-card"><h4>Active Inside</h4><div class="stat-number">${active}</div></div>
-        <div class="stat-card"><h4>Check-ins Today</h4><div class="stat-number">${todayCheck}</div></div>
-        <div class="stat-card"><h4>Sync Status</h4><div class="stat-number">${navigator.onLine ? "🟢" : "🟡"}</div></div>
-    `;
+    var active = 0;
+    for (var i = 0; i < visitorsArray.length; i++) {
+        if (visitorsArray[i].currentStatus === "IN") active++;
+    }
     
-    const last7 = [...Array(7)].map((_, i) => {
-        let d = new Date(getEventTimestamp() - i * 86400000);
-        return new Intl.DateTimeFormat("id-ID", { timeZone: WIB_TIMEZONE, weekday: "short" }).format(d);
-    }).reverse();
+    var today = getWIBISO().slice(0, 10);
+    var todayCheck = 0;
+    for (var j = 0; j < logs.length; j++) {
+        var l = logs[j];
+        if (l.logTime && l.logTime.slice(0, 10) === today && l.action === "CHECK_IN") todayCheck++;
+    }
     
-    const trend = last7.map((_, i) => {
-        let day = getWIBISO(getEventTimestamp() - (6 - i) * 86400000).slice(0,10);
-        return logs.filter(l => l.logTime?.slice(0,10) === day && l.action === "CHECK_IN").length;
-    });
+    document.getElementById("statsWidget").innerHTML = 
+        '<div class="stat-card"><h4>Total Visitors</h4><div class="stat-number">' + visitorsArray.length + '</div></div>' +
+        '<div class="stat-card"><h4>Active Inside</h4><div class="stat-number">' + active + '</div></div>' +
+        '<div class="stat-card"><h4>Check-ins Today</h4><div class="stat-number">' + todayCheck + '</div></div>' +
+        '<div class="stat-card"><h4>Status</h4><div class="stat-number">' + (navigator.onLine ? "🟢" : "🟡") + '</div></div>';
     
-    const trendCanvas = document.getElementById("trendChart");
-    const categoryCanvas = document.getElementById("categoryChart");
-    
-    if(window.Chart && trendCanvas && categoryCanvas) {
-        if(lineChart) lineChart.destroy();
-        lineChart = new Chart(trendCanvas, { type:"line", data:{ labels:last7, datasets:[{ label:"Visit trend", data:trend, borderColor:"#1f4e4a", fill:false }] } });
+    var last7Labels = [];
+    var last7Data = [];
+    for (var k = 6; k >= 0; k--) {
+        var date = new Date(getEventTimestamp() - k * 86400000);
+        var dayName = date.toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", weekday: "short" });
+        last7Labels.push(dayName);
         
-        const catCount = { VVIP:0, VIP:0, UMUM:0 };
-        v.forEach(x => { if(x.kategori) catCount[x.kategori]++; });
-        if(pieChart) pieChart.destroy();
-        pieChart = new Chart(categoryCanvas, { type:"pie", data:{ labels:["VVIP","VIP","UMUM"], datasets:[{ data:[catCount.VVIP, catCount.VIP, catCount.UMUM], backgroundColor:["#fbbf24","#94a3b8","#1f4e4a"] }] } });
+        var dayStr = getWIBISO(date).slice(0, 10);
+        var dayCount = 0;
+        for (var m = 0; m < logs.length; m++) {
+            if (logs[m].logTime && logs[m].logTime.slice(0, 10) === dayStr && logs[m].action === "CHECK_IN") dayCount++;
+        }
+        last7Data.push(dayCount);
+    }
+    
+    var trendCanvas = document.getElementById("trendChart");
+    var categoryCanvas = document.getElementById("categoryChart");
+    
+    if (window.Chart && trendCanvas && categoryCanvas) {
+        if (lineChart) lineChart.destroy();
+        lineChart = new Chart(trendCanvas, {
+            type: "line",
+            data: { labels: last7Labels, datasets: [{ label: "Visit trend", data: last7Data, borderColor: "#1f4e4a", fill: false }] }
+        });
+        
+        var catCount = { VVIP: 0, VIP: 0, UMUM: 0 };
+        for (var n = 0; n < visitorsArray.length; n++) {
+            var cat = visitorsArray[n].kategori;
+            if (cat === "VVIP") catCount.VVIP++;
+            else if (cat === "VIP") catCount.VIP++;
+            else catCount.UMUM++;
+        }
+        if (pieChart) pieChart.destroy();
+        pieChart = new Chart(categoryCanvas, {
+            type: "pie",
+            data: { labels: ["VVIP", "VIP", "UMUM"], datasets: [{ data: [catCount.VVIP, catCount.VIP, catCount.UMUM], backgroundColor: ["#fbbf24", "#94a3b8", "#1f4e4a"] }] }
+        });
     }
     
     updateMonetizationUI();
 }
 
-let logRenderPending = false;
 function renderLogTable() {
-    if(logRenderPending) return;
-    logRenderPending = true;
-    requestAnimationFrame(() => {
-        try {
-            const search = document.getElementById("searchLog")?.value.toLowerCase() || "";
-            const filtered = logs
-                .filter(l => (l.name?.toLowerCase().includes(search) || l.reg?.toLowerCase().includes(search)) && (!l.site || l.site === SITE_ID))
-                .sort((a, b) => (b.time || 0) - (a.time || 0))
-                .slice(0, 300);
-            
-            const tbody = document.getElementById("logTableBody");
-            if(!tbody) return;
-            tbody.innerHTML = "";
-            
-            filtered.forEach(l => {
-                const row = tbody.insertRow();
-                row.insertCell(0).innerHTML = `<input type="checkbox" class="logCheckItem" data-reg="${l.reg}">`;
-                row.insertCell(1).innerText = l.reg;
-                row.insertCell(2).innerText = l.name;
-                row.insertCell(3).innerText = l.company;
-                row.insertCell(4).innerHTML = `<span class="badge badge-${l.category}">${l.category}</span>`;
-                row.insertCell(5).innerText = l.action;
-                row.insertCell(6).innerText = formatWIB(l.time);
-                row.insertCell(7).innerText = l.site || SITE_ID;
-                const btn = document.createElement("button");
-                btn.innerText = "PDF";
-                btn.classList.add("btn-outline");
-                btn.style.padding = "4px 12px";
-                btn.onclick = () => {
-                    const siteKey = getSiteKey(l.reg);
-                    const v = visitors[siteKey];
-                    if(v) showPreview(l.reg, v);
-                };
-                row.insertCell(8).appendChild(btn);
-            });
-        } catch(e) { console.error("Render log table error:", e); }
-        finally { logRenderPending = false; }
-    });
+    var search = document.getElementById("searchLog") ? document.getElementById("searchLog").value.toLowerCase() : "";
+    var filtered = [];
+    
+    for (var i = 0; i < logs.length; i++) {
+        var l = logs[i];
+        var nameMatch = l.name ? l.name.toLowerCase().indexOf(search) >= 0 : false;
+        var regMatch = l.reg ? l.reg.toLowerCase().indexOf(search) >= 0 : false;
+        var siteMatch = !l.site || l.site === SITE_ID;
+        if ((nameMatch || regMatch) && siteMatch) filtered.push(l);
+    }
+    
+    filtered.sort(function(a, b) { return (b.time || 0) - (a.time || 0); });
+    filtered = filtered.slice(0, 300);
+    
+    var tbody = document.getElementById("logTableBody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    
+    for (var j = 0; j < filtered.length; j++) {
+        var l = filtered[j];
+        var row = tbody.insertRow();
+        row.insertCell(0).innerHTML = '<input type="checkbox" class="logCheckItem" data-reg="' + (l.reg || "") + '">';
+        row.insertCell(1).innerText = l.reg || "";
+        row.insertCell(2).innerText = l.name || "";
+        row.insertCell(3).innerText = l.company || "";
+        row.insertCell(4).innerHTML = '<span class="badge badge-' + (l.category || "UMUM") + '">' + (l.category || "UMUM") + '</span>';
+        row.insertCell(5).innerText = l.action || "";
+        row.insertCell(6).innerText = formatWIB(l.time);
+        row.insertCell(7).innerText = l.site || SITE_ID;
+        
+        var btn = document.createElement("button");
+        btn.innerText = "PDF";
+        btn.classList.add("btn-outline");
+        btn.style.padding = "4px 12px";
+        btn.onclick = (function(reg) {
+            return function() {
+                var siteKey = getSiteKey(reg);
+                var v = visitors[siteKey];
+                if (v) showPreview(reg, v);
+            };
+        })(l.reg);
+        row.insertCell(8).appendChild(btn);
+    }
 }
 
 // ================= SCANNER =================
-let scannerInstance = null;
-let isScanning = false;
-let currentCameraId = null;
-let processingRegs = new Set();
-let lastScanTime = {};
-let isManualProcessing = false;
-const CAMERA_PREF_KEY = "vms_camera_pref";
+var scannerInstance = null;
+var isScanning = false;
+var currentCameraId = null;
+var processingRegs = new Set();
+var lastScanTime = {};
+var isManualProcessing = false;
+var CAMERA_PREF_KEY = "vms_camera_pref";
 
 function resolveCameraPreference(cameras) {
-    const preferred = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
-    const rememberedCameraId = localStorage.getItem("vms_last_camera_id");
-    const remembered = cameras.find(c => c.id === rememberedCameraId);
-    if(remembered) return remembered.id;
-    const byType = {
-        auto_back: cameras.find(cam => /back|rear|belakang/i.test(cam.label || "")),
-        auto_front: cameras.find(cam => /front|user|depan/i.test(cam.label || "")),
-        auto_external: cameras.find(cam => /external|usb|virtual/i.test(cam.label || ""))
-    };
-    return (byType[preferred] || byType.auto_back || cameras[0] || {}).id || null;
+    var preferred = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
+    var rememberedCameraId = localStorage.getItem("vms_last_camera_id");
+    
+    for (var i = 0; i < cameras.length; i++) {
+        if (rememberedCameraId && cameras[i].id === rememberedCameraId) return cameras[i].id;
+    }
+    
+    for (var j = 0; j < cameras.length; j++) {
+        var label = cameras[j].label || "";
+        if (preferred === "auto_back" && (/back|rear|belakang/i.test(label))) return cameras[j].id;
+        if (preferred === "auto_front" && (/front|user|depan/i.test(label))) return cameras[j].id;
+        if (preferred === "auto_external" && (/external|usb|virtual/i.test(label))) return cameras[j].id;
+    }
+    
+    return cameras[0] ? cameras[0].id : null;
 }
 
 async function initScanner() {
-    if(scannerInstance) { await stopScanner(); }
+    if (scannerInstance) {
+        try { await scannerInstance.stop(); } catch(e) {}
+        try { await scannerInstance.clear(); } catch(e) {}
+        scannerInstance = null;
+    }
+    
     try {
-        const cameras = await Html5Qrcode.getCameras();
-        if(!cameras || cameras.length === 0) { toast("Tidak ada kamera terdeteksi", "error"); return false; }
+        var cameras = await Html5Qrcode.getCameras();
+        if (!cameras || cameras.length === 0) {
+            toast("Tidak ada kamera terdeteksi", "error");
+            return false;
+        }
         currentCameraId = resolveCameraPreference(cameras);
         scannerInstance = new Html5Qrcode("cameraPreview");
         return true;
-    } catch(err) { console.error("Init scanner error:", err); toast("Gagal inisialisasi kamera", "error"); return false; }
+    } catch(err) {
+        console.error("Init scanner error:", err);
+        toast("Gagal inisialisasi kamera", "error");
+        return false;
+    }
 }
 
 async function startScanner() {
-    if(isScanning) return;
-    if(!scannerInstance) { const init = await initScanner(); if(!init) return; }
+    if (isScanning) return;
+    if (!scannerInstance) {
+        var init = await initScanner();
+        if (!init) return;
+    }
+    
     try {
         await scannerInstance.start(currentCameraId, { fps: 10, qrbox: { width: 280, height: 280 }, aspectRatio: 1.0 },
-            async (decodedText) => {
-                if(!canScan()) return;
-                if(processingRegs.has(decodedText)) return;
+            async function(decodedText) {
+                if (!canScan()) return;
+                if (processingRegs.has(decodedText)) return;
                 await processScan(decodedText);
             },
-            (error) => { if(error && !error.includes("No MultiFormat Readers")) console.log("Scan error:", error); }
+            function(error) {
+                if (error && !error.includes("No MultiFormat Readers")) {
+                    console.log("Scan error:", error);
+                }
+            }
         );
         isScanning = true;
-        if(currentCameraId) localStorage.setItem("vms_last_camera_id", currentCameraId);
+        if (currentCameraId) localStorage.setItem("vms_last_camera_id", currentCameraId);
         toast("Scanner siap", "success");
-    } catch(err) { console.error("Start scanner error:", err); toast("Gagal start kamera", "error"); isScanning = false; }
+    } catch(err) {
+        console.error("Start scanner error:", err);
+        toast("Gagal start kamera", "error");
+        isScanning = false;
+    }
 }
 
 async function stopScanner() {
-    if(scannerInstance && isScanning) {
-        try { await scannerInstance.stop(); await scannerInstance.clear(); } catch(err) { console.error("Stop scanner error:", err); }
+    if (scannerInstance && isScanning) {
+        try { await scannerInstance.stop(); } catch(e) {}
+        try { await scannerInstance.clear(); } catch(e) {}
     }
     isScanning = false;
 }
 
 async function cleanupScanner() {
-    if(scannerInstance) {
-        try { await scannerInstance.stop().catch(()=>{}); await scannerInstance.clear().catch(()=>{}); } catch(e) {}
+    if (scannerInstance) {
+        try { await scannerInstance.stop(); } catch(e) {}
+        try { await scannerInstance.clear(); } catch(e) {}
         scannerInstance = null;
     }
     isScanning = false;
-    const container = document.getElementById("cameraPreview");
-    if(container) container.innerHTML = "";
+    var container = document.getElementById("cameraPreview");
+    if (container) container.innerHTML = "";
 }
 
 async function processScan(qrText) {
-    const mode = normalizeAction(document.getElementById("scanMode").value);
-    const payload = await parseQR(qrText);
-    if(!payload) { toast("QR tidak valid", "error"); return; }
-    const reg = payload.reg;
+    var modeSelect = document.getElementById("scanMode");
+    var mode = modeSelect ? normalizeAction(modeSelect.value) : ACTION_TYPES.CHECK_IN;
     
-    if(lastScanTime[reg] && getEventTimestamp() - lastScanTime[reg] < 1200) {
+    var payload = await parseQR(qrText);
+    if (!payload) {
+        toast("QR tidak valid", "error");
+        return;
+    }
+    
+    var reg = payload.reg;
+    var now = getEventTimestamp();
+    
+    if (lastScanTime[reg] && now - lastScanTime[reg] < 1200) {
         toast("Scan terlalu cepat", "warning");
         return;
     }
-    lastScanTime[reg] = getEventTimestamp();
+    lastScanTime[reg] = now;
     
-    if(processingRegs.has(reg)) { toast("Sedang diproses", "warning"); return; }
+    if (processingRegs.has(reg)) {
+        toast("Sedang diproses", "warning");
+        return;
+    }
     processingRegs.add(reg);
     
     try {
-        let resolved = resolveVisitorByReg(reg);
-        let siteKey = resolved.siteKey || getSiteKey(reg);
-        let visitor = resolved.visitor;
+        var resolved = resolveVisitorByReg(reg);
+        var siteKey = resolved.siteKey || getSiteKey(reg);
+        var visitor = resolved.visitor;
         
-        if(!visitor) { toast(`Visitor ${reg} tidak ditemukan`, "error"); return; }
+        if (!visitor) {
+            toast("Visitor " + reg + " tidak ditemukan", "error");
+            return;
+        }
         
-        const exp = new Date(visitor.expDate);
-        exp.setHours(23,59,59,999);
-        if(exp < new Date()) { toast("QR sudah expired", "error"); return; }
+        var exp = new Date(visitor.expDate);
+        exp.setHours(23, 59, 59, 999);
+        if (exp < new Date()) {
+            toast("QR sudah expired", "error");
+            return;
+        }
         
-        const mutationId = createMutationId(mode === "CHECK_IN" ? "checkin" : "checkout");
-        const eventTs = getEventTimestamp();
+        var mutationId = createMutationId(mode === "CHECK_IN" ? "checkin" : "checkout");
+        var eventTs = getEventTimestamp();
         
-        if(mode === "CHECK_IN") {
-            if(!visitor.sessions) visitor.sessions = [];
+        if (mode === "CHECK_IN") {
+            if (!visitor.sessions) visitor.sessions = [];
             visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
-            visitors[siteKey] = { ...visitor, currentStatus: "IN", lastScanSite: SITE_ID, updatedAt: eventTs, updatedAtWIB: getWIBISO(eventTs), mutationId, mutationSource: getMutationSource() };
-            const scanLog = addLog(reg, "CHECK_IN");
+            visitors[siteKey] = {
+                ...visitor,
+                currentStatus: "IN",
+                lastScanSite: SITE_ID,
+                updatedAt: eventTs,
+                updatedAtWIB: getWIBISO(eventTs),
+                mutationId: mutationId,
+                mutationSource: getMutationSource()
+            };
+            var scanLog = addLog(reg, "CHECK_IN");
             await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
-            toast(`✅ CHECK-IN ${visitor.nama} berhasil`, "success");
+            toast("CHECK-IN " + visitor.nama + " berhasil", "success");
         } else {
-            if(!visitor.sessions) visitor.sessions = [];
-            let openSession = null;
-            for(let i = visitor.sessions.length - 1; i >= 0; i--) {
-                if(!visitor.sessions[i].checkOut) { openSession = visitor.sessions[i]; break; }
+            if (!visitor.sessions) visitor.sessions = [];
+            var openSession = null;
+            for (var i = visitor.sessions.length - 1; i >= 0; i--) {
+                if (!visitor.sessions[i].checkOut) {
+                    openSession = visitor.sessions[i];
+                    break;
+                }
             }
-            if(!openSession) {
+            if (!openSession) {
                 toast("Tidak ada sesi check-in aktif", "warning");
                 visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: eventTs, checkOutWIB: getWIBISO(eventTs) });
             } else {
                 openSession.checkOut = eventTs;
                 openSession.checkOutWIB = getWIBISO(eventTs);
             }
-            visitors[siteKey] = { ...visitor, currentStatus: "OUT", lastScanSite: SITE_ID, updatedAt: eventTs, updatedAtWIB: getWIBISO(eventTs), mutationId, mutationSource: getMutationSource() };
-            const scanLog = addLog(reg, "CHECK_OUT");
-            await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
-            toast(`✅ CHECK-OUT ${visitor.nama} berhasil`, "success");
+            visitors[siteKey] = {
+                ...visitor,
+                currentStatus: "OUT",
+                lastScanSite: SITE_ID,
+                updatedAt: eventTs,
+                updatedAtWIB: getWIBISO(eventTs),
+                mutationId: mutationId,
+                mutationSource: getMutationSource()
+            };
+            var checkoutLog = addLog(reg, "CHECK_OUT");
+            await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [checkoutLog] });
+            toast("CHECK-OUT " + visitor.nama + " berhasil", "success");
         }
         
-        await saveToLocal();
+        saveToLocal();
         renderDashboard();
         renderLogTable();
         updateMonetizationUI();
@@ -1193,75 +1243,100 @@ async function processScan(qrText) {
     }
 }
 
-// ================= REGISTER FUNCTIONS =================
+// ================= REGISTER =================
 async function capturePhoto() {
-    return new Promise(async (resolve) => {
-        let modalDiv = document.createElement("div");
+    return new Promise(function(resolve) {
+        var modalDiv = document.createElement("div");
         modalDiv.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:4000;display:flex;align-items:center;justify-content:center;";
-        modalDiv.innerHTML = `<div style="background:white;border-radius:32px;padding:20px;width:90%;max-width:400px;"><video id="camVideoWalk" autoplay playsinline style="width:100%;border-radius:16px;"></video><canvas id="canvasWalk" style="display:none;"></canvas><div style="display:flex;gap:12px;margin-top:16px;"><button id="takeWalkBtn">Ambil Foto</button><button id="closeWalkBtn">Batal</button></div></div>`;
+        modalDiv.innerHTML = '<div style="background:white;border-radius:32px;padding:20px;width:90%;max-width:400px;">' +
+            '<video id="camVideoWalk" autoplay playsinline style="width:100%;border-radius:16px;"></video>' +
+            '<canvas id="canvasWalk" style="display:none;"></canvas>' +
+            '<div style="display:flex;gap:12px;margin-top:16px;">' +
+            '<button id="takeWalkBtn">Ambil Foto</button>' +
+            '<button id="closeWalkBtn">Batal</button>' +
+            '</div></div>';
         document.body.appendChild(modalDiv);
-        let video = modalDiv.querySelector("#camVideoWalk");
-        let stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        video.srcObject = stream;
-        await video.play();
-        modalDiv.querySelector("#takeWalkBtn").onclick = () => {
-            let canvas = modalDiv.querySelector("#canvasWalk");
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext("2d").drawImage(video, 0, 0);
-            canvas.toBlob(blob => {
-                stream.getTracks().forEach(t => t.stop());
+        
+        var video = modalDiv.querySelector("#camVideoWalk");
+        navigator.mediaDevices.getUserMedia({ video: true }).then(function(stream) {
+            video.srcObject = stream;
+            video.play();
+            
+            modalDiv.querySelector("#takeWalkBtn").onclick = function() {
+                var canvas = modalDiv.querySelector("#canvasWalk");
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext("2d").drawImage(video, 0, 0);
+                canvas.toBlob(function(blob) {
+                    stream.getTracks().forEach(function(t) { t.stop(); });
+                    modalDiv.remove();
+                    resolve(new File([blob], "walkin.jpg", { type: "image/jpeg" }));
+                }, "image/jpeg", 0.8);
+            };
+            
+            modalDiv.querySelector("#closeWalkBtn").onclick = function() {
+                stream.getTracks().forEach(function(t) { t.stop(); });
                 modalDiv.remove();
-                resolve(new File([blob], "walkin.jpg", { type: "image/jpeg" }));
-            }, "image/jpeg", 0.8);
-        };
-        modalDiv.querySelector("#closeWalkBtn").onclick = () => {
-            stream.getTracks().forEach(t => t.stop());
+                resolve(null);
+            };
+        }).catch(function(err) {
+            console.error("Camera error:", err);
+            toast("Gagal akses kamera", "error");
             modalDiv.remove();
             resolve(null);
-        };
+        });
     });
 }
 
-async function registerVisitor(data, isWalkin = false) {
-    const reg = generateReg();
-    const siteKey = getSiteKey(reg);
-    const eventTs = getEventTimestamp();
+async function registerVisitor(data, isWalkin) {
+    var reg = generateReg();
+    var siteKey = getSiteKey(reg);
+    var eventTs = getEventTimestamp();
+    var action = isWalkin ? "WALK_IN" : "REGISTER";
     
-    const visitorData = {
-        ...data,
-        reg: reg,
-        site: SITE_ID,
-        version: 1,
-        updatedAt: eventTs,
-        updatedAtWIB: getWIBISO(eventTs),
-        mutationId: createMutationId(isWalkin ? "walkin" : "register"),
-        mutationSource: getMutationSource(),
+    var visitorData = {
+        nama: data.nama,
+        perusahaan: data.perusahaan,
+        kategori: data.kategori,
+        tujuan: data.tujuan,
+        pic: data.pic,
+        dept: data.dept,
+        startDate: data.startDate,
+        expDate: data.expDate,
+        badgeMode: data.badgeMode,
+        foto: data.foto || "",
         sessions: [],
         currentStatus: "OUT"
     };
     
-    visitors[siteKey] = visitorData;
-    const logEntry = addLog(reg, isWalkin ? "WALK_IN" : "REGISTER");
+    saveVisitor(siteKey, visitorData, reg, action);
+    var logEntry = addLog(reg, action);
     
-    await syncToSheet({ visitors: { [siteKey]: visitorData }, logs: [logEntry] });
-    await saveToLocal();
+    await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [logEntry] });
+    saveToLocal();
     
-    return { reg, visitor: visitorData };
+    return { reg: reg, visitor: visitors[siteKey] };
 }
 
-// ================= USER AUTH (SEDERHANA) =================
+// ================= USER AUTH =================
 async function sha256(str) {
-    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    var buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+    var bytes = new Uint8Array(buf);
+    var result = "";
+    for (var i = 0; i < bytes.length; i++) {
+        result += bytes[i].toString(16).padStart(2, "0");
+    }
+    return result;
 }
 
 async function ensureDefaultAdmin() {
-    let users = JSON.parse(localStorage.getItem("vms_users") || "[]");
-    if(users.length === 0) {
+    var usersRaw = localStorage.getItem("vms_users");
+    var users = usersRaw ? JSON.parse(usersRaw) : [];
+    if (users.length === 0) {
+        var adminPass = await sha256("123456");
         users = [{
             username: "admin",
-            password: await sha256("123456"),
+            password: adminPass,
             role: "SUPER_ADMIN"
         }];
         localStorage.setItem("vms_users", JSON.stringify(users));
@@ -1271,26 +1346,29 @@ async function ensureDefaultAdmin() {
 
 async function localLogin(username, password) {
     await ensureDefaultAdmin();
-    const users = JSON.parse(localStorage.getItem("vms_users") || "[]");
-    const passwordHash = await sha256(password);
-    const user = users.find(u => u.username === username && u.password === passwordHash);
-    if(user) {
-        localStorage.setItem("vms_user", JSON.stringify({ username: user.username, role: user.role }));
-        localStorage.setItem("vms_role", user.role);
-        return { success: true, role: user.role };
+    var usersRaw = localStorage.getItem("vms_users");
+    var users = usersRaw ? JSON.parse(usersRaw) : [];
+    var passwordHash = await sha256(password);
+    
+    for (var i = 0; i < users.length; i++) {
+        if (users[i].username === username && users[i].password === passwordHash) {
+            localStorage.setItem("vms_user", JSON.stringify({ username: username, role: users[i].role }));
+            localStorage.setItem("vms_role", users[i].role);
+            return { success: true, role: users[i].role };
+        }
     }
     return { success: false, error: "Invalid username or password" };
 }
 
 async function hybridLogin(username, password) {
-    if(!username || !password) {
+    if (!username || !password) {
         toast("Username dan password wajib diisi", "warning");
         return false;
     }
     
-    const result = await localLogin(username, password);
-    if(result.success) {
-        toast(`✅ Login berhasil - ${result.role}`, "success");
+    var result = await localLogin(username, password);
+    if (result.success) {
+        toast("Login berhasil - " + result.role, "success");
         return true;
     }
     toast(result.error || "Login gagal", "error");
@@ -1301,46 +1379,46 @@ function hybridLogout() {
     localStorage.removeItem("vms_user");
     localStorage.removeItem("vms_role");
     
-    const loginOverlay = document.getElementById("loginOverlay");
-    const appLayout = document.getElementById("appLayout");
+    var loginOverlay = document.getElementById("loginOverlay");
+    var appLayout = document.getElementById("appLayout");
     
-    if(loginOverlay) loginOverlay.style.display = "flex";
-    if(appLayout) appLayout.style.display = "none";
+    if (loginOverlay) loginOverlay.style.display = "flex";
+    if (appLayout) appLayout.style.display = "none";
     
     toast("Logged out", "info");
-    renderDashboard();
-    renderLogTable();
 }
 
 function isAdmin() {
-    const role = localStorage.getItem("vms_role");
+    var role = localStorage.getItem("vms_role");
     return role === "SUPER_ADMIN";
 }
 
 function updateUserUI() {
-    const userStr = localStorage.getItem("vms_user");
-    const user = userStr ? JSON.parse(userStr) : null;
-    const displayName = user ? `${user.username} (${user.role})` : "Guest";
-    document.querySelectorAll("#userInfoTop, #userInfoSidebar").forEach(el => {
-        if(el) el.innerHTML = `👤 ${displayName}`;
-    });
+    var userRaw = localStorage.getItem("vms_user");
+    var user = userRaw ? JSON.parse(userRaw) : null;
+    var displayName = user ? user.username + " (" + user.role + ")" : "Guest";
+    var userSpans = document.querySelectorAll("#userInfoTop, #userInfoSidebar");
+    for (var i = 0; i < userSpans.length; i++) {
+        if (userSpans[i]) userSpans[i].innerHTML = "👤 " + displayName;
+    }
 }
 
 function applyRoleVisibility() {
-    const adminOnly = document.querySelectorAll(".admin-only");
-    adminOnly.forEach(el => {
-        if(isAdmin()) el.classList.remove("admin-hide");
-        else el.classList.add("admin-hide");
-    });
+    var adminOnly = document.querySelectorAll(".admin-only");
+    var isAdminUser = isAdmin();
+    for (var i = 0; i < adminOnly.length; i++) {
+        if (isAdminUser) adminOnly[i].classList.remove("admin-hide");
+        else adminOnly[i].classList.add("admin-hide");
+    }
 }
 
 async function hybridInitSession() {
-    const loginOverlay = document.getElementById("loginOverlay");
-    const appLayout = document.getElementById("appLayout");
+    var loginOverlay = document.getElementById("loginOverlay");
+    var appLayout = document.getElementById("appLayout");
     
-    if(localStorage.getItem("vms_user")) {
-        if(loginOverlay) loginOverlay.style.display = "none";
-        if(appLayout) appLayout.style.display = "flex";
+    if (localStorage.getItem("vms_user")) {
+        if (loginOverlay) loginOverlay.style.display = "none";
+        if (appLayout) appLayout.style.display = "flex";
         updateUserUI();
         applyRoleVisibility();
         renderDashboard();
@@ -1348,37 +1426,41 @@ async function hybridInitSession() {
         return true;
     }
     
-    if(loginOverlay) loginOverlay.style.display = "flex";
-    if(appLayout) appLayout.style.display = "none";
+    if (loginOverlay) loginOverlay.style.display = "flex";
+    if (appLayout) appLayout.style.display = "none";
     return false;
 }
 
-// ================= UI EVENT HANDLERS =================
+// ================= SITE MANAGEMENT =================
 function setSite(site) {
-    if(!site || site.trim() === "") return;
+    if (!site || site.trim() === "") return;
     SITE_ID = site.trim().toUpperCase();
     localStorage.setItem("vms_site", SITE_ID);
     renderSiteSelectors();
-    toast(`Site aktif: ${SITE_ID}`, "success");
+    toast("Site aktif: " + SITE_ID, "success");
     renderDashboard();
     renderLogTable();
     updateMonetizationUI();
 }
 
 function renderSiteSelectors() {
-    const sites = ["SITE_A", "SITE_B", "SITE_C"];
-    document.querySelectorAll("#siteSelector, #siteSelectorTop").forEach(sel => {
-        if(!sel) return;
-        const previous = SITE_ID || sel.value || "SITE_A";
+    var sites = ["SITE_A", "SITE_B", "SITE_C"];
+    var selectors = document.querySelectorAll("#siteSelector, #siteSelectorTop");
+    for (var i = 0; i < selectors.length; i++) {
+        var sel = selectors[i];
+        if (!sel) continue;
+        var previous = SITE_ID || sel.value || "SITE_A";
         sel.innerHTML = "";
-        sites.forEach(site => {
-            const opt = document.createElement("option");
+        for (var j = 0; j < sites.length; j++) {
+            var site = sites[j];
+            var opt = document.createElement("option");
             opt.value = site;
-            opt.text = site === "SITE_A" ? "🏭 SITE A" : (site === "SITE_B" ? "🏢 SITE B" : "🏬 SITE C");
+            var icon = site === "SITE_A" ? "🏭" : (site === "SITE_B" ? "🏢" : "🏬");
+            opt.text = icon + " " + site;
             sel.appendChild(opt);
-        });
-        sel.value = sites.includes(previous) ? previous : "SITE_A";
-    });
+        }
+        sel.value = sites.indexOf(previous) >= 0 ? previous : "SITE_A";
+    }
 }
 
 function handleSiteSelectorChange(e) {
@@ -1386,81 +1468,96 @@ function handleSiteSelectorChange(e) {
 }
 
 function switchTab(tabId) {
-    const panes = {
+    var panes = {
         dashboard: document.getElementById("dashboardPane"),
         register: document.getElementById("registerPane"),
         scanner: document.getElementById("scannerPane"),
         logs: document.getElementById("logsPane")
     };
-    Object.values(panes).forEach(p => p?.classList.remove("active-pane"));
-    if(panes[tabId]) panes[tabId].classList.add("active-pane");
-    document.querySelectorAll(".nav-item").forEach(nav => {
-        if(nav.dataset.tab === tabId) nav.classList.add("active");
-        else nav.classList.remove("active");
-    });
-    document.querySelectorAll(".mobile-nav").forEach(nav => {
-        if(nav.dataset.tab === tabId) nav.classList.add("active");
-        else nav.classList.remove("active");
-    });
+    
+    for (var id in panes) {
+        if (panes[id]) panes[id].classList.remove("active-pane");
+    }
+    if (panes[tabId]) panes[tabId].classList.add("active-pane");
+    
+    var navs = document.querySelectorAll(".nav-item");
+    for (var i = 0; i < navs.length; i++) {
+        if (navs[i].dataset && navs[i].dataset.tab === tabId) navs[i].classList.add("active");
+        else navs[i].classList.remove("active");
+    }
+    
+    var mobileNavs = document.querySelectorAll(".mobile-nav");
+    for (var j = 0; j < mobileNavs.length; j++) {
+        if (mobileNavs[j].dataset && mobileNavs[j].dataset.tab === tabId) mobileNavs[j].classList.add("active");
+        else mobileNavs[j].classList.remove("active");
+    }
 }
 
 // ================= EXPORT EXCEL =================
 function exportToExcel() {
-    if(isDemo()) {
-        toast("Export tidak tersedia di DEMO mode. Upgrade license!", "error");
+    if (isDemo()) {
+        toast("Export tidak tersedia di DEMO mode", "error");
         return;
     }
+    
+    if (!window.XLSX) {
+        toast("Excel engine belum siap", "error");
+        return;
+    }
+    
     try {
-        if(!window.XLSX) { toast("Excel engine belum siap", "error"); return; }
-        
-        const dataForExcel = [];
-        Object.entries(visitors).forEach(([siteKey, visitor]) => {
-            if(!siteKey.startsWith(SITE_ID + "_")) return;
-            const reg = siteKey.replace(SITE_ID + "_", "");
-            const now = new Date();
-            const expDate = visitor.expDate ? new Date(visitor.expDate) : null;
+        var dataForExcel = [];
+        for (var key in visitors) {
+            if (!visitors.hasOwnProperty(key)) continue;
+            if (key.indexOf(SITE_ID + "_") !== 0) continue;
             
-            let masaBerlakuStatus = "";
-            let keterangan = "";
+            var visitor = visitors[key];
+            var reg = key.replace(SITE_ID + "_", "");
+            var now = new Date();
+            var expDate = visitor.expDate ? new Date(visitor.expDate) : null;
             
-            if(expDate) {
-                if(expDate < now) {
-                    masaBerlakuStatus = "❌ EXPIRED";
+            var masaBerlakuStatus = "";
+            var keterangan = "";
+            
+            if (expDate) {
+                if (expDate < now) {
+                    masaBerlakuStatus = "EXPIRED";
                     keterangan = "QR Code sudah kadaluarsa";
                 } else {
-                    const daysLeft = Math.ceil((expDate - now) / (1000 * 60 * 60 * 24));
-                    masaBerlakuStatus = `✅ AKTIF (sisa ${daysLeft} hari)`;
-                    keterangan = `Berlaku hingga ${visitor.expDate}`;
+                    var daysLeft = Math.ceil((expDate - now) / (1000 * 60 * 60 * 24));
+                    masaBerlakuStatus = "AKTIF (sisa " + daysLeft + " hari)";
+                    keterangan = "Berlaku hingga " + visitor.expDate;
                 }
             } else {
-                masaBerlakuStatus = "⚠️ TIDAK DITENTUKAN";
+                masaBerlakuStatus = "TIDAK DITENTUKAN";
                 keterangan = "Tanggal kadaluarsa tidak diisi";
             }
             
-            if(visitor.sessions && visitor.sessions.length > 0) {
-                visitor.sessions.forEach((session, idx) => {
-                    const checkInDate = session.checkIn ? new Date(session.checkIn) : null;
-                    const checkOutDate = session.checkOut ? new Date(session.checkOut) : null;
+            if (visitor.sessions && visitor.sessions.length > 0) {
+                for (var s = 0; s < visitor.sessions.length; s++) {
+                    var session = visitor.sessions[s];
+                    var checkInDate = session.checkIn ? new Date(session.checkIn) : null;
+                    var checkOutDate = session.checkOut ? new Date(session.checkOut) : null;
                     
-                    const formatDateTime = (date) => {
-                        if(!date) return "-";
-                        const y = date.getFullYear();
-                        const m = String(date.getMonth() + 1).padStart(2, "0");
-                        const d = String(date.getDate()).padStart(2, "0");
-                        const h = String(date.getHours()).padStart(2, "0");
-                        const mi = String(date.getMinutes()).padStart(2, "0");
-                        const s = String(date.getSeconds()).padStart(2, "0");
-                        return `${y}-${m}-${d} ${h}:${mi}:${s}`;
+                    var formatDateTime = function(date) {
+                        if (!date) return "-";
+                        var y = date.getFullYear();
+                        var m = String(date.getMonth() + 1).padStart(2, "0");
+                        var d = String(date.getDate()).padStart(2, "0");
+                        var h = String(date.getHours()).padStart(2, "0");
+                        var mi = String(date.getMinutes()).padStart(2, "0");
+                        var se = String(date.getSeconds()).padStart(2, "0");
+                        return y + "-" + m + "-" + d + " " + h + ":" + mi + ":" + se;
                     };
                     
-                    let durationText = "-";
-                    let statusText = "IN PROGRESS";
+                    var durationText = "-";
+                    var statusText = "IN PROGRESS";
                     
-                    if(session.checkIn && session.checkOut) {
-                        const durationMinutes = Math.floor((session.checkOut - session.checkIn) / 60000);
+                    if (session.checkIn && session.checkOut) {
+                        var durationMinutes = Math.floor((session.checkOut - session.checkIn) / 60000);
                         durationText = durationMinutes.toString();
                         statusText = "COMPLETED";
-                    } else if(session.checkIn && !session.checkOut) {
+                    } else if (session.checkIn && !session.checkOut) {
                         durationText = "IN PROGRESS";
                         statusText = "IN PROGRESS";
                     }
@@ -1473,7 +1570,7 @@ function exportToExcel() {
                         "Tujuan": visitor.tujuan || "-",
                         "PIC": visitor.pic || "-",
                         "Departemen": visitor.dept || "-",
-                        "Sesi Ke": idx + 1,
+                        "Sesi Ke": s + 1,
                         "Check-In": formatDateTime(checkInDate),
                         "Check-Out": formatDateTime(checkOutDate),
                         "Durasi (menit)": durationText,
@@ -1482,7 +1579,7 @@ function exportToExcel() {
                         "Tanggal Kadaluarsa": visitor.expDate || "-",
                         "Keterangan": keterangan
                     });
-                });
+                }
             } else {
                 dataForExcel.push({
                     "Nama": visitor.nama || "-",
@@ -1496,21 +1593,21 @@ function exportToExcel() {
                     "Check-In": "-",
                     "Check-Out": "-",
                     "Durasi (menit)": "-",
-                    "Status Sesi": "TERDAFTAR (Belum ada aktivitas)",
+                    "Status Sesi": "TERDAFTAR",
                     "Masa Berlaku QR": masaBerlakuStatus,
                     "Tanggal Kadaluarsa": visitor.expDate || "-",
-                    "Keterangan": keterangan + " | Belum melakukan scan QR"
+                    "Keterangan": keterangan
                 });
             }
-        });
+        }
         
-        dataForExcel.sort((a, b) => (a["Nama"] || "").localeCompare(b["Nama"] || ""));
-        const ws = XLSX.utils.json_to_sheet(dataForExcel);
+        dataForExcel.sort(function(a, b) { return (a["Nama"] || "").localeCompare(b["Nama"] || ""); });
+        var ws = XLSX.utils.json_to_sheet(dataForExcel);
         ws["!cols"] = [{wch:25},{wch:18},{wch:20},{wch:12},{wch:20},{wch:15},{wch:15},{wch:8},{wch:20},{wch:20},{wch:15},{wch:18},{wch:18},{wch:18},{wch:35}];
-        const wb = XLSX.utils.book_new();
+        var wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "VMS_Visitor_Report");
-        XLSX.writeFile(wb, `VMS_Report_${new Date().toISOString().slice(0,19).replace(/:/g, "-")}.xlsx`);
-        toast("✅ Excel berhasil di export", "success");
+        XLSX.writeFile(wb, "VMS_Report_" + new Date().toISOString().slice(0, 19).replace(/:/g, "-") + ".xlsx");
+        toast("Excel berhasil di export", "success");
     } catch(err) {
         console.error("Export error:", err);
         toast("Export gagal: " + err.message, "error");
@@ -1518,89 +1615,116 @@ function exportToExcel() {
 }
 
 // ================= INITIALIZATION =================
-window.addEventListener("load", async () => {
-    // Load cached data
-    await loadFromLocal();
+window.addEventListener("load", async function() {
+    loadFromLocal();
     
-    // Initialize UI
     renderSiteSelectors();
     document.getElementById("siteSelector").onchange = handleSiteSelectorChange;
     document.getElementById("siteSelectorTop").onchange = handleSiteSelectorChange;
     
     // Tab navigation
-    document.querySelectorAll(".nav-item, .mobile-nav").forEach(el => {
-        if(el.dataset && el.dataset.tab) {
-            el.addEventListener("click", () => {
-                switchTab(el.dataset.tab);
-                if(window.innerWidth <= 780) {
-                    document.getElementById("mobileSidebar")?.classList.remove("open");
-                    document.getElementById("overlay")?.style.display = "none";
+    var navs = document.querySelectorAll(".nav-item, .mobile-nav");
+    for (var i = 0; i < navs.length; i++) {
+        var nav = navs[i];
+        if (nav.dataset && nav.dataset.tab) {
+            nav.addEventListener("click", function(e) {
+                var tab = this.dataset.tab;
+                switchTab(tab);
+                if (window.innerWidth <= 780) {
+                    var mobileSidebar = document.getElementById("mobileSidebar");
+                    var overlay = document.getElementById("overlay");
+                    if (mobileSidebar) mobileSidebar.classList.remove("open");
+                    if (overlay) overlay.style.display = "none";
                 }
             });
         }
-    });
+    }
     
     // Mobile menu
-    document.getElementById("mobileMenuBtn")?.addEventListener("click", () => {
-        document.getElementById("mobileSidebar")?.classList.add("open");
-        document.getElementById("overlay")?.style.display = "block";
-    });
-    document.getElementById("overlay")?.addEventListener("click", () => {
-        document.getElementById("mobileSidebar")?.classList.remove("open");
-        document.getElementById("overlay")?.style.display = "none";
-    });
+    var mobileMenuBtn = document.getElementById("mobileMenuBtn");
+    var mobileSidebar = document.getElementById("mobileSidebar");
+    var overlay = document.getElementById("overlay");
+    
+    if (mobileMenuBtn) {
+        mobileMenuBtn.onclick = function() {
+            if (mobileSidebar) mobileSidebar.classList.add("open");
+            if (overlay) overlay.style.display = "block";
+        };
+    }
+    
+    if (overlay) {
+        overlay.onclick = function() {
+            if (mobileSidebar) mobileSidebar.classList.remove("open");
+            overlay.style.display = "none";
+        };
+    }
     
     // License
-    document.getElementById("submitLicenseBtn")?.addEventListener("click", () => {
-        const input = document.getElementById("licenseInput");
-        if(input) applyLicenseKey(input.value);
-        if(input) input.value = "";
-    });
+    document.getElementById("submitLicenseBtn").onclick = function() {
+        var input = document.getElementById("licenseInput");
+        if (input) applyLicenseKey(input.value);
+        if (input) input.value = "";
+    };
     
-    // Register buttons
-    document.getElementById("generateQRBtn")?.addEventListener("click", async () => {
-        if(!canRegister()) return;
+    // Register
+    document.getElementById("generateQRBtn").onclick = async function() {
+        if (!canRegister()) return;
         
-        const nama = document.getElementById("regName")?.value;
-        const perusahaan = document.getElementById("regCompany")?.value;
-        const kategori = document.getElementById("regCategory")?.value;
-        let tujuan = document.getElementById("regPurpose")?.value;
-        const custom = document.getElementById("regCustomPurpose")?.value;
-        const pic = document.getElementById("regPic")?.value;
-        const dept = document.getElementById("regDept")?.value;
-        const startDate = document.getElementById("regStartDate")?.value || getWIBISO().slice(0,10);
-        const expDate = document.getElementById("regExpDate")?.value;
-        const badgeMode = document.getElementById("badgeMode")?.value || "PORTRAIT";
+        var nama = document.getElementById("regName").value;
+        var perusahaan = document.getElementById("regCompany").value;
+        var kategori = document.getElementById("regCategory").value;
+        var tujuan = document.getElementById("regPurpose").value;
+        var custom = document.getElementById("regCustomPurpose").value;
+        var pic = document.getElementById("regPic").value;
+        var dept = document.getElementById("regDept").value;
+        var startDate = document.getElementById("regStartDate").value || getWIBISO().slice(0, 10);
+        var expDate = document.getElementById("regExpDate").value;
+        var badgeMode = document.getElementById("badgeMode").value || "PORTRAIT";
         
-        if(!nama || !perusahaan || !pic || !dept || !expDate) {
+        if (!nama || !perusahaan || !pic || !dept || !expDate) {
             toast("Lengkapi semua field wajib", "error");
             return;
         }
         
-        if(tujuan === "Lainnya") tujuan = custom || "Custom";
+        if (tujuan === "Lainnya") tujuan = custom || "Custom";
         
-        let foto = "";
-        const file = document.getElementById("regPhotoFile")?.files[0];
-        if(file) {
-            const reader = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(file); });
-            const img = new Image();
+        var foto = "";
+        var file = document.getElementById("regPhotoFile").files[0];
+        if (file) {
+            var reader = await new Promise(function(resolve) {
+                var fr = new FileReader();
+                fr.onload = function() { resolve(fr.result); };
+                fr.readAsDataURL(file);
+            });
+            var img = new Image();
             img.src = reader;
-            await new Promise(r => img.onload = r);
-            const canvas = document.createElement("canvas");
-            const maxWidth = 400;
-            const scale = maxWidth / img.width;
+            await new Promise(function(resolve) { img.onload = resolve; });
+            var canvas = document.createElement("canvas");
+            var maxWidth = 400;
+            var scale = maxWidth / img.width;
             canvas.width = maxWidth;
             canvas.height = img.height * scale;
-            const ctx = canvas.getContext("2d");
+            var ctx = canvas.getContext("2d");
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
             foto = canvas.toDataURL("image/jpeg", 0.4);
         }
         
-        const result = await registerVisitor({ nama, perusahaan, kategori, tujuan, pic, dept, startDate, expDate, badgeMode, foto });
-        toast(`✅ ${nama} terdaftar (${result.reg})`, "success");
+        var result = await registerVisitor({
+            nama: nama,
+            perusahaan: perusahaan,
+            kategori: kategori,
+            tujuan: tujuan,
+            pic: pic,
+            dept: dept,
+            startDate: startDate,
+            expDate: expDate,
+            badgeMode: badgeMode,
+            foto: foto
+        }, false);
+        
+        toast(nama + " terdaftar (" + result.reg + ")", "success");
         showPreview(result.reg, result.visitor);
         
-        // Clear form
         document.getElementById("regName").value = "";
         document.getElementById("regCompany").value = "";
         document.getElementById("regPic").value = "";
@@ -1611,175 +1735,246 @@ window.addEventListener("load", async () => {
         renderDashboard();
         renderLogTable();
         updateMonetizationUI();
-    });
+    };
     
-    document.getElementById("walkinBtn")?.addEventListener("click", async () => {
-        if(!canRegister()) return;
+    document.getElementById("walkinBtn").onclick = async function() {
+        if (!canRegister()) return;
         
         toast("Ambil foto untuk walk-in", "info");
-        const photoFile = await capturePhoto();
-        let fotoBase64 = "";
+        var photoFile = await capturePhoto();
+        var fotoBase64 = "";
         
-        if(photoFile) {
-            const reader = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(photoFile); });
-            const img = new Image();
+        if (photoFile) {
+            var reader = await new Promise(function(resolve) {
+                var fr = new FileReader();
+                fr.onload = function() { resolve(fr.result); };
+                fr.readAsDataURL(photoFile);
+            });
+            var img = new Image();
             img.src = reader;
-            await new Promise(r => img.onload = r);
-            const canvas = document.createElement("canvas");
-            const maxWidth = 400;
-            const scale = maxWidth / img.width;
+            await new Promise(function(resolve) { img.onload = resolve; });
+            var canvas = document.createElement("canvas");
+            var maxWidth = 400;
+            var scale = maxWidth / img.width;
             canvas.width = maxWidth;
             canvas.height = img.height * scale;
-            const ctx = canvas.getContext("2d");
+            var ctx = canvas.getContext("2d");
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
             fotoBase64 = canvas.toDataURL("image/jpeg", 0.4);
         }
         
-        const nowTs = getEventTimestamp();
-        const expTs = nowTs + 86400000;
-        const badgeMode = document.getElementById("badgeMode")?.value || "PORTRAIT";
+        var nowTs = getEventTimestamp();
+        var expTs = nowTs + 86400000;
+        var badgeMode = document.getElementById("badgeMode").value || "PORTRAIT";
         
-        const result = await registerVisitor({
-            nama: `WALK-IN ${formatWIB(nowTs)}`,
+        var result = await registerVisitor({
+            nama: "WALK-IN " + formatWIB(nowTs),
             perusahaan: "Guest Visitor",
             kategori: "UMUM",
             tujuan: "Immediate Visit",
             pic: "Reception",
             dept: "Umum",
-            startDate: getWIBISO(nowTs).slice(0,10),
-            expDate: getWIBISO(expTs).slice(0,10),
+            startDate: getWIBISO(nowTs).slice(0, 10),
+            expDate: getWIBISO(expTs).slice(0, 10),
             badgeMode: badgeMode,
             foto: fotoBase64
         }, true);
         
-        toast(`Walk-in registered ${result.reg}`, "success");
+        toast("Walk-in registered " + result.reg, "success");
         showPreview(result.reg, result.visitor);
         renderDashboard();
         renderLogTable();
         updateMonetizationUI();
-    });
+    };
     
     // Scanner
-    document.getElementById("startCamBtn")?.addEventListener("click", async () => {
-        if(!canScan()) return;
-        const container = document.getElementById("cameraPreview");
-        if(container) container.innerHTML = "";
+    document.getElementById("startCamBtn").onclick = async function() {
+        if (!canScan()) return;
+        var container = document.getElementById("cameraPreview");
+        if (container) container.innerHTML = "";
         await stopScanner();
         await cleanupScanner();
         await startScanner();
-    });
-    document.getElementById("stopCamBtn")?.addEventListener("click", async () => {
+    };
+    
+    document.getElementById("stopCamBtn").onclick = async function() {
         await stopScanner();
         await cleanupScanner();
         toast("Kamera berhenti", "info");
-    });
-    document.getElementById("uploadQrBtn")?.addEventListener("click", () => document.getElementById("uploadQrFile")?.click());
-    document.getElementById("uploadQrFile")?.addEventListener("change", async (e) => {
-        if(!canScan()) return;
-        const file = e.target.files[0];
-        if(!file) return;
+    };
+    
+    document.getElementById("uploadQrBtn").onclick = function() {
+        var uploadFile = document.getElementById("uploadQrFile");
+        if (uploadFile) uploadFile.click();
+    };
+    
+    document.getElementById("uploadQrFile").onchange = async function(e) {
+        if (!canScan()) return;
+        var file = e.target.files[0];
+        if (!file) return;
+        
         try {
-            if(!window.Html5Qrcode) { toast("QR engine belum siap", "error"); return; }
-            const url = URL.createObjectURL(file);
-            const img = new Image();
+            if (!window.Html5Qrcode) {
+                toast("QR engine belum siap", "error");
+                return;
+            }
+            var url = URL.createObjectURL(file);
+            var img = new Image();
             img.src = url;
-            await img.decode();
+            await new Promise(function(resolve) { img.onload = resolve; });
             URL.revokeObjectURL(url);
-            const canvas = document.createElement("canvas");
+            var canvas = document.createElement("canvas");
             canvas.width = img.width;
             canvas.height = img.height;
             canvas.getContext("2d").drawImage(img, 0, 0);
-            const scanner = new Html5Qrcode("temp-reader");
-            const decoded = await scanner.scanImage(canvas, { qrbox: { width: img.width, height: img.height } });
+            var scanner = new Html5Qrcode("temp-reader");
+            var decoded = await scanner.scanImage(canvas, { qrbox: { width: img.width, height: img.height } });
             await processScan(decoded);
             await scanner.clear();
             document.getElementById("temp-reader").innerHTML = "";
-        } catch(err) { console.error(err); toast("QR tidak terbaca", "error"); }
-    });
+        } catch(err) {
+            console.error(err);
+            toast("QR tidak terbaca", "error");
+        }
+    };
     
-    document.getElementById("manualProcess")?.addEventListener("click", async () => {
-        if(!canScan()) return;
-        if(isManualProcessing) { toast("Sedang diproses", "warning"); return; }
+    document.getElementById("manualProcess").onclick = async function() {
+        if (!canScan()) return;
+        if (isManualProcessing) {
+            toast("Sedang diproses", "warning");
+            return;
+        }
         isManualProcessing = true;
+        
         try {
-            const reg = document.getElementById("manualReg")?.value.trim();
-            if(!reg) { toast("Masukkan REG number", "error"); return; }
-            const mode = normalizeAction(document.getElementById("scanMode")?.value);
-            const resolved = resolveVisitorByReg(reg);
-            const siteKey = resolved.siteKey || getSiteKey(reg);
-            const visitor = resolved.visitor;
+            var reg = document.getElementById("manualReg").value.trim();
+            if (!reg) {
+                toast("Masukkan REG number", "error");
+                return;
+            }
             
-            if(!visitor) { toast(`Visitor ${reg} tidak ditemukan`, "error"); return; }
+            var modeSelect = document.getElementById("scanMode");
+            var mode = modeSelect ? normalizeAction(modeSelect.value) : ACTION_TYPES.CHECK_IN;
+            var resolved = resolveVisitorByReg(reg);
+            var siteKey = resolved.siteKey || getSiteKey(reg);
+            var visitor = resolved.visitor;
             
-            const exp = new Date(visitor.expDate);
-            exp.setHours(23,59,59,999);
-            if(exp < new Date()) { toast("QR sudah expired", "error"); return; }
+            if (!visitor) {
+                toast("Visitor " + reg + " tidak ditemukan", "error");
+                return;
+            }
             
-            const mutationId = createMutationId(mode === "CHECK_IN" ? "manual_checkin" : "manual_checkout");
-            const eventTs = getEventTimestamp();
+            var exp = new Date(visitor.expDate);
+            exp.setHours(23, 59, 59, 999);
+            if (exp < new Date()) {
+                toast("QR sudah expired", "error");
+                return;
+            }
             
-            if(mode === "CHECK_IN") {
-                if(!visitor.sessions) visitor.sessions = [];
+            var mutationId = createMutationId(mode === "CHECK_IN" ? "manual_checkin" : "manual_checkout");
+            var eventTs = getEventTimestamp();
+            
+            if (mode === "CHECK_IN") {
+                if (!visitor.sessions) visitor.sessions = [];
                 visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: null });
-                visitors[siteKey] = { ...visitor, currentStatus: "IN", lastScanSite: SITE_ID, updatedAt: eventTs, updatedAtWIB: getWIBISO(eventTs), mutationId, mutationSource: getMutationSource() };
-                const scanLog = addLog(reg, "CHECK_IN");
+                visitors[siteKey] = {
+                    ...visitor,
+                    currentStatus: "IN",
+                    lastScanSite: SITE_ID,
+                    updatedAt: eventTs,
+                    updatedAtWIB: getWIBISO(eventTs),
+                    mutationId: mutationId,
+                    mutationSource: getMutationSource()
+                };
+                var scanLog = addLog(reg, "CHECK_IN");
                 await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
-                toast(`Check-in ${visitor.nama} success`, "success");
+                toast("Check-in " + visitor.nama + " success", "success");
             } else {
-                if(!visitor.sessions) visitor.sessions = [];
-                let openSession = null;
-                for(let i = visitor.sessions.length - 1; i >= 0; i--) {
-                    if(!visitor.sessions[i].checkOut) { openSession = visitor.sessions[i]; break; }
+                if (!visitor.sessions) visitor.sessions = [];
+                var openSession = null;
+                for (var i = visitor.sessions.length - 1; i >= 0; i--) {
+                    if (!visitor.sessions[i].checkOut) {
+                        openSession = visitor.sessions[i];
+                        break;
+                    }
                 }
-                if(!openSession) {
+                if (!openSession) {
                     toast("Tidak ada sesi check-in aktif", "warning");
                     visitor.sessions.push({ checkIn: eventTs, checkInWIB: getWIBISO(eventTs), checkOut: eventTs, checkOutWIB: getWIBISO(eventTs) });
                 } else {
                     openSession.checkOut = eventTs;
                     openSession.checkOutWIB = getWIBISO(eventTs);
                 }
-                visitors[siteKey] = { ...visitor, currentStatus: "OUT", lastScanSite: SITE_ID, updatedAt: eventTs, updatedAtWIB: getWIBISO(eventTs), mutationId, mutationSource: getMutationSource() };
-                const scanLog = addLog(reg, "CHECK_OUT");
-                await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
-                toast(`Check-out ${visitor.nama} success`, "success");
+                visitors[siteKey] = {
+                    ...visitor,
+                    currentStatus: "OUT",
+                    lastScanSite: SITE_ID,
+                    updatedAt: eventTs,
+                    updatedAtWIB: getWIBISO(eventTs),
+                    mutationId: mutationId,
+                    mutationSource: getMutationSource()
+                };
+                var checkoutLog = addLog(reg, "CHECK_OUT");
+                await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [checkoutLog] });
+                toast("Check-out " + visitor.nama + " success", "success");
             }
             
-            await saveToLocal();
+            saveToLocal();
             renderDashboard();
             renderLogTable();
             updateMonetizationUI();
         } finally {
             isManualProcessing = false;
         }
-    });
+    };
     
-    document.getElementById("cameraSelector")?.addEventListener("change", (e) => localStorage.setItem(CAMERA_PREF_KEY, e.target.value));
-    if(document.getElementById("cameraSelector")) {
-        document.getElementById("cameraSelector").value = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
+    // Camera selector
+    var cameraSelector = document.getElementById("cameraSelector");
+    if (cameraSelector) {
+        cameraSelector.onchange = function(e) {
+            localStorage.setItem(CAMERA_PREF_KEY, e.target.value);
+        };
+        cameraSelector.value = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
     }
     
-    // Logs page buttons
-    document.getElementById("refreshLogsBtn")?.addEventListener("click", renderLogTable);
-    document.getElementById("selectAllBtn")?.addEventListener("click", () => document.querySelectorAll(".logCheckItem").forEach(c => c.checked = true));
-    document.getElementById("deselectAllBtn")?.addEventListener("click", () => document.querySelectorAll(".logCheckItem").forEach(c => c.checked = false));
-    document.getElementById("deleteSelectedBtn")?.addEventListener("click", () => {
-        if(!isAdmin()) return;
-        const regs = [...new Set([...document.querySelectorAll(".logCheckItem:checked")].map(c => c.dataset.reg))];
-        regs.forEach(r => {
-            const siteKey = getSiteKey(r);
+    // Logs page
+    document.getElementById("refreshLogsBtn").onclick = renderLogTable;
+    document.getElementById("selectAllBtn").onclick = function() {
+        var checkboxes = document.querySelectorAll(".logCheckItem");
+        for (var i = 0; i < checkboxes.length; i++) checkboxes[i].checked = true;
+    };
+    document.getElementById("deselectAllBtn").onclick = function() {
+        var checkboxes = document.querySelectorAll(".logCheckItem");
+        for (var i = 0; i < checkboxes.length; i++) checkboxes[i].checked = false;
+    };
+    document.getElementById("deleteSelectedBtn").onclick = function() {
+        if (!isAdmin()) return;
+        var selected = document.querySelectorAll(".logCheckItem:checked");
+        var regs = [];
+        for (var i = 0; i < selected.length; i++) {
+            var reg = selected[i].dataset.reg;
+            if (reg && regs.indexOf(reg) === -1) regs.push(reg);
+        }
+        
+        for (var j = 0; j < regs.length; j++) {
+            var siteKey = getSiteKey(regs[j]);
             delete visitors[siteKey];
-        });
-        const newLogs = logs.filter(l => !regs.includes(l.reg));
-        logs.length = 0;
-        logs.push(...newLogs);
+        }
+        
+        var newLogs = [];
+        for (var k = 0; k < logs.length; k++) {
+            if (regs.indexOf(logs[k].reg) === -1) newLogs.push(logs[k]);
+        }
+        logs = newLogs;
+        
         saveToLocal();
         renderDashboard();
         renderLogTable();
-        toast(`Deleted ${regs.length} records`, "success");
+        toast("Deleted " + regs.length + " records", "success");
         updateMonetizationUI();
-    });
-    document.getElementById("deleteAllBtn")?.addEventListener("click", () => {
-        if(!isAdmin()) return;
+    };
+    document.getElementById("deleteAllBtn").onclick = function() {
+        if (!isAdmin()) return;
         visitors = {};
         logs = [];
         saveToLocal();
@@ -1787,20 +1982,25 @@ window.addEventListener("load", async () => {
         renderLogTable();
         toast("All data cleared", "info");
         updateMonetizationUI();
-    });
-    document.getElementById("exportExcelAction")?.addEventListener("click", exportToExcel);
-    document.getElementById("backupAction")?.addEventListener("click", () => {
-        if(isDemo()) { toast("Backup tidak tersedia di DEMO mode", "error"); return; }
+    };
+    document.getElementById("exportExcelAction").onclick = exportToExcel;
+    document.getElementById("backupAction").onclick = function() {
+        if (isDemo()) {
+            toast("Backup tidak tersedia di DEMO mode", "error");
+            return;
+        }
         try {
-            const a = document.createElement("a");
-            a.href = URL.createObjectURL(new Blob([JSON.stringify({ visitors, logs })], { type: "application/json" }));
-            a.download = `vms_backup_${Date.now()}.json`;
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(new Blob([JSON.stringify({ visitors: visitors, logs: logs })], { type: "application/json" }));
+            a.download = "vms_backup_" + Date.now() + ".json";
             a.click();
             toast("Backup ready", "success");
-        } catch(e) { toast("Backup gagal", "error"); }
-    });
-    document.getElementById("resetDatabaseAction")?.addEventListener("click", () => {
-        if(!isAdmin()) return;
+        } catch(e) {
+            toast("Backup gagal", "error");
+        }
+    };
+    document.getElementById("resetDatabaseAction").onclick = function() {
+        if (!isAdmin()) return;
         visitors = {};
         logs = [];
         saveToLocal();
@@ -1808,22 +2008,26 @@ window.addEventListener("load", async () => {
         renderLogTable();
         toast("Database reset", "info");
         updateMonetizationUI();
-    });
+    };
     
-    document.getElementById("regPhotoFile")?.addEventListener("change", (e) => {
-        if(e.target.files[0]) {
-            const r = new FileReader();
-            r.onload = ev => document.getElementById("previewPhotoThumb").src = ev.target.result;
-            r.readAsDataURL(e.target.files[0]);
+    // Photo preview
+    document.getElementById("regPhotoFile").onchange = function(e) {
+        if (e.target.files && e.target.files[0]) {
+            var reader = new FileReader();
+            reader.onload = function(ev) {
+                var preview = document.getElementById("previewPhotoThumb");
+                if (preview) preview.src = ev.target.result;
+            };
+            reader.readAsDataURL(e.target.files[0]);
         }
-    });
+    };
     
     // Auth
-    document.getElementById("doLoginBtn")?.addEventListener("click", async () => {
-        const username = document.getElementById("loginUsername")?.value || "";
-        const password = document.getElementById("loginPassword")?.value || "";
-        const success = await hybridLogin(username, password);
-        if(success) {
+    document.getElementById("doLoginBtn").onclick = async function() {
+        var username = document.getElementById("loginUsername").value || "";
+        var password = document.getElementById("loginPassword").value || "";
+        var success = await hybridLogin(username, password);
+        if (success) {
             document.getElementById("loginOverlay").style.display = "none";
             document.getElementById("appLayout").style.display = "flex";
             updateUserUI();
@@ -1831,36 +2035,37 @@ window.addEventListener("load", async () => {
             renderDashboard();
             renderLogTable();
         }
-    });
-    document.querySelectorAll("#logoutBtnTop, #logoutBtnSidebar").forEach(btn => {
-        btn?.addEventListener("click", hybridLogout);
-    });
+    };
     
-    // Session init
+    var logoutBtns = document.querySelectorAll("#logoutBtnTop, #logoutBtnSidebar");
+    for (var i = 0; i < logoutBtns.length; i++) {
+        logoutBtns[i].onclick = hybridLogout;
+    }
+    
     await hybridInitSession();
     
     // Online/offline handlers
-    window.addEventListener("online", async () => {
-        toast("🟢 Kembali ONLINE - Sinkronisasi data", "success");
+    window.addEventListener("online", async function() {
+        toast("Kembali ONLINE - Sinkronisasi data", "success");
         await processSyncQueue();
         await pullFromSheet();
         renderDashboard();
         renderLogTable();
     });
-    window.addEventListener("offline", () => {
-        toast("🟡 MODE OFFLINE - Menggunakan data lokal", "warning");
+    window.addEventListener("offline", function() {
+        toast("MODE OFFLINE - Menggunakan data lokal", "warning");
     });
     
     // Periodic sync
-    setInterval(async () => {
-        if(navigator.onLine) {
+    setInterval(async function() {
+        if (navigator.onLine) {
             await processSyncQueue();
             await pullFromSheet();
         }
     }, 60000);
     
     // Initial pull
-    if(navigator.onLine) {
+    if (navigator.onLine) {
         await pullFromSheet();
     }
     
@@ -1868,10 +2073,10 @@ window.addEventListener("load", async () => {
     renderLogTable();
     updateMonetizationUI();
     
-    toast(`🔥 VMS Ready - Mode: ${LICENSE_MODE}`, "success");
+    toast("VMS Ready - Mode: " + LICENSE_MODE, "success");
 });
 
-// Export to global
+// Global exports
 window.visitors = visitors;
 window.logs = logs;
 window.SITE_ID = SITE_ID;
@@ -1892,8 +2097,6 @@ window.isAdmin = isAdmin;
 window.applyLicenseKey = applyLicenseKey;
 window.hybridLogin = hybridLogin;
 window.hybridLogout = hybridLogout;
-window.hybridInitSession = hybridInitSession;
-
 </script>
 
 </body>

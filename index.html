@@ -585,44 +585,24 @@ function addLog(reg, action) {
 
 // ================= LICENSE =================
 async function applyLicenseKey(key) {
+    // BYPASS - langsung set ke PRO mode tanpa validasi
     if (!key) {
-        toast("Masukkan license key", "error");
-        return;
+        // Set ke DEMO mode
+        LICENSE_MODE = "DEMO";
+        localStorage.setItem("vms_license", "DEMO");
+        localStorage.removeItem("vms_license_key");
+        toast("Mode DEMO aktif - fitur terbatas", "warning");
+    } else {
+        // Set ke PRO mode
+        LICENSE_MODE = "PRO";
+        localStorage.setItem("vms_license", "PRO");
+        localStorage.setItem("vms_license_key", key);
+        toast("Mode PRO aktif - Unlimited", "success");
     }
     
-    toast("Memvalidasi license...", "info");
-    
-    try {
-        var controller = new AbortController();
-        var timeout = setTimeout(function() { controller.abort(); }, 10000);
-        
-        var url = GAS_URL + "?licenseKey=" + encodeURIComponent(key) + "&deviceId=" + encodeURIComponent(deviceId);
-        var res = await fetch(url, { method: "GET", signal: controller.signal });
-        
-        clearTimeout(timeout);
-        
-        if (res.ok) {
-            var data = await res.json();
-            if (data && data.ok === true) {
-                LICENSE_MODE = data.package || "PRO";
-                localStorage.setItem("vms_license", LICENSE_MODE);
-                localStorage.setItem("vms_license_key", key);
-                toast("License aktif: " + LICENSE_MODE, "success");
-                document.getElementById("licenseStatusBadge").innerText = LICENSE_MODE + " MODE";
-                await pullFromSheet();
-                renderDashboard();
-                renderLogTable();
-                updateMonetizationUI();
-            } else {
-                toast(data.message || "License tidak valid", "error");
-            }
-        } else {
-            toast("Gagal memvalidasi license", "error");
-        }
-    } catch(e) {
-        console.error("License error:", e);
-        toast("Gagal memvalidasi license", "error");
-    }
+    document.getElementById("licenseStatusBadge").innerText = LICENSE_MODE + " MODE";
+    updateMonetizationUI();
+    renderDashboard();
 }
 
 // ================= MONETIZATION =================

@@ -250,7 +250,7 @@
 
 // ================= KONFIGURASI =================
 // !!! GANTI DENGAN URL APPS SCRIPT ANDA !!!
-const GAS_URL = "https://script.google.com/macros/s/AKfycby71Vh79394QO_m0ros3Opg5UeHo1Q_oLczYPBrmQCPM-o3OR_2JqwCLpjECdweQM4TbQ/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzDPadsNxhHESL1LHPM3jFvi_g34JiojpxyAWtHXVXx1tZyA8ukcBPjoiXe7f_P0SwSjQ/exec";
 
 const WIB_TIMEZONE = "Asia/Jakarta";
 const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
@@ -585,24 +585,54 @@ function addLog(reg, action) {
 
 // ================= LICENSE =================
 async function applyLicenseKey(key) {
-    // BYPASS - langsung set ke PRO mode tanpa validasi
     if (!key) {
-        // Set ke DEMO mode
-        LICENSE_MODE = "DEMO";
-        localStorage.setItem("vms_license", "DEMO");
-        localStorage.removeItem("vms_license_key");
-        toast("Mode DEMO aktif - fitur terbatas", "warning");
-    } else {
-        // Set ke PRO mode
-        LICENSE_MODE = "PRO";
-        localStorage.setItem("vms_license", "PRO");
-        localStorage.setItem("vms_license_key", key);
-        toast("Mode PRO aktif - Unlimited", "success");
+        toast("Masukkan license key", "error");
+        return;
     }
     
-    document.getElementById("licenseStatusBadge").innerText = LICENSE_MODE + " MODE";
-    updateMonetizationUI();
-    renderDashboard();
+    toast("Memvalidasi license...", "info");
+    
+    try {
+        var controller = new AbortController();
+        var timeout = setTimeout(function() { controller.abort(); }, 10000);
+        
+        var url = GAS_URL + "?action=validateLicense&licenseKey=" + encodeURIComponent(key) + "&deviceId=" + encodeURIComponent(deviceId);
+        var res = await fetch(url, { method: "GET", signal: controller.signal });
+        
+        clearTimeout(timeout);
+        
+        if (res.ok) {
+            var data = await res.json();
+            if (data && data.ok === true) {
+                LICENSE_MODE = data.package || "PRO";
+                localStorage.setItem("vms_license", LICENSE_MODE);
+                localStorage.setItem("vms_license_key", key);
+                
+                // Store license limits
+                localStorage.setItem("vms_max_visitors", data.maxVisitors || 999999);
+                localStorage.setItem("vms_max_devices", data.maxDevices || 10);
+                localStorage.setItem("vms_max_scans_per_day", data.maxScansPerDay || 999999);
+                
+                var expiredMsg = data.expiredAt ? " (Exp: " + data.expiredAt + ")" : "";
+                toast("✅ License valid: " + LICENSE_MODE + expiredMsg, "success");
+                
+                document.getElementById("licenseStatusBadge").innerText = LICENSE_MODE + " MODE";
+                updateMonetizationUI();
+                renderDashboard();
+                
+                // Pull data after activation
+                await pullFromSheet();
+            } else {
+                var reason = data.reason || "License tidak valid";
+                toast("❌ " + reason, "error");
+            }
+        } else {
+            toast("Gagal memvalidasi license", "error");
+        }
+    } catch(e) {
+        console.error("License error:", e);
+        toast("Gagal memvalidasi license. Periksa koneksi.", "error");
+    }
 }
 
 // ================= MONETIZATION =================

@@ -246,6 +246,81 @@
 </div>
 
 <script>
+// ============================================================
+// 🔥 EMERGENCY FIX - PATCH UNTUK ERROR pullPromise & HYDRATION
+// ============================================================
+(function() {
+    // Fix 1: Define pullPromise di global scope
+    if (typeof window.pullPromise === 'undefined') {
+        window.pullPromise = null;
+    }
+    
+    // Fix 2: Define constants yang missing
+    if (typeof window.VMS_APPEND_RETRY_QUEUE_KEY === 'undefined') {
+        window.VMS_APPEND_RETRY_QUEUE_KEY = "vms_append_retry_queue";
+        window.VMS_APPEND_DEAD_LETTER_KEY = "vms_append_dead_letter_queue";
+        window.VMS_MUTATION_FINGERPRINT_KEY = "vms_mutation_fingerprint_cache";
+        window.MAX_APPEND_RETRY = 200;
+        window.MAX_DEAD_LETTER = 80;
+        window.MAX_QUEUE_BYTES = 240000;
+        window.DUPLICATE_REJECTION_WINDOW_MS = 15000;
+        window.MUTATION_DEBOUNCE_MS = 1200;
+        window.HYDRATION_WATCHDOG_TIMEOUT = 25000;
+        window.RECONNECT_DEBOUNCE_MS = 3500;
+        window.HYDRATION_LEASE_KEY = "vms_hydration_leader_lease";
+    }
+    
+    // Fix 3: Define HYDRATION_MUTEX
+    if (typeof window.HYDRATION_MUTEX === 'undefined') {
+        window.HYDRATION_MUTEX = { hydrating: false, mutationDepth: 0, token: null, lastRun: 0, owner: null };
+        window.HYDRATION_MODE = { active: false, token: null };
+        window.VMS_HYDRATION_STATE = { active: false, lastHydration: 0, lastSuccess: 0, failCount: 0, lastMutation: "", coordinatorOwner: null };
+    }
+    
+    // Fix 4: Define mutationLocks
+    if (typeof window.mutationLocks === 'undefined') {
+        window.mutationLocks = new Map();
+    }
+    
+    // Fix 5: Override requestVisitorMissPull yang aman (tanpa pullPromise)
+    if (typeof window.requestVisitorMissPull === 'function') {
+        const originalRequestVisitorMissPull = window.requestVisitorMissPull;
+        window.requestVisitorMissPull = async function(reg, reason) {
+            // Safe check: tunggu pullPromise hanya jika ada
+            if (window.pullPromise) {
+                try { await window.pullPromise; } catch(e) { console.warn("Pull promise wait failed:", e); }
+            }
+            return originalRequestVisitorMissPull(reg, reason);
+        };
+    }
+    
+    // Fix 6: Fix untuk pullPromise di SUPER PATCH
+    if (typeof window.requestPullFromCloud === 'function') {
+        const originalPull = window.requestPullFromCloud;
+        window.requestPullFromCloud = async function(reason, options) {
+            window.pullPromise = originalPull(reason, options);
+            try {
+                return await window.pullPromise;
+            } finally {
+                window.pullPromise = null;
+            }
+        };
+    }
+    
+    // Fix 7: Global error handler untuk unhandled rejection
+    window.addEventListener('unhandledrejection', function(event) {
+        if (event.reason && String(event.reason).includes('pullPromise')) {
+            console.warn('Caught pullPromise error, resetting...');
+            window.pullPromise = null;
+            event.preventDefault();
+        }
+    });
+    
+    console.log("🔥 EMERGENCY PATCH LOADED - FIX FOR pullPromise & HYDRATION");
+})();
+</script>
+
+<script>
 
 // ================= DEVICE ID (WAJIB) =================
 if(!localStorage.getItem("vms_device_id")){

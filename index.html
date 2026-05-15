@@ -322,6 +322,61 @@
 
 <script>
 
+// ============================================================
+// 🔥 FALLBACK MODE - AKTIFKAN UNTUK FIX SYNC ERROR
+// ============================================================
+const USE_FALLBACK_SYNC = true;  // SET true UNTUK MENGAKTIFKAN
+
+if (USE_FALLBACK_SYNC) {
+    console.log("🔥 FALLBACK MODE ACTIVE - Using simplified sync");
+    
+    // Override requestPullFromCloud dengan versi sederhana (tanpa pullPromise)
+    window.requestPullFromCloud = async function(reason, options) {
+        const licenseKey = localStorage.getItem("vms_license_key");
+        if (!licenseKey || !navigator.onLine) return false;
+        try {
+            console.log("FALLBACK PULL from worker...");
+            const res = await fetch(`${WORKER_BASE_URL}/pull-authoritative-state?licenseKey=${encodeURIComponent(licenseKey)}&fullVisitors=1`);
+            const data = await res.json();
+            if (data.visitors && Object.keys(data.visitors).length > 0) {
+                let changed = false;
+                for (const [key, visitor] of Object.entries(data.visitors)) {
+                    const existing = visitors[key];
+                    if (!existing || (visitor.version || 0) > (existing.version || 0)) {
+                        visitors[key] = visitor;
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    await secureSave();
+                    if (typeof renderDashboard === 'function') renderDashboard();
+                    if (typeof renderLogTable === 'function') renderLogTable();
+                    console.log("FALLBACK: loaded", Object.keys(data.visitors).length, "visitors");
+                }
+            }
+            return true;
+        } catch(e) { 
+            console.warn("FALLBACK pull error:", e);
+            return false;
+        }
+    };
+    
+    // Override requestVisitorMissPull tanpa pullPromise
+    window.requestVisitorMissPull = async function(reg, reason) {
+        const regText = String(reg || "").trim();
+        if (!regText || !navigator.onLine) return false;
+        const now = Date.now();
+        const lastRegPull = Number(window.visitorMissPullCache?.get(regText) || 0);
+        if (now - lastRegPull < 15000) return false;
+        if (window.visitorMissPullCache) window.visitorMissPullCache.set(regText, now);
+        await window.requestPullFromCloud(reason, { forceFull: true });
+        return true;
+    };
+    
+    // Pastikan pullPromise tidak pernah undefined
+    window.pullPromise = null;
+}
+
 // ================= DEVICE ID (WAJIB) =================
 if(!localStorage.getItem("vms_device_id")){
 localStorage.setItem("vms_device_id",
@@ -3064,7 +3119,7 @@ let retryIntervalInFlight = false;
 let appendRetryIntervalInFlight = false;
 const MIN_SYNC_INTERVAL = 3000;
 let pendingSyncPayload = null;
-let pullPromise = null;
+// window.pullPromise = null;   // DIKOMENTAR - sudah dihandle oleh FALLBACK MODE
 let lastPullStartTs = 0;
 let pullLock = null;
 let saveLock = null;

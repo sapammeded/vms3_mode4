@@ -526,7 +526,6 @@ function isExpired_(expDate) {
 
 function processLogs_(logs, body) {
   console.log("PROCESS LOGS:", logs.length);
-  const accepted = [];
   const visitors = body && body.visitors && typeof body.visitors === 'object' ? body.visitors : {};
   const visitorExpByReg = {};
   Object.keys(visitors).forEach(function(k) {
@@ -568,14 +567,11 @@ function processLogs_(logs, body) {
     }
     const expDate = pick_(log || {}, ['exp', 'expDate', 'Exp'], pick_(visitors[reg] || {}, ['exp', 'expDate', 'Exp'], visitorExpByReg[reg] || sheetExpByReg[reg] || pick_(body || {}, ['exp', 'expDate', 'Exp'], '')));
     if (isExpired_(expDate)) {
+      log._expiredBlocked = true;
       structuredLog_('SCAN_EXPIRED_SKIPPED', { mutationId: log && log.mutationId || '', mutationSource: log && (log.mutationSource || log.deviceId) || 'gas', reg: reg, action: action, expDate: String(expDate || '') });
-      return;
-    }
-    if (action === ACTION_TYPES.CHECK_IN || action === ACTION_TYPES.CHECK_OUT || action === ACTION_TYPES.REGISTER || action === ACTION_TYPES.WALK_IN) {
-      accepted.push(log);
     }
   });
-  return accepted;
+  return logs;
 }
 
 function appendRowsIdempotent_(logs) {
@@ -1125,10 +1121,12 @@ function doPost(e) {
 
     const logs = Array.isArray(body.logs) ? body.logs : [];
     const visitorLogs = body && body.visitors && typeof body.visitors === 'object' ? buildVisitorSnapshotLogs_(body.visitors) : [];
-    const processedLogs = logs.length > 0 ? processLogs_(logs, body) : [];
+    const processedLogs = logs;
+    if (logs.length > 0) processLogs_(logs, body);
     const normalized = [];
     
     processedLogs.concat(visitorLogs).forEach(function(log, index) {
+      if (log && log._expiredBlocked) return;
       try {
         const mapped = normalizeMutation_(Object.assign({}, log, { action: normalizeAction(log && log.action) }), index);
         if (!mapped.reg || !mapped.mutationId) {

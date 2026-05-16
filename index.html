@@ -515,15 +515,18 @@ async function syncToSheet(payload) {
         
         var res = await fetch(GAS_URL, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(syncPayload),
             signal: controller.signal
         });
         
         clearTimeout(timeout);
+        console.log("SYNC STATUS:", res.status);
+        const txt = await res.text();
+        console.log("SYNC RESPONSE:", txt);
         
         if (res.ok) {
-            var result = await res.json();
+            var result = {};
+            try { result = JSON.parse(txt || '{}'); } catch (e) { result = {}; }
             if (result && result.ok === true) {
                 // Mark all mutation IDs as processed
                 if (payload.visitors) {

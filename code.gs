@@ -1,3 +1,9 @@
+// ============================================================
+// VMS GOOGLE APPS SCRIPT - FULL VERSION
+// Dengan Dynamic Sites & License Management
+// ============================================================
+
+// ================= KONFIGURASI =================
 const SHEET_ID = '1ohvC84wtT4EP-rcrDbWZ1tKKMIWGjvxSu_JTTDIfvkA';
 const SHEET_TIMEZONE = 'Asia/Jakarta';
 const ACTION_TYPES = Object.freeze({ CHECK_IN: 'CHECK_IN', CHECK_OUT: 'CHECK_OUT', REGISTER: 'REGISTER', WALK_IN: 'WALK_IN' });
@@ -20,11 +26,16 @@ const SHEET_ACTIVITY_LOG_COLUMN = 17;
 const ATTENDANCE_SHEET_NAME = 'DAILY_ATTENDANCE';
 const ATTENDANCE_INDEX_PROPERTY_KEY = 'vms_attendance_row_index_v1';
 
+// ================= LICENSE & SITE SHEET NAMES =================
+const LICENSE_SHEET_NAME = 'LICENSES';
+const LICENSE_DEVICES_SHEET_NAME = 'LICENSE_DEVICES';
+const SITES_SHEET_NAME = 'SITES';
+
+// ================= UTILITY FUNCTIONS =================
 function getEventTimestamp() {
   return new Date().getTime();
 }
 
-// Backward-compatible alias only. Epoch timestamps are UTC/universal; WIB is applied only when formatting.
 function getWIBTimestamp() {
   return getEventTimestamp();
 }
@@ -92,7 +103,6 @@ function getLedgerMutationIds_(ledgerSheet) {
 }
 
 function getLedgerMutationCache_(ledgerSheet) {
-  // Optimization-only cache: Apps Script may evict globalThis at any time; SYNC_LEDGER remains authoritative.
   if (!globalThis.vmsLedgerMutationCache) {
     globalThis.vmsLedgerMutationCache = new Set(getLedgerMutationIds_(ledgerSheet));
   }
@@ -193,7 +203,6 @@ function hasLedgerMutation_(ledgerSheet, mutationId) {
   if (cached.indexOf(id) >= 0) return true;
   return getLedgerMutationCache_(ledgerSheet).has(id);
 }
-
 
 function getOrCreateStateSheet_() {
   const ss = SpreadsheetApp.openById(SHEET_ID);
@@ -327,7 +336,6 @@ function validateReplayWindow_(log) {
   return { ok: true };
 }
 
-
 function buildVisitorSnapshotLogs_(visitors) {
   const now = getEventTimestamp();
   return Object.entries(visitors || {}).map(function(entry) {
@@ -369,8 +377,6 @@ function pick_(obj, keys, fallback) {
   }
   return fallback;
 }
-
-
 
 const REQUIRED_LOG_HEADERS = Object.freeze(['Nama', 'Perusahaan', 'Tujuan', 'PIC', 'Start', 'Exp', 'Checkin', 'Checkout', 'REG', 'Action', 'LogTime', 'Status', 'Site', 'Duration', 'Kategori', 'Dept', 'Keterangan', 'Activity Log']);
 
@@ -420,7 +426,6 @@ function getDailyKey_(log) {
   const eventTs = parseEventTimestamp_(log.eventTs || log.time || log.updatedAt, getEventTimestamp());
   return Utilities.formatDate(new Date(eventTs), SHEET_TIMEZONE, 'yyyy-MM-dd');
 }
-
 
 function getSheetDateKey_(value) {
   if (!value) return '';
@@ -615,22 +620,431 @@ function appendRowsIdempotent_(logs) {
   }
 }
 
+// ============================================================
+// LICENSE & DYNAMIC SITES MANAGEMENT
+// ============================================================
 
-function doGet() {
+function getOrCreateLicenseSheet_() {
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  let sheet = ss.getSheetByName(LICENSE_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(LICENSE_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 8).setValues([[
+      'licenseKey', 'package', 'maxVisitors', 'maxDevices', 
+      'maxScansPerDay', 'expiredAt', 'isActive', 'createdAt'
+    ]]);
+    // Insert default PRO license
+    sheet.getRange(2, 1, 1, 8).setValues([[
+      'PRO-KEY-2025', 'PRO', 999999, 999999, 999999, 
+      new Date(2026, 11, 31), 'TRUE', new Date()
+    ]]);
+    // Insert default DEMO license
+    sheet.getRange(3, 1, 1, 8).setValues([[
+      'DEMO', 'DEMO', 5, 1, 10, 
+      new Date(2024, 11, 31), 'TRUE', new Date()
+    ]]);
+  }
+  return sheet;
+}
+
+function getOrCreateDeviceSheet_() {
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  let sheet = ss.getSheetByName(LICENSE_DEVICES_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(LICENSE_DEVICES_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 4).setValues([[
+      'licenseKey', 'deviceId', 'registeredAt', 'lastSeen'
+    ]]);
+  }
+  return sheet;
+}
+
+function getOrCreateSitesSheet_() {
+  const ss = SpreadsheetApp.openById(SHEET_ID);
+  let sheet = ss.getSheetByName(SITES_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(SITES_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 4).setValues([[
+      'siteId', 'siteName', 'isActive', 'createdAt'
+    ]]);
+    // Insert default sites
+    sheet.getRange(2, 1, 1, 4).setValues([['SITE_A', '🏭 SITE A', 'TRUE', new Date()]]);
+    sheet.getRange(3, 1, 1, 4).setValues([['SITE_B', '🏢 SITE B', 'TRUE', new Date()]]);
+    sheet.getRange(4, 1, 1, 4).setValues([['SITE_C', '🏬 SITE C', 'TRUE', new Date()]]);
+  }
+  return sheet;
+}
+
+// Get all active sites
+function getActiveSites_() {
+  const sheet = getOrCreateSitesSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [['SITE_A', '🏭 SITE A']];
+  
+  const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+  const sites = [];
+  for (let i = 0; i < data.length; i++) {
+    const isActive = String(data[i][2] || 'TRUE').toUpperCase() === 'TRUE';
+    if (isActive) {
+      sites.push([String(data[i][0] || ''), String(data[i][1] || '')]);
+    }
+  }
+  return sites;
+}
+
+// Add or rename site
+function manageSite_(action, siteId, newSiteName) {
+  const sheet = getOrCreateSitesSheet_();
+  const lastRow = sheet.getLastRow();
+  
+  if (action === 'ADD') {
+    // Check if siteId already exists
+    if (lastRow >= 2) {
+      const existing = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < existing.length; i++) {
+        if (String(existing[i][0] || '') === siteId) {
+          return { ok: false, error: 'Site ID already exists' };
+        }
+      }
+    }
+    const newRow = lastRow + 1;
+    sheet.getRange(newRow, 1, 1, 4).setValues([[siteId, newSiteName, 'TRUE', new Date()]]);
+    return { ok: true, message: 'Site added' };
+  }
+  
+  if (action === 'RENAME') {
+    if (lastRow >= 2) {
+      const data = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+      for (let i = 0; i < data.length; i++) {
+        if (String(data[i][0] || '') === siteId) {
+          sheet.getRange(i + 2, 2, 1, 1).setValue([newSiteName]);
+          return { ok: true, message: 'Site renamed' };
+        }
+      }
+    }
+    return { ok: false, error: 'Site not found' };
+  }
+  
+  if (action === 'DELETE') {
+    if (lastRow >= 2) {
+      const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+      for (let i = 0; i < data.length; i++) {
+        if (String(data[i][0] || '') === siteId) {
+          sheet.getRange(i + 2, 3, 1, 1).setValue(['FALSE']);
+          return { ok: true, message: 'Site deactivated' };
+        }
+      }
+    }
+    return { ok: false, error: 'Site not found' };
+  }
+  
+  return { ok: false, error: 'Invalid action' };
+}
+
+function validateLicenseKey(licenseKey, deviceId) {
+  if (!licenseKey) {
+    return { ok: false, reason: 'LICENSE_KEY_MISSING' };
+  }
+  
+  const sheet = getOrCreateLicenseSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return { 
+      ok: true, 
+      package: 'DEMO', 
+      maxVisitors: 5, 
+      maxDevices: 1, 
+      maxScansPerDay: 10,
+      expiredAt: null,
+      isActive: true,
+      fallback: true
+    };
+  }
+  
+  const data = sheet.getRange(2, 1, lastRow - 1, 8).getValues();
+  
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const storedKey = String(row[0] || '').trim();
+    const licensePackage = String(row[1] || 'DEMO').toUpperCase();
+    const maxVisitors = Number(row[2] || 0);
+    const maxDevices = Number(row[3] || 0);
+    const maxScansPerDay = Number(row[4] || 0);
+    const expiredAt = row[5] ? new Date(row[5]) : null;
+    const isActive = String(row[6] || 'TRUE').toUpperCase() === 'TRUE';
+    
+    if (storedKey !== licenseKey) continue;
+    
+    if (!isActive) {
+      return { ok: false, reason: 'LICENSE_INACTIVE' };
+    }
+    
+    if (expiredAt && expiredAt < new Date()) {
+      return { ok: false, reason: 'LICENSE_EXPIRED', expiredAt: expiredAt };
+    }
+    
+    const deviceCount = getDeviceCountForLicense(licenseKey);
+    if (maxDevices > 0 && deviceCount >= maxDevices) {
+      const isRegistered = isDeviceRegisteredForLicense(licenseKey, deviceId);
+      if (!isRegistered) {
+        return { ok: false, reason: 'DEVICE_LIMIT_EXCEEDED', maxDevices: maxDevices };
+      }
+    }
+    
+    if (deviceId) {
+      registerDeviceForLicense(licenseKey, deviceId);
+    }
+    
+    return {
+      ok: true,
+      package: licensePackage,
+      maxVisitors: maxVisitors,
+      maxDevices: maxDevices,
+      maxScansPerDay: maxScansPerDay,
+      expiredAt: expiredAt,
+      isActive: isActive
+    };
+  }
+  
+  return { ok: false, reason: 'LICENSE_NOT_FOUND' };
+}
+
+function getDeviceCountForLicense(licenseKey) {
+  const sheet = getOrCreateDeviceSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  
+  const data = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  let count = 0;
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0] || '') === licenseKey) count++;
+  }
+  return count;
+}
+
+function isDeviceRegisteredForLicense(licenseKey, deviceId) {
+  if (!deviceId) return false;
+  const sheet = getOrCreateDeviceSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  
+  const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0] || '') === licenseKey && String(data[i][1] || '') === deviceId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function registerDeviceForLicense(licenseKey, deviceId) {
+  if (!deviceId) return;
+  if (isDeviceRegisteredForLicense(licenseKey, deviceId)) {
+    // Update last seen
+    const sheet = getOrCreateDeviceSheet_();
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+      for (let i = 0; i < data.length; i++) {
+        if (String(data[i][0] || '') === licenseKey && String(data[i][1] || '') === deviceId) {
+          sheet.getRange(i + 2, 4, 1, 1).setValue([getWIBISO()]);
+          return;
+        }
+      }
+    }
+  }
+  
+  const sheet = getOrCreateDeviceSheet_();
+  const newRow = sheet.getLastRow() + 1;
+  sheet.getRange(newRow, 1, 1, 4).setValues([[licenseKey, deviceId, getWIBISO(), getWIBISO()]]);
+}
+
+// ============================================================
+// DOGET - HANDLE LICENSE VALIDATION, SITES, AND PULL DATA
+// ============================================================
+
+function doGet(e) {
+  const params = e && e.parameter ? e.parameter : {};
+  const action = params.action || '';
+  const licenseKey = params.licenseKey || '';
+  const deviceId = params.deviceId || '';
+  const site = params.site || '';
+  
+  // License validation endpoint
+  if (action === 'validateLicense') {
+    const result = validateLicenseKey(licenseKey, deviceId);
+    return jsonResponse_({
+      ok: result.ok,
+      reason: result.reason,
+      package: result.package || 'DEMO',
+      maxVisitors: result.maxVisitors || 5,
+      maxDevices: result.maxDevices || 1,
+      maxScansPerDay: result.maxScansPerDay || 10,
+      expiredAt: result.expiredAt ? getWIBISO(result.expiredAt) : null,
+      isActive: result.isActive || false
+    });
+  }
+  
+  // Get sites endpoint
+  if (action === 'getSites') {
+    const sites = getActiveSites_();
+    return jsonResponse_({
+      ok: true,
+      sites: sites.map(function(s) { return { id: s[0], name: s[1] }; })
+    });
+  }
+  
+  // Add site endpoint
+  if (action === 'addSite') {
+    const siteId = params.siteId || '';
+    const siteName = params.siteName || '';
+    if (!siteId || !siteName) {
+      return jsonResponse_({ ok: false, error: 'Missing siteId or siteName' });
+    }
+    const result = manageSite_('ADD', siteId, siteName);
+    return jsonResponse_(result);
+  }
+  
+  // Rename site endpoint
+  if (action === 'renameSite') {
+    const siteId = params.siteId || '';
+    const siteName = params.siteName || '';
+    if (!siteId || !siteName) {
+      return jsonResponse_({ ok: false, error: 'Missing siteId or siteName' });
+    }
+    const result = manageSite_('RENAME', siteId, siteName);
+    return jsonResponse_(result);
+  }
+  
+  // Delete site endpoint
+  if (action === 'deleteSite') {
+    const siteId = params.siteId || '';
+    if (!siteId) {
+      return jsonResponse_({ ok: false, error: 'Missing siteId' });
+    }
+    const result = manageSite_('DELETE', siteId, '');
+    return jsonResponse_(result);
+  }
+  
+  // Pull data endpoint
+  if (action === 'pull') {
+    const licenseValid = validateLicenseKey(licenseKey, deviceId);
+    if (!licenseValid.ok) {
+      return jsonResponse_({ ok: false, reason: licenseValid.reason, data: null });
+    }
+    
+    // Get data from Log sheet
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const logSheet = ss.getSheetByName('Log');
+    let visitors = {};
+    let logs = [];
+    
+    if (logSheet) {
+      const lastRow = logSheet.getLastRow();
+      if (lastRow >= 2) {
+        const headerMap = getHeaderMap_(logSheet);
+        const regCol = headerMap['REG'] || 9;
+        const nameCol = headerMap['Nama'] || 1;
+        const companyCol = headerMap['Perusahaan'] || 2;
+        const kategoriCol = headerMap['Kategori'] || 15;
+        const picCol = headerMap['PIC'] || 4;
+        const deptCol = headerMap['Dept'] || 16;
+        const startCol = headerMap['Start'] || 5;
+        const expCol = headerMap['Exp'] || 6;
+        const siteCol = headerMap['Site'] || 13;
+        const actionCol = headerMap['Action'] || 10;
+        const logTimeCol = headerMap['LogTime'] || 11;
+        
+        const data = logSheet.getRange(2, 1, lastRow - 1, Math.max(regCol, nameCol, companyCol, kategoriCol, picCol, deptCol, startCol, expCol, siteCol, actionCol, logTimeCol)).getValues();
+        
+        const visitorMap = {};
+        
+        for (let i = 0; i < data.length; i++) {
+          const row = data[i];
+          const reg = String(row[regCol - 1] || '').trim();
+          const rowSite = String(row[siteCol - 1] || 'SITE_A').trim();
+          
+          if (!reg) continue;
+          if (site && rowSite !== site) continue;
+          
+          const key = rowSite + '_' + reg;
+          
+          if (!visitorMap[key]) {
+            visitorMap[key] = {
+              reg: reg,
+              nama: String(row[nameCol - 1] || ''),
+              perusahaan: String(row[companyCol - 1] || ''),
+              kategori: String(row[kategoriCol - 1] || 'UMUM'),
+              pic: String(row[picCol - 1] || ''),
+              dept: String(row[deptCol - 1] || ''),
+              startDate: String(row[startCol - 1] || ''),
+              expDate: String(row[expCol - 1] || ''),
+              site: rowSite,
+              currentStatus: 'OUT',
+              sessions: [],
+              version: 1,
+              updatedAt: getEventTimestamp()
+            };
+          }
+          
+          // Add to logs
+          const action = normalizeAction(row[actionCol - 1]);
+          const logTime = row[logTimeCol - 1];
+          
+          logs.push({
+            reg: reg,
+            name: String(row[nameCol - 1] || ''),
+            company: String(row[companyCol - 1] || ''),
+            category: String(row[kategoriCol - 1] || 'UMUM'),
+            action: action,
+            time: logTime ? new Date(logTime).getTime() : getEventTimestamp(),
+            logTime: logTime,
+            site: rowSite,
+            mutationId: 'log_' + reg + '_' + action + '_' + i
+          });
+        }
+        
+        visitors = visitorMap;
+      }
+    }
+    
+    logs.sort(function(a, b) { return b.time - a.time; });
+    logs = logs.slice(0, 500);
+    
+    return jsonResponse_({
+      ok: true,
+      data: {
+        visitors: visitors,
+        logs: logs
+      },
+      license: {
+        package: licenseValid.package,
+        maxVisitors: licenseValid.maxVisitors,
+        maxScansPerDay: licenseValid.maxScansPerDay
+      }
+    });
+  }
+  
+  // Default response
   return jsonResponse_({
     ok: true,
     service: 'VMS_GAS_BRIDGE',
     status: 'healthy',
     sheetId: SHEET_ID,
+    sites: getActiveSites_(),
     updatedAt: getWIBISO()
   });
 }
 
+// ============================================================
+// DOPOST - HANDLE INCOMING SYNC DATA
+// ============================================================
+
 function doPost(e) {
   try {
-    Logger.log('BEFORE_PARSE');
+    Logger.log('=== DO POST START ===');
     const rawBody = (e && e.postData && e.postData.contents) || '{}';
-    Logger.log(rawBody);
+    Logger.log('Raw body: ' + rawBody);
     let body = {};
     try {
       body = JSON.parse(rawBody || '{}');
@@ -645,29 +1059,10 @@ function doPost(e) {
     // TEMP BYPASS SIGNATURE
     const auth = { ok: true };
 
-    /*
-    const auth = verifyRequestSignature_(body, e);
-    if (!auth.ok) {
-      structuredLog_('INVALID_SIGNATURE_REJECTED', {
-        mutationId: '',
-        mutationSource: body.source || 'unknown',
-        reason: auth.reason
-      });
-
-      return jsonResponse_({
-        ok: false,
-        ack: false,
-        reason: 'INVALID_SIGNATURE',
-        mutationIds: [],
-        skippedMutationIds: [],
-        ackMutationIds: [],
-        updatedAt: getWIBISO()
-      });
-    }
-    */
     const logs = Array.isArray(body.logs) ? body.logs : [];
     const visitorLogs = body && body.visitors && typeof body.visitors === 'object' ? buildVisitorSnapshotLogs_(body.visitors) : [];
     const normalized = [];
+    
     logs.concat(visitorLogs).forEach(function(log, index) {
       try {
         const mapped = normalizeMutation_(Object.assign({}, log, { action: normalizeAction(log && log.action) }), index);
@@ -684,17 +1079,37 @@ function doPost(e) {
         structuredLog_('GAS_LOG_MAPPING_ERROR', { mutationId: log && log.mutationId || '', mutationSource: log && (log.mutationSource || log.deviceId) || 'gas', index: index, reason: mapErr && mapErr.message || String(mapErr) });
       }
     });
+    
     if (normalized.length) {
       Logger.log('BEFORE_APPEND');
       Logger.log(JSON.stringify(normalized[0]));
     }
+    
     const result = appendRowsIdempotent_(normalized);
     Logger.log('AFTER_APPEND');
+    
     const ackIds = result.mutationIds.concat(result.skippedMutationIds);
-    const response = { ok: true, ack: true, rowsAppended: result.rowsAppended, rowsUpdated: result.rowsUpdated || 0, mutationIds: result.mutationIds, skippedMutationIds: result.skippedMutationIds, staleMutationIds: result.staleMutationIds || [], staleCount: result.staleCount || 0, versionRejectedMutationIds: result.versionRejectedMutationIds || [], versionRejectedCount: result.versionRejectedCount || 0, ackMutationIds: ackIds, requestFingerprints: result.requestFingerprints || [], ackCount: ackIds.length, updatedAt: getWIBISO() };
+    const response = { 
+      ok: true, 
+      ack: true, 
+      rowsAppended: result.rowsAppended, 
+      rowsUpdated: result.rowsUpdated || 0, 
+      mutationIds: result.mutationIds, 
+      skippedMutationIds: result.skippedMutationIds, 
+      staleMutationIds: result.staleMutationIds || [], 
+      staleCount: result.staleCount || 0, 
+      versionRejectedMutationIds: result.versionRejectedMutationIds || [], 
+      versionRejectedCount: result.versionRejectedCount || 0, 
+      ackMutationIds: ackIds, 
+      requestFingerprints: result.requestFingerprints || [], 
+      ackCount: ackIds.length, 
+      updatedAt: getWIBISO() 
+    };
+    
     Logger.log('RETURN_ACK');
     Logger.log(JSON.stringify(response));
     return jsonResponse_(response);
+    
   } catch (err) {
     console.error(JSON.stringify({ type: 'GAS_APPEND_FAIL', reason: err && err.message || String(err), updatedAt: getWIBISO() }));
     return jsonResponse_({ ok: false, ack: false, mutationIds: [], skippedMutationIds: [], staleMutationIds: [], staleCount: 0, versionRejectedMutationIds: [], versionRejectedCount: 0, ackMutationIds: [], error: err && err.message || String(err), updatedAt: getWIBISO() });

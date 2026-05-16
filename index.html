@@ -249,7 +249,7 @@
 // ============================================================
 
 // ================= KONFIGURASI =================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwznyqFRmEDIigoB1vHs_TKor_P-DKiylHPr_1IaYcH50g7_5NmqkDwjZ6YixDQg_Sv/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwyYmtlUjCKtaYbCrXlmRjC_f-vxXlss3MnNYxIt3oIvYKFaOV_DoIIv_vXlyCiIr9-/exec";
 const WIB_TIMEZONE = "Asia/Jakarta";
 const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
 const QR_SECRET = "VmsEnt2026!";
@@ -268,7 +268,10 @@ let SITE_ID = localStorage.getItem("vms_site") || "SITE_A";
 let LICENSE_MODE = localStorage.getItem("vms_license") || "DEMO";
 let deviceId = localStorage.getItem("vms_device_id");
 let isProcessing = false;
-let syncQueue = [];
+// FIX-CLIENT-6: Muat syncQueue dari localStorage agar pending items bertahan setelah refresh
+let syncQueue = (function() {
+    try { return JSON.parse(localStorage.getItem("vms_sync_queue") || "[]"); } catch(e) { return []; }
+})();
 
 // Cache untuk processed mutation IDs
 let processedMutationIds = new Set();
@@ -598,11 +601,17 @@ async function pullFromSheet() {
     var licenseKey = localStorage.getItem("vms_license_key") || "";
     if (!licenseKey || !navigator.onLine) return false;
     
+    // Guard: tidak boleh pull bersamaan
+    if (pullFromSheet._running) return false;
+    pullFromSheet._running = true;
+    
     try {
         var controller = new AbortController();
         var timeout = setTimeout(function() { controller.abort(); }, 15000);
         
-        var url = GAS_URL + "?action=pull&licenseKey=" + encodeURIComponent(licenseKey) + "&site=" + encodeURIComponent(SITE_ID);
+        var url = GAS_URL + "?action=pull&licenseKey=" + encodeURIComponent(licenseKey) +
+                  "&site=" + encodeURIComponent(SITE_ID) +
+                  "&deviceId=" + encodeURIComponent(deviceId);
         var res = await fetch(url, { method: "GET", signal: controller.signal });
         
         clearTimeout(timeout);
@@ -614,15 +623,22 @@ async function pullFromSheet() {
                 
                 if (data.data.visitors) {
                     for (var key in data.data.visitors) {
-                        if (data.data.visitors.hasOwnProperty(key)) {
-                            var visitor = data.data.visitors[key];
-                            var existing = visitors[key];
-                            // Version-based conflict resolution
-                            if (!existing || (visitor.version || 0) > (existing.version || 0) ||
-                                (visitor.updatedAt || 0) > (existing.updatedAt || 0)) {
-                                visitors[key] = visitor;
-                                changed = true;
+                        if (!data.data.visitors.hasOwnProperty(key)) continue;
+                        var serverVisitor = data.data.visitors[key];
+                        var existing = visitors[key];
+                        // FIX-CLIENT-4: gunakan version atau updatedAt — tapi JANGAN
+                        // overwrite status lokal yang lebih baru dengan data dari server
+                        // yang mungkin stale. Ambil yang updatedAt-nya lebih besar.
+                        var serverUpdatedAt = serverVisitor.updatedAt || 0;
+                        var localUpdatedAt = existing ? (existing.updatedAt || 0) : 0;
+                        if (!existing || serverUpdatedAt >= localUpdatedAt) {
+                            // Pertahankan sessions lokal jika server tidak punya
+                            if (existing && existing.sessions && existing.sessions.length > 0 &&
+                                (!serverVisitor.sessions || serverVisitor.sessions.length === 0)) {
+                                serverVisitor.sessions = existing.sessions;
                             }
+                            visitors[key] = serverVisitor;
+                            changed = true;
                         }
                     }
                 }
@@ -635,11 +651,15 @@ async function pullFromSheet() {
                     for (var j = 0; j < data.data.logs.length; j++) {
                         var logEntry = data.data.logs[j];
                         if (logEntry.mutationId && !existingIds.has(logEntry.mutationId)) {
-                            logs.unshift(logEntry);
+                            logs.push(logEntry);
+                            existingIds.add(logEntry.mutationId);
                             changed = true;
                         }
                     }
-                    if (logs.length > 2000) logs = logs.slice(0, 2000);
+                    if (changed) {
+                        logs.sort(function(a, b) { return (b.time || 0) - (a.time || 0); });
+                        if (logs.length > 2000) logs = logs.slice(0, 2000);
+                    }
                 }
                 
                 if (changed) {
@@ -653,21 +673,42 @@ async function pullFromSheet() {
         }
         return false;
     } catch(e) {
-        console.warn("Pull failed:", e);
+        if (e && e.name !== "AbortError") console.warn("Pull failed:", e);
         return false;
+    } finally {
+        pullFromSheet._running = false;
     }
 }
 
+// FIX-CLIENT-2: processSyncQueue — anti-re-entrant guard + failed-item retry
+var isProcessingQueue = false;
 async function processSyncQueue() {
-    if (!navigator.onLine || syncQueue.length === 0) return;
-    
-    var queue = syncQueue.slice();
-    syncQueue = [];
-    localStorage.setItem("vms_sync_queue", JSON.stringify(syncQueue));
-    
-    for (var i = 0; i < queue.length; i++) {
-        await syncToSheet(queue[i]);
-        await new Promise(function(r) { setTimeout(r, 500); });
+    if (!navigator.onLine || syncQueue.length === 0 || isProcessingQueue) return;
+    isProcessingQueue = true;
+    try {
+        var queue = syncQueue.slice();
+        syncQueue = [];
+        localStorage.setItem("vms_sync_queue", JSON.stringify([]));
+        var failed = [];
+        for (var i = 0; i < queue.length; i++) {
+            var ok = await syncToSheet(queue[i]);
+            if (!ok) failed.push(queue[i]);
+            await new Promise(function(r) { setTimeout(r, 300); });
+        }
+        if (failed.length) {
+            var existingIds = new Set(syncQueue.map(function(p) { return p.mutationId || ''; }));
+            failed.forEach(function(p) {
+                if (!existingIds.has(p.mutationId || '')) {
+                    syncQueue.push(p);
+                    existingIds.add(p.mutationId || '');
+                }
+            });
+            if (syncQueue.length > 50) syncQueue = syncQueue.slice(-50);
+            localStorage.setItem("vms_sync_queue", JSON.stringify(syncQueue));
+            structuredLog("SYNC_QUEUE_REQUEUED", { count: failed.length });
+        }
+    } finally {
+        isProcessingQueue = false;
     }
 }
 
@@ -678,15 +719,27 @@ function resolveVisitorByReg(reg) {
     var regText = String(reg || "").trim();
     if (!regText) return { siteKey: "", visitor: null };
     
+    // Cari di site aktif dulu (paling umum)
     var preferredKey = getSiteKey(regText);
     if (visitors[preferredKey]) return { siteKey: preferredKey, visitor: visitors[preferredKey] };
     
+    // FIX-CLIENT-5: Cross-site lookup — cari di semua site
+    // Visitor yang terdaftar di SITE_A harus bisa di-scan di SITE_B
+    var bestMatch = null;
+    var bestKey = "";
     for (var key in visitors) {
-        if (visitors.hasOwnProperty(key) && visitors[key].reg === regText) {
-            return { siteKey: key, visitor: visitors[key] };
+        if (!visitors.hasOwnProperty(key)) continue;
+        var v = visitors[key];
+        if (v && v.reg === regText) {
+            // Ambil yang paling baru jika ada duplikat cross-site
+            if (!bestMatch || (v.updatedAt || 0) > (bestMatch.updatedAt || 0)) {
+                bestMatch = v;
+                bestKey = key;
+            }
         }
     }
     
+    if (bestMatch) return { siteKey: bestKey, visitor: bestMatch };
     return { siteKey: "", visitor: null };
 }
 
@@ -1547,6 +1600,7 @@ async function registerVisitor(data, isWalkin) {
     var siteKey = getSiteKey(reg);
     var eventTs = getEventTimestamp();
     var action = isWalkin ? "WALK_IN" : "REGISTER";
+    var visitorMutationId = createMutationId(isWalkin ? "walkin" : "register");
     
     var visitorData = {
         reg: reg,
@@ -1554,7 +1608,7 @@ async function registerVisitor(data, isWalkin) {
         version: 1,
         updatedAt: eventTs,
         updatedAtWIB: getWIBISO(eventTs),
-        mutationId: createMutationId(isWalkin ? "walkin" : "register"),
+        mutationId: visitorMutationId,
         mutationSource: getMutationSource(),
         sourceAction: normalizeAction(action),
         nama: data.nama,
@@ -1574,22 +1628,45 @@ async function registerVisitor(data, isWalkin) {
     // Langsung simpan ke visitors
     visitors[siteKey] = visitorData;
     
-    // Buat log entry
+    // FIX-CLIENT-1: logEntry membawa SEMUA field yang diperlukan sheet Log
+    // Sebelumnya: hanya name/company/category — tujuan/pic/dept/start/exp HILANG
+    // Sesudah: semua field disertakan agar buildRow_() di GAS bisa mengisinya
     var logEntry = {
         reg: reg,
+        // Dua alias untuk kompatibilitas pick_() di GAS
+        nama: data.nama,
         name: data.nama,
+        perusahaan: data.perusahaan,
         company: data.perusahaan,
+        kategori: data.kategori,
         category: data.kategori,
+        // Field yang sebelumnya hilang:
+        tujuan: data.tujuan || "",
+        purpose: data.tujuan || "",
+        pic: data.pic || "",
+        PIC: data.pic || "",
+        dept: data.dept || "",
+        startDate: data.startDate || "",
+        start: data.startDate || "",
+        expDate: data.expDate || "",
+        exp: data.expDate || "",
+        keterangan: data.keterangan || "",
+        // Field wajib
         action: normalizeAction(action),
         time: eventTs,
         eventTs: eventTs,
         logTime: getWIBISO(eventTs),
         site: SITE_ID,
         deviceId: deviceId,
-        mutationId: createMutationId("log"),
+        // FIX: gunakan mutationId YANG SAMA dengan visitor agar GAS tidak buat dua baris
+        // visitor snapshot dari body.visitors akan di-skip (duplicate), yang masuk
+        // adalah logEntry ini yang sudah berisi data lengkap
+        mutationId: visitorMutationId,
         mutationSource: getMutationSource(),
         version: 1,
-        timestamp: eventTs
+        timestamp: eventTs,
+        status: "OUT",
+        currentStatus: "OUT"
     };
     
     logs.unshift(logEntry);
@@ -1598,8 +1675,11 @@ async function registerVisitor(data, isWalkin) {
     // Save ke local
     saveToLocal();
     
-    // Sync ke sheet (opsional, jangan di-await dulu untuk test)
-    syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [logEntry] }).catch(e => console.log("Sync error:", e));
+    // FIX: kirim HANYA logEntry (bukan visitors snapshot) karena logEntry sudah
+    // berisi semua data yang dibutuhkan. Mengirim keduanya dengan mutationId berbeda
+    // menyebabkan 2 baris. Mengirim keduanya dengan mutationId sama menyebabkan salah satu di-skip.
+    // Solusi: kirim logEntry yang sudah lengkap, TANPA body.visitors untuk registrasi.
+    syncToSheet({ logs: [logEntry] }).catch(function(e) { console.log("Sync error:", e); });
     
     toast("✅ " + data.nama + " terdaftar (" + reg + ")", "success");
     
@@ -2457,10 +2537,17 @@ window.addEventListener("load", async function() {
         toast("MODE OFFLINE - Menggunakan data lokal", "warning");
     });
     
+    // FIX-CLIENT-3: setInterval dengan guard agar tidak overlap
+    var intervalRunning = false;
     setInterval(async function() {
-        if (navigator.onLine) {
+        if (intervalRunning) return; // skip jika interval sebelumnya belum selesai
+        if (!navigator.onLine) return;
+        intervalRunning = true;
+        try {
             await processSyncQueue();
             await pullFromSheet();
+        } finally {
+            intervalRunning = false;
         }
     }, 60000);
     

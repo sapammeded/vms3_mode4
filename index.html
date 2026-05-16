@@ -249,7 +249,7 @@
 // ============================================================
 
 // ================= KONFIGURASI =================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbwyYmtlUjCKtaYbCrXlmRjC_f-vxXlss3MnNYxIt3oIvYKFaOV_DoIIv_vXlyCiIr9-/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzZTc8sVY6xLJ_SCSpmYiNrv6PhfaKInzXoUVZ3DlmfYRlKyGE0l4KB2plvNsgybSv1/exec";
 const WIB_TIMEZONE = "Asia/Jakarta";
 const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
 const QR_SECRET = "VmsEnt2026!";
@@ -551,12 +551,26 @@ async function syncToSheet(payload) {
         var controller = new AbortController();
         var timeout = setTimeout(function() { controller.abort(); }, 15000);
         
-        var res = await fetch(GAS_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(syncPayload),
-            signal: controller.signal
-        });
+       var res = await fetch(GAS_URL, {
+    method: "POST",
+    headers: {
+        "Content-Type": "text/plain;charset=utf-8"
+    },
+    body: JSON.stringify(syncPayload),
+    signal: controller.signal
+});
+
+const txt = await res.text();
+
+console.log("RAW RESPONSE:", txt);
+
+let result = {};
+
+try {
+    result = JSON.parse(txt);
+} catch(err) {
+    console.error("JSON PARSE ERROR:", err);
+}
         
         clearTimeout(timeout);
         console.log("SYNC STATUS:", res.status);

@@ -559,18 +559,6 @@ async function syncToSheet(payload) {
     body: JSON.stringify(syncPayload),
     signal: controller.signal
 });
-
-var responseText = await res.text();
-
-console.log("RAW RESPONSE:", responseText);
-
-let result = {};
-
-try {
-    result = JSON.parse(responseText);
-} catch(err) {
-    console.error("JSON PARSE ERROR:", err);
-}
         
         clearTimeout(timeout);
         console.log("SYNC STATUS:", res.status);

@@ -560,14 +560,14 @@ async function syncToSheet(payload) {
     signal: controller.signal
 });
 
-const txt = await res.text();
+var responseText = await res.text();
 
-console.log("RAW RESPONSE:", txt);
+console.log("RAW RESPONSE:", responseText);
 
 let result = {};
 
 try {
-    result = JSON.parse(txt);
+    result = JSON.parse(responseText);
 } catch(err) {
     console.error("JSON PARSE ERROR:", err);
 }

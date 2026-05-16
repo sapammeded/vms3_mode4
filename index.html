@@ -363,7 +363,8 @@ function isDuplicateRequest(fingerprint) {
 function isMutationTooFast(reg) {
     var now = getEventTimestamp();
     var lastTime = lastMutationTime.get(reg);
-    if (lastTime && (now - lastTime) < MUTATION_DEBOUNCE_MS) return true;
+    // DEBOUNCE HANYA UNTUK REG YANG SAMA, GUNAKAN 500ms SAJA
+    if (lastTime && (now - lastTime) < 500) return true;
     lastMutationTime.set(reg, now);
     return false;
 }
@@ -1506,28 +1507,16 @@ async function registerVisitor(data, isWalkin) {
     var siteKey = getSiteKey(reg);
     var eventTs = getEventTimestamp();
     var action = isWalkin ? "WALK_IN" : "REGISTER";
-    var mutationId = createMutationId(isWalkin ? "walkin" : "register");
-    var fingerprint = generateRequestFingerprint({ mutationId: mutationId, reg: reg });
-    
-    // Check duplicate
-    if (isDuplicateMutation(mutationId) || isDuplicateRequest(fingerprint)) {
-        toast("Duplicate request detected", "warning");
-        return null;
-    }
-    
-    // Check replay window
-    if (!validateReplayWindow(eventTs)) {
-        toast("Invalid timestamp", "error");
-        return null;
-    }
-    
-    // Check debounce
-    if (isMutationTooFast(reg)) {
-        toast("Too many requests, please wait", "warning");
-        return null;
-    }
     
     var visitorData = {
+        reg: reg,
+        site: SITE_ID,
+        version: 1,
+        updatedAt: eventTs,
+        updatedAtWIB: getWIBISO(eventTs),
+        mutationId: createMutationId(isWalkin ? "walkin" : "register"),
+        mutationSource: getMutationSource(),
+        sourceAction: normalizeAction(action),
         nama: data.nama,
         perusahaan: data.perusahaan,
         kategori: data.kategori,
@@ -1539,22 +1528,40 @@ async function registerVisitor(data, isWalkin) {
         badgeMode: data.badgeMode,
         foto: data.foto || "",
         sessions: [],
-        currentStatus: "OUT",
-        version: 1,
-        mutationId: mutationId,
-        requestFingerprint: fingerprint
+        currentStatus: "OUT"
     };
     
-    var saved = saveVisitor(siteKey, visitorData, reg, action);
-    if (!saved) {
-        toast("Gagal menyimpan data", "error");
-        return null;
-    }
+    // Langsung simpan ke visitors
+    visitors[siteKey] = visitorData;
     
-    var logEntry = addLog(reg, action, { mutationId: mutationId, requestFingerprint: fingerprint });
+    // Buat log entry
+    var logEntry = {
+        reg: reg,
+        name: data.nama,
+        company: data.perusahaan,
+        category: data.kategori,
+        action: normalizeAction(action),
+        time: eventTs,
+        eventTs: eventTs,
+        logTime: getWIBISO(eventTs),
+        site: SITE_ID,
+        deviceId: deviceId,
+        mutationId: createMutationId("log"),
+        mutationSource: getMutationSource(),
+        version: 1,
+        timestamp: eventTs
+    };
     
-    await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [logEntry] });
+    logs.unshift(logEntry);
+    if (logs.length > 2000) logs = logs.slice(0, 2000);
+    
+    // Save ke local
     saveToLocal();
+    
+    // Sync ke sheet (opsional, jangan di-await dulu untuk test)
+    syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [logEntry] }).catch(e => console.log("Sync error:", e));
+    
+    toast("✅ " + data.nama + " terdaftar (" + reg + ")", "success");
     
     return { reg: reg, visitor: visitors[siteKey] };
 }

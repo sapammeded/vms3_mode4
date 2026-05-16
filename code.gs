@@ -515,6 +515,39 @@ function buildRow_(log, headerMap) {
   return row;
 }
 
+
+function isExpired_(expDate) {
+  if (!expDate) return false;
+  var dt = expDate instanceof Date ? new Date(expDate.getTime()) : new Date(expDate);
+  if (isNaN(dt.getTime())) return false;
+  dt.setHours(23, 59, 59, 999);
+  return getEventTimestamp() > dt.getTime();
+}
+
+function processLogs_(logs, body) {
+  console.log("PROCESS LOGS:", logs.length);
+  const accepted = [];
+  (logs || []).forEach(function(log, index) {
+    const action = normalizeAction(log && log.action);
+    const reg = String((log && (log.reg || log.REG || log.Reg)) || '').trim();
+    console.log("SCAN ACTION:", action);
+    console.log("SCAN REG:", reg);
+    if (!reg) {
+      structuredLog_('SCAN_SKIPPED', { mutationId: log && log.mutationId || '', mutationSource: log && (log.mutationSource || log.deviceId) || 'gas', reason: 'REG_EMPTY', index: index });
+      return;
+    }
+    const expDate = pick_(log || {}, ['exp', 'expDate', 'Exp'], pick_(body || {}, ['exp', 'expDate', 'Exp'], ''));
+    if (isExpired_(expDate)) {
+      structuredLog_('SCAN_EXPIRED_SKIPPED', { mutationId: log && log.mutationId || '', mutationSource: log && (log.mutationSource || log.deviceId) || 'gas', reg: reg, action: action, expDate: String(expDate || '') });
+      return;
+    }
+    if (action === ACTION_TYPES.CHECK_IN || action === ACTION_TYPES.CHECK_OUT || action === ACTION_TYPES.REGISTER || action === ACTION_TYPES.WALK_IN) {
+      accepted.push(log);
+    }
+  });
+  return accepted;
+}
+
 function appendRowsIdempotent_(logs) {
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -1055,15 +1088,17 @@ function doPost(e) {
 
     Logger.log('AFTER_PARSE');
     Logger.log(JSON.stringify(body));
+    console.log("SYNC BODY:", JSON.stringify(body).slice(0,1000));
 
     // TEMP BYPASS SIGNATURE
     const auth = { ok: true };
 
     const logs = Array.isArray(body.logs) ? body.logs : [];
     const visitorLogs = body && body.visitors && typeof body.visitors === 'object' ? buildVisitorSnapshotLogs_(body.visitors) : [];
+    const processedLogs = logs.length > 0 ? processLogs_(logs, body) : [];
     const normalized = [];
     
-    logs.concat(visitorLogs).forEach(function(log, index) {
+    processedLogs.concat(visitorLogs).forEach(function(log, index) {
       try {
         const mapped = normalizeMutation_(Object.assign({}, log, { action: normalizeAction(log && log.action) }), index);
         if (!mapped.reg || !mapped.mutationId) {

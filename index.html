@@ -245,16 +245,20 @@
 
 <script>
 // ============================================================
-// VMS SAPAM MEDED - SIMPLIFIED BACKEND
+// VMS SAPAM MEDED - FULL VERSION DENGAN SEMUA FITUR
 // ============================================================
 
 // ================= KONFIGURASI =================
-// !!! GANTI DENGAN URL APPS SCRIPT ANDA !!!
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwgUe6e4f0VzPZ-UgSYnw2E0f_c2sW6F6B67RfLAwW1yek7WWcRQaoZ_zNSq1Cj4jhjjw/exec";
-
 const WIB_TIMEZONE = "Asia/Jakarta";
 const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
 const QR_SECRET = "VmsEnt2026!";
+
+// Constants untuk fitur lengkap
+const MAX_EVENT_AGE = 24 * 60 * 60 * 1000; // 24 jam
+const MAX_FUTURE_SKEW = 10 * 60 * 1000; // 10 menit
+const MUTATION_DEBOUNCE_MS = 1200;
+const DUPLICATE_REJECTION_WINDOW_MS = 15000;
 
 // Global state
 let visitors = {};
@@ -265,6 +269,11 @@ let LICENSE_MODE = localStorage.getItem("vms_license") || "DEMO";
 let deviceId = localStorage.getItem("vms_device_id");
 let isProcessing = false;
 let syncQueue = [];
+
+// Cache untuk processed mutation IDs
+let processedMutationIds = new Set();
+let requestFingerprints = new Map();
+let lastMutationTime = new Map();
 
 // ================= UTILITIES =================
 function getEventTimestamp() { return Date.now(); }
@@ -295,12 +304,20 @@ function toast(msg, type) {
     setTimeout(function() { t.remove(); }, 3000);
 }
 
+function structuredLog(type, payload) {
+    console.log(JSON.stringify({ type: type, updatedAt: getWIBISO(), ...payload }));
+}
+
 function generateReg() { 
     return "REG" + Date.now() + Math.floor(Math.random() * 10000);
 }
 
 function createMutationId(prefix) {
     return prefix + "_" + deviceId + "_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+}
+
+function generateRequestFingerprint(data) {
+    return [data.mutationId || "", data.reg || "", deviceId, data.eventTs || getEventTimestamp()].join("|");
 }
 
 function normalizeAction(action) {
@@ -313,6 +330,61 @@ function normalizeAction(action) {
 }
 
 function getMutationSource() { return deviceId + ":browser"; }
+
+// ================= VALIDATION FUNCTIONS (FITUR LENGKAP) =================
+function validateReplayWindow(eventTs) {
+    var now = getEventTimestamp();
+    if (!eventTs || eventTs <= 0) return false;
+    if ((now - eventTs) > MAX_EVENT_AGE) return false;
+    if ((eventTs - now) > MAX_FUTURE_SKEW) return false;
+    return true;
+}
+
+function isDuplicateMutation(mutationId) {
+    if (processedMutationIds.has(mutationId)) return true;
+    
+    // Clean old entries
+    var now = getEventTimestamp();
+    for (var [key, time] of requestFingerprints.entries()) {
+        if (now - time > DUPLICATE_REJECTION_WINDOW_MS) {
+            requestFingerprints.delete(key);
+        }
+    }
+    
+    return false;
+}
+
+function isDuplicateRequest(fingerprint) {
+    if (requestFingerprints.has(fingerprint)) return true;
+    requestFingerprints.set(fingerprint, getEventTimestamp());
+    return false;
+}
+
+function isMutationTooFast(reg) {
+    var now = getEventTimestamp();
+    var lastTime = lastMutationTime.get(reg);
+    if (lastTime && (now - lastTime) < MUTATION_DEBOUNCE_MS) return true;
+    lastMutationTime.set(reg, now);
+    return false;
+}
+
+function markMutationProcessed(mutationId, fingerprint) {
+    processedMutationIds.add(mutationId);
+    if (fingerprint) requestFingerprints.set(fingerprint, getEventTimestamp());
+    
+    // Keep cache size reasonable
+    if (processedMutationIds.size > 2000) {
+        var toDelete = [];
+        var i = 0;
+        for (var id of processedMutationIds) {
+            if (i++ < 1000) toDelete.push(id);
+            else break;
+        }
+        for (var j = 0; j < toDelete.length; j++) {
+            processedMutationIds.delete(toDelete[j]);
+        }
+    }
+}
 
 // ================= DEVICE ID =================
 if (!deviceId) {
@@ -359,7 +431,13 @@ async function parseQR(raw) {
 // ================= LOCAL STORAGE =================
 function saveToLocal() {
     try {
-        var data = { visitors: visitors, logs: logs, version: 1, updatedAt: Date.now() };
+        var data = { 
+            visitors: visitors, 
+            logs: logs, 
+            version: 1, 
+            updatedAt: Date.now(),
+            processedIds: Array.from(processedMutationIds)
+        };
         localStorage.setItem("vms_cache", JSON.stringify(data));
     } catch(e) { 
         console.warn("Save local failed:", e); 
@@ -373,6 +451,7 @@ function loadFromLocal() {
             var data = JSON.parse(raw);
             if (data.visitors) visitors = data.visitors;
             if (data.logs) logs = data.logs;
+            if (data.processedIds) processedMutationIds = new Set(data.processedIds);
             console.log("Loaded from cache:", Object.keys(visitors).length, "visitors,", logs.length, "logs");
         }
     } catch(e) { 
@@ -380,10 +459,36 @@ function loadFromLocal() {
     }
 }
 
-// ================= SYNC TO GOOGLE SHEET =================
+// ================= SYNC TO GOOGLE SHEET (DENGAN IDEMPOTENT) =================
 async function syncToSheet(payload) {
     var licenseKey = localStorage.getItem("vms_license_key") || "";
     if (!licenseKey) return false;
+    
+    // Check for duplicates before sending
+    var hasNewData = false;
+    if (payload.visitors) {
+        for (var key in payload.visitors) {
+            var visitor = payload.visitors[key];
+            if (visitor.mutationId && !isDuplicateMutation(visitor.mutationId)) {
+                hasNewData = true;
+                break;
+            }
+        }
+    }
+    if (!hasNewData && payload.logs) {
+        for (var i = 0; i < payload.logs.length; i++) {
+            var log = payload.logs[i];
+            if (log.mutationId && !isDuplicateMutation(log.mutationId)) {
+                hasNewData = true;
+                break;
+            }
+        }
+    }
+    
+    if (!hasNewData) {
+        structuredLog("SYNC_SKIPPED_DUPLICATE", { reason: "no new mutation ids" });
+        return true;
+    }
     
     var syncPayload = {
         licenseKey: licenseKey,
@@ -419,6 +524,20 @@ async function syncToSheet(payload) {
         if (res.ok) {
             var result = await res.json();
             if (result && result.ok === true) {
+                // Mark all mutation IDs as processed
+                if (payload.visitors) {
+                    for (var key in payload.visitors) {
+                        var v = payload.visitors[key];
+                        if (v.mutationId) markMutationProcessed(v.mutationId, v.requestFingerprint);
+                    }
+                }
+                if (payload.logs) {
+                    for (var j = 0; j < payload.logs.length; j++) {
+                        var l = payload.logs[j];
+                        if (l.mutationId) markMutationProcessed(l.mutationId, l.requestFingerprint);
+                    }
+                }
+                saveToLocal();
                 return true;
             }
         }
@@ -455,7 +574,9 @@ async function pullFromSheet() {
                         if (data.data.visitors.hasOwnProperty(key)) {
                             var visitor = data.data.visitors[key];
                             var existing = visitors[key];
-                            if (!existing || (visitor.updatedAt || 0) > (existing.updatedAt || 0)) {
+                            // Version-based conflict resolution
+                            if (!existing || (visitor.version || 0) > (existing.version || 0) ||
+                                (visitor.updatedAt || 0) > (existing.updatedAt || 0)) {
                                 visitors[key] = visitor;
                                 changed = true;
                             }
@@ -464,13 +585,13 @@ async function pullFromSheet() {
                 }
                 
                 if (data.data.logs && Array.isArray(data.data.logs)) {
-                    var existingIds = {};
+                    var existingIds = new Set();
                     for (var i = 0; i < logs.length; i++) {
-                        if (logs[i].mutationId) existingIds[logs[i].mutationId] = true;
+                        if (logs[i].mutationId) existingIds.add(logs[i].mutationId);
                     }
                     for (var j = 0; j < data.data.logs.length; j++) {
                         var logEntry = data.data.logs[j];
-                        if (logEntry.mutationId && !existingIds[logEntry.mutationId]) {
+                        if (logEntry.mutationId && !existingIds.has(logEntry.mutationId)) {
                             logs.unshift(logEntry);
                             changed = true;
                         }
@@ -507,7 +628,7 @@ async function processSyncQueue() {
     }
 }
 
-// ================= VISITOR MANAGEMENT =================
+// ================= VISITOR MANAGEMENT (DENGAN VERSION CONTROL) =================
 function getSiteKey(reg) { return SITE_ID + "_" + reg; }
 
 function resolveVisitorByReg(reg) {
@@ -528,9 +649,35 @@ function resolveVisitorByReg(reg) {
 
 function saveVisitor(siteKey, data, reg, sourceAction) {
     var mutationId = data.mutationId || createMutationId("visitor");
+    var fingerprint = generateRequestFingerprint({ mutationId: mutationId, reg: reg });
+    
+    // Check duplicate
+    if (isDuplicateMutation(mutationId) || isDuplicateRequest(fingerprint)) {
+        structuredLog("DUPLICATE_VISITOR_REJECTED", { mutationId: mutationId, reg: reg });
+        return false;
+    }
+    
+    // Check replay window
     var eventTs = getEventTimestamp();
+    if (!validateReplayWindow(eventTs)) {
+        structuredLog("STALE_VISITOR_REJECTED", { mutationId: mutationId, reg: reg });
+        return false;
+    }
+    
+    // Check debounce
+    if (isMutationTooFast(reg)) {
+        structuredLog("DEBOUNCE_VISITOR_REJECTED", { mutationId: mutationId, reg: reg });
+        return false;
+    }
+    
     var current = visitors[siteKey] || null;
     var incomingVersion = (current && current.version ? current.version : 0) + 1;
+    
+    // Version conflict resolution
+    if (current && data.version && data.version < current.version) {
+        structuredLog("VERSION_CONFLICT_VISITOR", { current: current.version, incoming: data.version, reg: reg });
+        return false;
+    }
     
     visitors[siteKey] = {
         reg: reg,
@@ -540,6 +687,7 @@ function saveVisitor(siteKey, data, reg, sourceAction) {
         updatedAtWIB: getWIBISO(eventTs),
         mutationId: mutationId,
         mutationSource: getMutationSource(),
+        requestFingerprint: fingerprint,
         sourceAction: normalizeAction(sourceAction),
         nama: data.nama,
         perusahaan: data.perusahaan,
@@ -555,13 +703,34 @@ function saveVisitor(siteKey, data, reg, sourceAction) {
         currentStatus: data.currentStatus || "OUT"
     };
     
+    markMutationProcessed(mutationId, fingerprint);
     return visitors[siteKey];
 }
 
-function addLog(reg, action) {
+function addLog(reg, action, eventData) {
     var resolved = resolveVisitorByReg(reg);
     var visitor = resolved.visitor;
     var eventTs = getEventTimestamp();
+    var mutationId = createMutationId("log");
+    var fingerprint = generateRequestFingerprint({ mutationId: mutationId, reg: reg });
+    
+    // Check duplicate
+    if (isDuplicateMutation(mutationId) || isDuplicateRequest(fingerprint)) {
+        structuredLog("DUPLICATE_LOG_REJECTED", { mutationId: mutationId, reg: reg });
+        return null;
+    }
+    
+    // Check replay window
+    if (!validateReplayWindow(eventTs)) {
+        structuredLog("STALE_LOG_REJECTED", { mutationId: mutationId, reg: reg });
+        return null;
+    }
+    
+    // Check debounce
+    if (isMutationTooFast(reg)) {
+        structuredLog("DEBOUNCE_LOG_REJECTED", { mutationId: mutationId, reg: reg });
+        return null;
+    }
     
     var logEntry = {
         reg: reg,
@@ -570,16 +739,22 @@ function addLog(reg, action) {
         category: visitor ? visitor.kategori : "UMUM",
         action: normalizeAction(action),
         time: eventTs,
+        eventTs: eventTs,
         logTime: getWIBISO(eventTs),
         site: SITE_ID,
         deviceId: deviceId,
-        mutationId: createMutationId("log"),
+        mutationId: mutationId,
         mutationSource: getMutationSource(),
-        timestamp: eventTs
+        requestFingerprint: fingerprint,
+        version: (visitor ? (visitor.version || 0) + 1 : 1),
+        timestamp: eventTs,
+        ...eventData
     };
     
     logs.unshift(logEntry);
     if (logs.length > 2000) logs = logs.slice(0, 2000);
+    
+    markMutationProcessed(mutationId, fingerprint);
     return logEntry;
 }
 
@@ -622,6 +797,11 @@ async function applyLicenseKey(key) {
                 
                 // Pull data after activation
                 await pullFromSheet();
+                
+                // Sync sites from backend
+                if (typeof syncSitesFromBackend === 'function') {
+                    await syncSitesFromBackend();
+                }
             } else {
                 var reason = data.reason || "License tidak valid";
                 toast("❌ " + reason, "error");
@@ -739,7 +919,7 @@ function updateMonetizationUI() {
     if (manualProcessBtn) manualProcessBtn.disabled = !canScan();
 }
 
-// ================= PDF BADGE =================
+// ================= PDF BADGE (SAMA SEPERTI SEBELUMNYA) =================
 async function ensureJsPDFReady() {
     if (window.jspdf) return true;
     return new Promise(function(resolve) {
@@ -827,7 +1007,6 @@ async function downloadPDFStable(reg, data) {
             });
         })();
         
-        // Portrait mode layout
         if (data.foto && data.foto.startsWith("data:image")) {
             doc.setFillColor(255, 255, 255);
             doc.roundedRect(17, 13, 20, 20, 2, 2, "F");
@@ -1196,6 +1375,20 @@ async function processScan(qrText) {
         }
         
         var mutationId = createMutationId(mode === "CHECK_IN" ? "checkin" : "checkout");
+        var fingerprint = generateRequestFingerprint({ mutationId: mutationId, reg: reg });
+        
+        // Check duplicate before processing
+        if (isDuplicateMutation(mutationId) || isDuplicateRequest(fingerprint)) {
+            toast("Data sudah diproses sebelumnya", "warning");
+            return;
+        }
+        
+        // Check replay window
+        if (!validateReplayWindow(now)) {
+            toast("Event sudah terlalu lama", "error");
+            return;
+        }
+        
         var eventTs = getEventTimestamp();
         
         if (mode === "CHECK_IN") {
@@ -1208,11 +1401,16 @@ async function processScan(qrText) {
                 updatedAt: eventTs,
                 updatedAtWIB: getWIBISO(eventTs),
                 mutationId: mutationId,
-                mutationSource: getMutationSource()
+                mutationSource: getMutationSource(),
+                requestFingerprint: fingerprint,
+                version: (visitor.version || 0) + 1
             };
-            var scanLog = addLog(reg, "CHECK_IN");
-            await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
-            toast("CHECK-IN " + visitor.nama + " berhasil", "success");
+            var scanLog = addLog(reg, "CHECK_IN", { mutationId: mutationId, requestFingerprint: fingerprint });
+            if (scanLog) {
+                await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
+                toast("CHECK-IN " + visitor.nama + " berhasil", "success");
+                markMutationProcessed(mutationId, fingerprint);
+            }
         } else {
             if (!visitor.sessions) visitor.sessions = [];
             var openSession = null;
@@ -1236,11 +1434,16 @@ async function processScan(qrText) {
                 updatedAt: eventTs,
                 updatedAtWIB: getWIBISO(eventTs),
                 mutationId: mutationId,
-                mutationSource: getMutationSource()
+                mutationSource: getMutationSource(),
+                requestFingerprint: fingerprint,
+                version: (visitor.version || 0) + 1
             };
-            var checkoutLog = addLog(reg, "CHECK_OUT");
-            await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [checkoutLog] });
-            toast("CHECK-OUT " + visitor.nama + " berhasil", "success");
+            var checkoutLog = addLog(reg, "CHECK_OUT", { mutationId: mutationId, requestFingerprint: fingerprint });
+            if (checkoutLog) {
+                await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [checkoutLog] });
+                toast("CHECK-OUT " + visitor.nama + " berhasil", "success");
+                markMutationProcessed(mutationId, fingerprint);
+            }
         }
         
         saveToLocal();
@@ -1303,6 +1506,26 @@ async function registerVisitor(data, isWalkin) {
     var siteKey = getSiteKey(reg);
     var eventTs = getEventTimestamp();
     var action = isWalkin ? "WALK_IN" : "REGISTER";
+    var mutationId = createMutationId(isWalkin ? "walkin" : "register");
+    var fingerprint = generateRequestFingerprint({ mutationId: mutationId, reg: reg });
+    
+    // Check duplicate
+    if (isDuplicateMutation(mutationId) || isDuplicateRequest(fingerprint)) {
+        toast("Duplicate request detected", "warning");
+        return null;
+    }
+    
+    // Check replay window
+    if (!validateReplayWindow(eventTs)) {
+        toast("Invalid timestamp", "error");
+        return null;
+    }
+    
+    // Check debounce
+    if (isMutationTooFast(reg)) {
+        toast("Too many requests, please wait", "warning");
+        return null;
+    }
     
     var visitorData = {
         nama: data.nama,
@@ -1316,11 +1539,19 @@ async function registerVisitor(data, isWalkin) {
         badgeMode: data.badgeMode,
         foto: data.foto || "",
         sessions: [],
-        currentStatus: "OUT"
+        currentStatus: "OUT",
+        version: 1,
+        mutationId: mutationId,
+        requestFingerprint: fingerprint
     };
     
-    saveVisitor(siteKey, visitorData, reg, action);
-    var logEntry = addLog(reg, action);
+    var saved = saveVisitor(siteKey, visitorData, reg, action);
+    if (!saved) {
+        toast("Gagal menyimpan data", "error");
+        return null;
+    }
+    
+    var logEntry = addLog(reg, action, { mutationId: mutationId, requestFingerprint: fingerprint });
     
     await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [logEntry] });
     saveToLocal();
@@ -1454,27 +1685,119 @@ function setSite(site) {
 }
 
 function renderSiteSelectors() {
-    var sites = ["SITE_A", "SITE_B", "SITE_C"];
+    var dynamicSites = [];
+    try {
+        var saved = localStorage.getItem("vms_dynamic_sites");
+        if (saved) dynamicSites = JSON.parse(saved);
+    } catch(e) {}
+    
+    var defaultSites = ["SITE_A", "SITE_B", "SITE_C"];
+    var allSites = [...new Set([...defaultSites, ...dynamicSites, SITE_ID])];
+    
     var selectors = document.querySelectorAll("#siteSelector, #siteSelectorTop");
     for (var i = 0; i < selectors.length; i++) {
         var sel = selectors[i];
         if (!sel) continue;
         var previous = SITE_ID || sel.value || "SITE_A";
         sel.innerHTML = "";
-        for (var j = 0; j < sites.length; j++) {
-            var site = sites[j];
+        
+        for (var j = 0; j < allSites.length; j++) {
+            var site = allSites[j];
             var opt = document.createElement("option");
             opt.value = site;
-            var icon = site === "SITE_A" ? "🏭" : (site === "SITE_B" ? "🏢" : "🏬");
+            var icon = site === "SITE_A" ? "🏭" : (site === "SITE_B" ? "🏢" : (site === "SITE_C" ? "🏬" : "🌐"));
             opt.text = icon + " " + site;
             sel.appendChild(opt);
         }
-        sel.value = sites.indexOf(previous) >= 0 ? previous : "SITE_A";
+        
+        var addOpt = document.createElement("option");
+        addOpt.value = "__ADD_SITE__";
+        addOpt.text = "➕ Tambah Site Baru...";
+        sel.appendChild(addOpt);
+        
+        sel.value = allSites.indexOf(previous) >= 0 ? previous : "SITE_A";
     }
 }
 
 function handleSiteSelectorChange(e) {
-    setSite(e.target.value);
+    var selected = e.target.value;
+    
+    if (selected === "__ADD_SITE__") {
+        var newSiteId = prompt("Masukkan ID Site baru (contoh: SITE_D):", "");
+        if (newSiteId && newSiteId.trim()) {
+            var newSiteName = prompt("Masukkan Nama Site (contoh: 🏬 SITE D):", newSiteId);
+            if (newSiteName && newSiteName.trim()) {
+                addNewSiteToBackend(newSiteId.trim().toUpperCase(), newSiteName.trim());
+            }
+        }
+        renderSiteSelectors();
+        return;
+    }
+    
+    setSite(selected);
+}
+
+async function addNewSiteToBackend(siteId, siteName) {
+    var licenseKey = localStorage.getItem("vms_license_key") || "";
+    if (!licenseKey) {
+        toast("License key required to add site", "error");
+        return;
+    }
+    
+    toast("Menambahkan site...", "info");
+    
+    try {
+        var url = GAS_URL + "?action=addSite&licenseKey=" + encodeURIComponent(licenseKey) + 
+                  "&siteId=" + encodeURIComponent(siteId) + "&siteName=" + encodeURIComponent(siteName);
+        var res = await fetch(url);
+        var data = await res.json();
+        
+        if (data.ok) {
+            var dynamicSites = [];
+            try {
+                var saved = localStorage.getItem("vms_dynamic_sites");
+                if (saved) dynamicSites = JSON.parse(saved);
+            } catch(e) {}
+            
+            if (dynamicSites.indexOf(siteId) === -1) {
+                dynamicSites.push(siteId);
+                localStorage.setItem("vms_dynamic_sites", JSON.stringify(dynamicSites));
+            }
+            
+            toast("Site " + siteId + " berhasil ditambahkan!", "success");
+            renderSiteSelectors();
+        } else {
+            toast(data.error || "Gagal menambah site", "error");
+        }
+    } catch(e) {
+        console.error("Add site error:", e);
+        toast("Gagal terhubung ke server", "error");
+    }
+}
+
+async function syncSitesFromBackend() {
+    var licenseKey = localStorage.getItem("vms_license_key") || "";
+    if (!licenseKey) return;
+    
+    try {
+        var url = GAS_URL + "?action=getSites&licenseKey=" + encodeURIComponent(licenseKey);
+        var res = await fetch(url);
+        var data = await res.json();
+        
+        if (data.ok && data.sites) {
+            var dynamicSites = [];
+            for (var i = 0; i < data.sites.length; i++) {
+                var site = data.sites[i];
+                if (site.id !== "SITE_A" && site.id !== "SITE_B" && site.id !== "SITE_C") {
+                    dynamicSites.push(site.id);
+                }
+            }
+            localStorage.setItem("vms_dynamic_sites", JSON.stringify(dynamicSites));
+            renderSiteSelectors();
+        }
+    } catch(e) {
+        console.warn("Sync sites failed:", e);
+    }
 }
 
 function switchTab(tabId) {
@@ -1632,7 +1955,6 @@ window.addEventListener("load", async function() {
     document.getElementById("siteSelector").onchange = handleSiteSelectorChange;
     document.getElementById("siteSelectorTop").onchange = handleSiteSelectorChange;
     
-    // Tab navigation
     var navs = document.querySelectorAll(".nav-item, .mobile-nav");
     for (var i = 0; i < navs.length; i++) {
         var nav = navs[i];
@@ -1650,7 +1972,6 @@ window.addEventListener("load", async function() {
         }
     }
     
-    // Mobile menu
     var mobileMenuBtn = document.getElementById("mobileMenuBtn");
     var mobileSidebar = document.getElementById("mobileSidebar");
     var overlay = document.getElementById("overlay");
@@ -1669,14 +1990,12 @@ window.addEventListener("load", async function() {
         };
     }
     
-    // License
     document.getElementById("submitLicenseBtn").onclick = function() {
         var input = document.getElementById("licenseInput");
         if (input) applyLicenseKey(input.value);
         if (input) input.value = "";
     };
     
-    // Register
     document.getElementById("generateQRBtn").onclick = async function() {
         if (!canRegister()) return;
         
@@ -1732,8 +2051,10 @@ window.addEventListener("load", async function() {
             foto: foto
         }, false);
         
-        toast(nama + " terdaftar (" + result.reg + ")", "success");
-        showPreview(result.reg, result.visitor);
+        if (result) {
+            toast(nama + " terdaftar (" + result.reg + ")", "success");
+            showPreview(result.reg, result.visitor);
+        }
         
         document.getElementById("regName").value = "";
         document.getElementById("regCompany").value = "";
@@ -1790,14 +2111,16 @@ window.addEventListener("load", async function() {
             foto: fotoBase64
         }, true);
         
-        toast("Walk-in registered " + result.reg, "success");
-        showPreview(result.reg, result.visitor);
+        if (result) {
+            toast("Walk-in registered " + result.reg, "success");
+            showPreview(result.reg, result.visitor);
+        }
+        
         renderDashboard();
         renderLogTable();
         updateMonetizationUI();
     };
     
-    // Scanner
     document.getElementById("startCamBtn").onclick = async function() {
         if (!canScan()) return;
         var container = document.getElementById("cameraPreview");
@@ -1882,6 +2205,18 @@ window.addEventListener("load", async function() {
             }
             
             var mutationId = createMutationId(mode === "CHECK_IN" ? "manual_checkin" : "manual_checkout");
+            var fingerprint = generateRequestFingerprint({ mutationId: mutationId, reg: reg });
+            
+            if (isDuplicateMutation(mutationId) || isDuplicateRequest(fingerprint)) {
+                toast("Data sudah diproses sebelumnya", "warning");
+                return;
+            }
+            
+            if (!validateReplayWindow(getEventTimestamp())) {
+                toast("Invalid timestamp", "error");
+                return;
+            }
+            
             var eventTs = getEventTimestamp();
             
             if (mode === "CHECK_IN") {
@@ -1894,11 +2229,16 @@ window.addEventListener("load", async function() {
                     updatedAt: eventTs,
                     updatedAtWIB: getWIBISO(eventTs),
                     mutationId: mutationId,
-                    mutationSource: getMutationSource()
+                    mutationSource: getMutationSource(),
+                    requestFingerprint: fingerprint,
+                    version: (visitor.version || 0) + 1
                 };
-                var scanLog = addLog(reg, "CHECK_IN");
-                await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
-                toast("Check-in " + visitor.nama + " success", "success");
+                var scanLog = addLog(reg, "CHECK_IN", { mutationId: mutationId, requestFingerprint: fingerprint });
+                if (scanLog) {
+                    await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [scanLog] });
+                    toast("Check-in " + visitor.nama + " success", "success");
+                    markMutationProcessed(mutationId, fingerprint);
+                }
             } else {
                 if (!visitor.sessions) visitor.sessions = [];
                 var openSession = null;
@@ -1922,11 +2262,16 @@ window.addEventListener("load", async function() {
                     updatedAt: eventTs,
                     updatedAtWIB: getWIBISO(eventTs),
                     mutationId: mutationId,
-                    mutationSource: getMutationSource()
+                    mutationSource: getMutationSource(),
+                    requestFingerprint: fingerprint,
+                    version: (visitor.version || 0) + 1
                 };
-                var checkoutLog = addLog(reg, "CHECK_OUT");
-                await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [checkoutLog] });
-                toast("Check-out " + visitor.nama + " success", "success");
+                var checkoutLog = addLog(reg, "CHECK_OUT", { mutationId: mutationId, requestFingerprint: fingerprint });
+                if (checkoutLog) {
+                    await syncToSheet({ visitors: { [siteKey]: visitors[siteKey] }, logs: [checkoutLog] });
+                    toast("Check-out " + visitor.nama + " success", "success");
+                    markMutationProcessed(mutationId, fingerprint);
+                }
             }
             
             saveToLocal();
@@ -1938,7 +2283,6 @@ window.addEventListener("load", async function() {
         }
     };
     
-    // Camera selector
     var cameraSelector = document.getElementById("cameraSelector");
     if (cameraSelector) {
         cameraSelector.onchange = function(e) {
@@ -1947,7 +2291,6 @@ window.addEventListener("load", async function() {
         cameraSelector.value = localStorage.getItem(CAMERA_PREF_KEY) || "auto_back";
     }
     
-    // Logs page
     document.getElementById("refreshLogsBtn").onclick = renderLogTable;
     document.getElementById("selectAllBtn").onclick = function() {
         var checkboxes = document.querySelectorAll(".logCheckItem");
@@ -1987,6 +2330,9 @@ window.addEventListener("load", async function() {
         if (!isAdmin()) return;
         visitors = {};
         logs = [];
+        processedMutationIds.clear();
+        requestFingerprints.clear();
+        lastMutationTime.clear();
         saveToLocal();
         renderDashboard();
         renderLogTable();
@@ -2001,7 +2347,7 @@ window.addEventListener("load", async function() {
         }
         try {
             var a = document.createElement("a");
-            a.href = URL.createObjectURL(new Blob([JSON.stringify({ visitors: visitors, logs: logs })], { type: "application/json" }));
+            a.href = URL.createObjectURL(new Blob([JSON.stringify({ visitors: visitors, logs: logs, processedIds: Array.from(processedMutationIds) })], { type: "application/json" }));
             a.download = "vms_backup_" + Date.now() + ".json";
             a.click();
             toast("Backup ready", "success");
@@ -2013,6 +2359,9 @@ window.addEventListener("load", async function() {
         if (!isAdmin()) return;
         visitors = {};
         logs = [];
+        processedMutationIds.clear();
+        requestFingerprints.clear();
+        lastMutationTime.clear();
         saveToLocal();
         renderDashboard();
         renderLogTable();
@@ -2020,7 +2369,6 @@ window.addEventListener("load", async function() {
         updateMonetizationUI();
     };
     
-    // Photo preview
     document.getElementById("regPhotoFile").onchange = function(e) {
         if (e.target.files && e.target.files[0]) {
             var reader = new FileReader();
@@ -2032,7 +2380,6 @@ window.addEventListener("load", async function() {
         }
     };
     
-    // Auth
     document.getElementById("doLoginBtn").onclick = async function() {
         var username = document.getElementById("loginUsername").value || "";
         var password = document.getElementById("loginPassword").value || "";
@@ -2054,7 +2401,6 @@ window.addEventListener("load", async function() {
     
     await hybridInitSession();
     
-    // Online/offline handlers
     window.addEventListener("online", async function() {
         toast("Kembali ONLINE - Sinkronisasi data", "success");
         await processSyncQueue();
@@ -2066,7 +2412,6 @@ window.addEventListener("load", async function() {
         toast("MODE OFFLINE - Menggunakan data lokal", "warning");
     });
     
-    // Periodic sync
     setInterval(async function() {
         if (navigator.onLine) {
             await processSyncQueue();
@@ -2074,9 +2419,12 @@ window.addEventListener("load", async function() {
         }
     }, 60000);
     
-    // Initial pull
     if (navigator.onLine) {
         await pullFromSheet();
+    }
+    
+    if (typeof syncSitesFromBackend === 'function') {
+        await syncSitesFromBackend();
     }
     
     renderDashboard();
@@ -2086,7 +2434,6 @@ window.addEventListener("load", async function() {
     toast("VMS Ready - Mode: " + LICENSE_MODE, "success");
 });
 
-// Global exports
 window.visitors = visitors;
 window.logs = logs;
 window.SITE_ID = SITE_ID;

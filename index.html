@@ -1961,118 +1961,257 @@ function exportToExcel() {
         toast("Export tidak tersedia di DEMO mode", "error");
         return;
     }
-    
+
     if (!window.XLSX) {
         toast("Excel engine belum siap", "error");
         return;
     }
-    
+
     try {
+
+        var formatDateTime = function(date) {
+            if (!date) return "-";
+
+            var d = new Date(date);
+
+            var y = d.getFullYear();
+            var m = String(d.getMonth() + 1).padStart(2, "0");
+            var day = String(d.getDate()).padStart(2, "0");
+            var h = String(d.getHours()).padStart(2, "0");
+            var mi = String(d.getMinutes()).padStart(2, "0");
+            var se = String(d.getSeconds()).padStart(2, "0");
+
+            return y + "-" + m + "-" + day + " " + h + ":" + mi + ":" + se;
+        };
+
         var dataForExcel = [];
+
         for (var key in visitors) {
+
             if (!visitors.hasOwnProperty(key)) continue;
             if (key.indexOf(SITE_ID + "_") !== 0) continue;
-            
+
             var visitor = visitors[key];
             var reg = key.replace(SITE_ID + "_", "");
+
             var now = new Date();
             var expDate = visitor.expDate ? new Date(visitor.expDate) : null;
-            
+
             var masaBerlakuStatus = "";
             var keterangan = "";
-            
+
             if (expDate) {
+
                 if (expDate < now) {
+
                     masaBerlakuStatus = "EXPIRED";
                     keterangan = "QR Code sudah kadaluarsa";
+
                 } else {
-                    var daysLeft = Math.ceil((expDate - now) / (1000 * 60 * 60 * 24));
-                    masaBerlakuStatus = "AKTIF (sisa " + daysLeft + " hari)";
-                    keterangan = "Berlaku hingga " + visitor.expDate;
+
+                    var daysLeft = Math.ceil(
+                        (expDate - now) / (1000 * 60 * 60 * 24)
+                    );
+
+                    masaBerlakuStatus =
+                        "AKTIF (sisa " + daysLeft + " hari)";
+
+                    keterangan =
+                        "Berlaku hingga " + visitor.expDate;
                 }
+
             } else {
+
                 masaBerlakuStatus = "TIDAK DITENTUKAN";
                 keterangan = "Tanggal kadaluarsa tidak diisi";
             }
-            
+
+            // ================= ADA SESSION =================
             if (visitor.sessions && visitor.sessions.length > 0) {
+
                 for (var s = 0; s < visitor.sessions.length; s++) {
+
                     var session = visitor.sessions[s];
-                    var checkInDate = session.checkIn ? new Date(session.checkIn) : null;
-                    var checkOutDate = session.checkOut ? new Date(session.checkOut) : null;
-                    
-                    var formatDateTime = function(date) {
-                        if (!date) return "-";
-                        var y = date.getFullYear();
-                        var m = String(date.getMonth() + 1).padStart(2, "0");
-                        var d = String(date.getDate()).padStart(2, "0");
-                        var h = String(date.getHours()).padStart(2, "0");
-                        var mi = String(date.getMinutes()).padStart(2, "0");
-                        var se = String(date.getSeconds()).padStart(2, "0");
-                        return y + "-" + m + "-" + d + " " + h + ":" + mi + ":" + se;
-                    };
-                    
+
+                    var checkInDate =
+                        session.checkIn
+                            ? new Date(session.checkIn)
+                            : null;
+
+                    var checkOutDate =
+                        session.checkOut
+                            ? new Date(session.checkOut)
+                            : null;
+
                     var durationText = "-";
                     var statusText = "IN PROGRESS";
-                    
+
                     if (session.checkIn && session.checkOut) {
-                        var durationMinutes = Math.floor((session.checkOut - session.checkIn) / 60000);
+
+                        var durationMinutes = Math.floor(
+                            (session.checkOut - session.checkIn) / 60000
+                        );
+
                         durationText = durationMinutes.toString();
                         statusText = "COMPLETED";
+
                     } else if (session.checkIn && !session.checkOut) {
+
                         durationText = "IN PROGRESS";
                         statusText = "IN PROGRESS";
                     }
-                    
+
                     dataForExcel.push({
+
                         "Nama": visitor.nama || "-",
-                        "No. Registrasi": reg,
                         "Perusahaan": visitor.perusahaan || "-",
-                        "Kategori": visitor.kategori || "UMUM",
                         "Tujuan": visitor.tujuan || "-",
                         "PIC": visitor.pic || "-",
-                        "Departemen": visitor.dept || "-",
-                        "Sesi Ke": s + 1,
-                        "Check-In": formatDateTime(checkInDate),
-                        "Check-Out": formatDateTime(checkOutDate),
-                        "Durasi (menit)": durationText,
-                        "Status Sesi": statusText,
-                        "Masa Berlaku QR": masaBerlakuStatus,
-                        "Tanggal Kadaluarsa": visitor.expDate || "-",
-                        "Keterangan": keterangan
+
+                        "Start": visitor.startDate || "-",
+                        "Exp": visitor.expDate || "-",
+
+                        "Checkin": formatDateTime(checkInDate),
+                        "Checkout": formatDateTime(checkOutDate),
+
+                        "REG": reg,
+
+                        "Action": statusText,
+
+                        "LogTime":
+                            formatDateTime(
+                                session.checkIn || visitor.updatedAt
+                            ),
+
+                        "Status":
+                            visitor.currentStatus || "OUT",
+
+                        "Site":
+                            visitor.site || SITE_ID,
+
+                        "Duration":
+                            durationText,
+
+                        "Kategori":
+                            visitor.kategori || "UMUM",
+
+                        "Dept":
+                            visitor.dept || "-",
+
+                        "Keterangan":
+                            keterangan,
+
+                        "Activity Log":
+                            "IN: " +
+                            formatDateTime(checkInDate) +
+                            " | OUT: " +
+                            formatDateTime(checkOutDate)
                     });
                 }
+
             } else {
+
+                // ================= BELUM ADA SESSION =================
                 dataForExcel.push({
+
                     "Nama": visitor.nama || "-",
-                    "No. Registrasi": reg,
                     "Perusahaan": visitor.perusahaan || "-",
-                    "Kategori": visitor.kategori || "UMUM",
                     "Tujuan": visitor.tujuan || "-",
                     "PIC": visitor.pic || "-",
-                    "Departemen": visitor.dept || "-",
-                    "Sesi Ke": "-",
-                    "Check-In": "-",
-                    "Check-Out": "-",
-                    "Durasi (menit)": "-",
-                    "Status Sesi": "TERDAFTAR",
-                    "Masa Berlaku QR": masaBerlakuStatus,
-                    "Tanggal Kadaluarsa": visitor.expDate || "-",
-                    "Keterangan": keterangan
+
+                    "Start": visitor.startDate || "-",
+                    "Exp": visitor.expDate || "-",
+
+                    "Checkin": "-",
+                    "Checkout": "-",
+
+                    "REG": reg,
+
+                    "Action": "REGISTER",
+
+                    "LogTime":
+                        visitor.updatedAtWIB || "-",
+
+                    "Status":
+                        "TERDAFTAR",
+
+                    "Site":
+                        visitor.site || SITE_ID,
+
+                    "Duration":
+                        "-",
+
+                    "Kategori":
+                        visitor.kategori || "UMUM",
+
+                    "Dept":
+                        visitor.dept || "-",
+
+                    "Keterangan":
+                        keterangan,
+
+                    "Activity Log":
+                        "Visitor terdaftar"
                 });
             }
         }
-        
-        dataForExcel.sort(function(a, b) { return (a["Nama"] || "").localeCompare(b["Nama"] || ""); });
+
+        dataForExcel.sort(function(a, b) {
+            return (a["Nama"] || "")
+                .localeCompare(b["Nama"] || "");
+        });
+
         var ws = XLSX.utils.json_to_sheet(dataForExcel);
-        ws["!cols"] = [{wch:25},{wch:18},{wch:20},{wch:12},{wch:20},{wch:15},{wch:15},{wch:8},{wch:20},{wch:20},{wch:15},{wch:18},{wch:18},{wch:18},{wch:35}];
+
+        ws["!cols"] = [
+            {wch:25}, // Nama
+            {wch:20}, // Perusahaan
+            {wch:25}, // Tujuan
+            {wch:18}, // PIC
+            {wch:15}, // Start
+            {wch:15}, // Exp
+            {wch:20}, // Checkin
+            {wch:20}, // Checkout
+            {wch:18}, // REG
+            {wch:15}, // Action
+            {wch:22}, // LogTime
+            {wch:15}, // Status
+            {wch:12}, // Site
+            {wch:15}, // Duration
+            {wch:15}, // Kategori
+            {wch:18}, // Dept
+            {wch:35}, // Keterangan
+            {wch:45}  // Activity Log
+        ];
+
         var wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "VMS_Visitor_Report");
-        XLSX.writeFile(wb, "VMS_Report_" + new Date().toISOString().slice(0, 19).replace(/:/g, "-") + ".xlsx");
+
+        XLSX.utils.book_append_sheet(
+            wb,
+            ws,
+            "VMS_Visitor_Report"
+        );
+
+        XLSX.writeFile(
+            wb,
+            "VMS_Report_" +
+            new Date()
+                .toISOString()
+                .slice(0, 19)
+                .replace(/:/g, "-") +
+            ".xlsx"
+        );
+
         toast("Excel berhasil di export", "success");
+
     } catch(err) {
+
         console.error("Export error:", err);
-        toast("Export gagal: " + err.message, "error");
+
+        toast(
+            "Export gagal: " + err.message,
+            "error"
+        );
     }
 }
 

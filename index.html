@@ -249,7 +249,7 @@
 // ============================================================
 
 // ================= KONFIGURASI =================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbyPXak3N050Ql4XjfIiHsV8RLTeKwBtGVjFa7zPdXUuuQ_Umx0Xp9nOO5nwB0P37JFQ2g/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwznyqFRmEDIigoB1vHs_TKor_P-DKiylHPr_1IaYcH50g7_5NmqkDwjZ6YixDQg_Sv/exec";
 const WIB_TIMEZONE = "Asia/Jakarta";
 const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
 const QR_SECRET = "VmsEnt2026!";
@@ -602,7 +602,7 @@ async function pullFromSheet() {
         var controller = new AbortController();
         var timeout = setTimeout(function() { controller.abort(); }, 15000);
         
-        var url = GAS_URL + "?licenseKey=" + encodeURIComponent(licenseKey) + "&site=" + encodeURIComponent(SITE_ID);
+        var url = GAS_URL + "?action=pull&licenseKey=" + encodeURIComponent(licenseKey) + "&site=" + encodeURIComponent(SITE_ID);
         var res = await fetch(url, { method: "GET", signal: controller.signal });
         
         clearTimeout(timeout);

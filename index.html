@@ -249,7 +249,7 @@
 // ============================================================
 
 // ================= KONFIGURASI =================
-const GAS_URL = "https://script.google.com/macros/s/AKfycbyfa49OBSqFRa-WzwyV5maj4_0phgkxciapxQW2lRU5k7rtte298GYWGwquRtirvEaScQ/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbyPXak3N050Ql4XjfIiHsV8RLTeKwBtGVjFa7zPdXUuuQ_Umx0Xp9nOO5nwB0P37JFQ2g/exec";
 const WIB_TIMEZONE = "Asia/Jakarta";
 const ACTION_TYPES = Object.freeze({ CHECK_IN: "CHECK_IN", CHECK_OUT: "CHECK_OUT", REGISTER: "REGISTER", WALK_IN: "WALK_IN" });
 const QR_SECRET = "VmsEnt2026!";
@@ -274,6 +274,7 @@ let syncQueue = [];
 let processedMutationIds = new Set();
 let requestFingerprints = new Map();
 let lastMutationTime = new Map();
+let isSyncing = false; // MUTEX: anti-parallel fetch
 
 // ================= UTILITIES =================
 function getEventTimestamp() { return Date.now(); }
@@ -331,7 +332,32 @@ function normalizeAction(action) {
 
 function getMutationSource() { return deviceId + ":browser"; }
 
-// ================= VALIDATION FUNCTIONS (FITUR LENGKAP) =================
+// PATCHED: isExpiredVisitor - timezone-safe, konsisten WIB (Asia/Jakarta)
+function isExpiredVisitor(expDate) {
+    if (!expDate) return false;
+    var expStr = String(expDate).trim();
+    if (!expStr) return false;
+    // Parse date-only string sebagai WIB (UTC+7), bukan UTC
+    var dt;
+    var matchDate = expStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (matchDate) {
+        // Explicit: set ke akhir hari WIB = UTC 16:59:59 (23:59:59 WIB)
+        dt = new Date(Date.UTC(
+            parseInt(matchDate[1]),
+            parseInt(matchDate[2]) - 1,
+            parseInt(matchDate[3]),
+            16, 59, 59, 999  // 23:59:59 WIB = 16:59:59 UTC
+        ));
+    } else {
+        dt = new Date(expStr);
+        if (isNaN(dt.getTime())) return false;
+        // Asumsikan end-of-day WIB
+        var wibOffset = 7 * 60 * 60 * 1000;
+        var dayEndWIB = new Date(Math.floor((dt.getTime() + wibOffset) / 86400000) * 86400000 - wibOffset + (23*3600+59*60+59)*1000 + 999);
+        dt = dayEndWIB;
+    }
+    return Date.now() > dt.getTime();
+}
 function validateReplayWindow(eventTs) {
     var now = getEventTimestamp();
     if (!eventTs || eventTs <= 0) return false;
@@ -508,6 +534,15 @@ async function syncToSheet(payload) {
         toast("Offline mode - data akan disinkronkan saat online", "warning");
         return false;
     }
+
+    // MUTEX: anti-parallel fetch — tunggu hingga sync sebelumnya selesai
+    if (isSyncing) {
+        syncQueue.push(syncPayload);
+        if (syncQueue.length > 50) syncQueue.shift();
+        localStorage.setItem("vms_sync_queue", JSON.stringify(syncQueue));
+        return false;
+    }
+    isSyncing = true;
     
     try {
         var controller = new AbortController();
@@ -515,6 +550,7 @@ async function syncToSheet(payload) {
         
         var res = await fetch(GAS_URL, {
             method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(syncPayload),
             signal: controller.signal
         });
@@ -542,15 +578,18 @@ async function syncToSheet(payload) {
                     }
                 }
                 saveToLocal();
+                isSyncing = false;
                 return true;
             }
         }
+        isSyncing = false;
         return false;
     } catch(e) {
         console.warn("Sync failed:", e);
         syncQueue.push(syncPayload);
         if (syncQueue.length > 50) syncQueue.shift();
         localStorage.setItem("vms_sync_queue", JSON.stringify(syncQueue));
+        isSyncing = false;
         return false;
     }
 }
@@ -1371,10 +1410,8 @@ async function processScan(qrText) {
             return;
         }
         
-        var exp = new Date(visitor.expDate);
-        exp.setHours(23, 59, 59, 999);
-        if (exp < new Date()) {
-            toast("QR sudah expired", "error");
+        if (isExpiredVisitor(visitor.expDate)) {
+            toast("QR sudah expired — visitor tidak dapat scan", "error");
             return;
         }
         
@@ -2207,10 +2244,8 @@ window.addEventListener("load", async function() {
                 return;
             }
             
-            var exp = new Date(visitor.expDate);
-            exp.setHours(23, 59, 59, 999);
-            if (exp < new Date()) {
-                toast("QR sudah expired", "error");
+            if (isExpiredVisitor(visitor.expDate)) {
+                toast("QR sudah expired — visitor tidak dapat scan", "error");
                 return;
             }
             
